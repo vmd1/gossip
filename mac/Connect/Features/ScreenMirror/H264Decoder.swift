@@ -2,9 +2,12 @@ import Foundation
 import VideoToolbox
 import CoreMedia
 
-/// Decodes a raw, Annex-B-framed H.264 elementary stream (exactly what `adb
-/// exec-out screenrecord --output-format=h264 -` writes to stdout) into
-/// `CVPixelBuffer`s using VideoToolbox's `VTDecompressionSession`.
+/// Decodes a raw, Annex-B-framed H.264 elementary stream — what the vendored
+/// scrcpy on-device server (see `android/screen-server/`) writes to its
+/// forwarded socket in `raw_stream=true` mode, byte-for-byte the same framing
+/// as the earlier `adb exec-out screenrecord --output-format=h264 -` stopgap
+/// it replaced — into `CVPixelBuffer`s using VideoToolbox's
+/// `VTDecompressionSession`.
 ///
 /// Usage: feed raw bytes as they arrive from the ADB pipe via `push(_:)` in
 /// whatever order/chunking they arrive (no need to align to NAL boundaries —

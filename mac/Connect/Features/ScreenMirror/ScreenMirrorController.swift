@@ -3,9 +3,10 @@ import CoreMedia
 import Combine
 
 /// Orchestrates the ADB-mediated screen mirroring pipeline end to end:
-/// resolves `adb` + the connected device's screen size, starts an `adb
-/// exec-out screenrecord` H.264 capture (`ADBClient`), feeds the raw bytes
-/// into `H264Decoder`, hands decoded frames to whatever's listening
+/// resolves `adb` + the connected device's screen size, starts the vendored
+/// scrcpy on-device server and reads its raw H.264 capture over a forwarded
+/// TCP socket (`ADBClient`), feeds the raw bytes into `H264Decoder`, hands
+/// decoded frames to whatever's listening
 /// (`ScreenMirrorWindow` via `onFrame`), and turns window input (taps/drags/
 /// keys) back into `adb shell input ...` commands.
 ///
@@ -31,7 +32,7 @@ final class ScreenMirrorController: ObservableObject {
 
     private let decoder = H264Decoder()
     private var adb: ADBClient?
-    private var captureProcess: Process?
+    private var captureSession: ScreenCaptureSession?
     private var deviceSize: (width: Int, height: Int)?
 
     /// Called with every decoded frame, on an arbitrary (non-main) queue.
@@ -81,24 +82,26 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     private func launchCaptureProcess(adb: ADBClient) throws {
-        let process = try adb.startH264Capture(
+        let session = try adb.startScrcpyCapture(
             onData: { [weak self] data in
                 self?.decoder.push(data)
             },
             onTermination: { [weak self] _ in
                 guard let self else { return }
-                // `screenrecord` can terminate on its own (encoder hiccup, USB blip);
-                // transparently restart while the user still wants to be mirroring.
+                // The on-device server or the forwarded socket can die on its
+                // own (USB blip, app_process crash); transparently restart
+                // while the user still wants to be mirroring.
                 if case .mirroring = self.state {
                     self.restartCapture()
                 }
             }
         )
-        captureProcess = process
+        captureSession = session
     }
 
     private func restartCapture() {
         guard let adb else { return }
+        captureSession?.stop()
         do {
             try launchCaptureProcess(adb: adb)
         } catch {
@@ -107,9 +110,8 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     func stop() {
-        captureProcess?.terminationHandler = nil
-        captureProcess?.terminate()
-        captureProcess = nil
+        captureSession?.stop()
+        captureSession = nil
         decoder.reset()
         adb = nil
         deviceSize = nil
