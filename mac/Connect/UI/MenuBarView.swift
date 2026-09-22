@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
@@ -12,6 +13,8 @@ struct MenuBarView: View {
     @State private var showingPairingSheet = false
     @State private var showingDNDSetupSheet = false
     @State private var mirrorWindow: ScreenMirrorWindow?
+    @State private var adbPairingWindow: ADBPairingWindow?
+    @State private var adbPairingCancellable: AnyCancellable?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -115,11 +118,54 @@ struct MenuBarView: View {
         }
     }
 
+    /// Before launching the mirroring pipeline, makes sure `adb` already
+    /// sees an authorized device (typically already connected via USB or a
+    /// previous wireless pairing); if not, opens the QR wireless-pairing
+    /// flow first and only proceeds once it reaches `.connected`.
     private func startMirroring() {
         sendScreenSignal(type: "screen.start")
+        guard let adbPath = ADBClient.resolveADBPath() else {
+            screenMirrorController.start() // surfaces the "adb not found" failure state
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let client = ADBClient(serial: nil)
+            let output = (try? client?.run(["devices", "-l"])).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let existingSerial = ADBWirelessPairing.firstAuthorizedSerial(output)
+            DispatchQueue.main.async {
+                if let existingSerial {
+                    launchMirrorWindow(serial: existingSerial)
+                } else {
+                    beginADBPairing(adbPath: adbPath)
+                }
+            }
+        }
+    }
+
+    private func beginADBPairing(adbPath: String) {
+        let pairing = ADBWirelessPairing(adbPath: adbPath)
+        pairing.trustedPeerIP = transportManager.connectedPeerIPAddress
+        let window = ADBPairingWindow(pairing: pairing)
+        adbPairingWindow = window
+
+        adbPairingCancellable = pairing.$state.sink { state in
+            if case .connected(let serial, _) = state {
+                adbPairingCancellable = nil
+                window.close()
+                adbPairingWindow = nil
+                launchMirrorWindow(serial: serial)
+            }
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func launchMirrorWindow(serial: String) {
         let window = ScreenMirrorWindow(controller: screenMirrorController)
         mirrorWindow = window
-        screenMirrorController.start()
+        screenMirrorController.start(serial: serial)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

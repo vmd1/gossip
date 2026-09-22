@@ -32,11 +32,22 @@ enum ADBError: Error, LocalizedError {
 /// approved the on-device "Allow USB debugging?" RSA key prompt. See this
 /// unit's PR description for the full rationale.
 final class ADBClient {
-    /// Resolves the path to the `adb` binary. Checks common Homebrew/manual
-    /// install locations first, then falls back to a `PATH` lookup via `env`.
+    /// Resolves the path to the `adb` binary. Prefers the copy bundled
+    /// inside the app (`Contents/Resources/bin/adb`, added in `project.yml`)
+    /// so end users don't need Android Platform Tools installed separately;
+    /// falls back to common Homebrew/manual install locations and finally a
+    /// `PATH` lookup, which mainly matters for local dev before the bundled
+    /// resource is present (e.g. running via `swift build` rather than the
+    /// full app bundle).
     static func resolveADBPath() -> String? {
+        if let bundled = Bundle.main.url(forResource: "adb", withExtension: nil, subdirectory: "bin"),
+           FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled.path
+        }
+
         let candidates = [
             "/opt/homebrew/bin/adb",
+            "/opt/homebrew/share/android-commandlinetools/platform-tools/adb",
             "/usr/local/bin/adb",
             "\(NSHomeDirectory())/Library/Android/sdk/platform-tools/adb",
         ]
@@ -65,10 +76,22 @@ final class ADBClient {
     }
 
     let adbPath: String
+    /// When set, every command is targeted at this specific device serial
+    /// via `adb -s <serial> ...` rather than relying on `adb`'s own
+    /// single-device auto-detection — set once `ADBWirelessPairing` (or an
+    /// already-connected `adb devices -l`) has resolved an exact serial.
+    let serial: String?
 
-    init?() {
+    init?(serial: String? = nil) {
         guard let path = ADBClient.resolveADBPath() else { return nil }
         self.adbPath = path
+        self.serial = serial
+    }
+
+    /// Prepends `-s <serial>` to `args` when a specific device is targeted.
+    private func withSerial(_ args: [String]) -> [String] {
+        guard let serial else { return args }
+        return ["-s", serial] + args
     }
 
     /// Runs `adb <args>` synchronously, returning stdout and throwing on a
@@ -79,7 +102,7 @@ final class ADBClient {
     func run(_ args: [String]) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: adbPath)
-        process.arguments = args
+        process.arguments = withSerial(args)
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
@@ -185,7 +208,7 @@ final class ADBClient {
             args += ["--size", "\(size.width)x\(size.height)"]
         }
         args += ["--bit-rate", "\(bitRate)", "--time-limit", "0", "-"]
-        process.arguments = args
+        process.arguments = withSerial(args)
 
         let stdout = Pipe()
         process.standardOutput = stdout

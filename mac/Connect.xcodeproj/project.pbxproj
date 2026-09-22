@@ -15,6 +15,7 @@
 		17D859B6D13662D1905B772B /* ClipboardSyncManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */; };
 		19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E959965E940BAC0A25F41520 /* ClipboardSyncManager.swift */; };
 		2137B4F007E2364F96115B24 /* H264Decoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC39E3844FEFC5C7D26392F /* H264Decoder.swift */; };
+		3322151AC534059AB917F954 /* ADBPairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BF45EE121447A0E9D788FE9 /* ADBPairingWindow.swift */; };
 		45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22D902BF5E5FB455B8C961A /* Envelope.swift */; };
 		48D2525C089F05E156009DB0 /* ScreenMirrorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4295E96CECFF944A70CA580 /* ScreenMirrorWindow.swift */; };
 		49BFE6F763D27F1888455DBD /* LocalDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA24BBEFDE5080C1825AF716 /* LocalDiscovery.swift */; };
@@ -24,12 +25,14 @@
 		5A247E6FEC91E35116CB0D80 /* DNDSyncManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1BB9D5B177644A469733731 /* DNDSyncManagerTests.swift */; };
 		5AFC1213C710656A12BBE5E3 /* ConnectApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EE53984833490A922AB8171 /* ConnectApp.swift */; };
 		68E8DFED9A220842A369F816 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23E18F33C89E6BD8B27B75C5 /* MenuBarView.swift */; };
+		72BCE33379D5D47F9AC39ACA /* ADBWirelessPairing.swift in Sources */ = {isa = PBXBuildFile; fileRef = B264DC12C12F5189146EDE45 /* ADBWirelessPairing.swift */; };
 		7A1B09577FA0670CA622ABA5 /* EnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08221D1B5D04DB2E5101DD1B /* EnvelopeTests.swift */; };
 		81387C3CB83D22A4DAFCE1E4 /* DNDSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A542AA44C01C66849C16AC8 /* DNDSetupView.swift */; };
 		8325214E4D17742932C45E80 /* MessageRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACAD12F736759DC26C7803B4 /* MessageRouter.swift */; };
 		87EC35667D6DA063AEB3951A /* NoiseSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4EF7E4742D8A6A53D3FB018 /* NoiseSession.swift */; };
 		9440727BED5F6861BEB3F70C /* NotificationMirrorManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4E7C9A392B7B4699F987CDE /* NotificationMirrorManager.swift */; };
 		A0385F502900E8B41F032C71 /* IdentityKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CCA589484572D86ED0DEACA /* IdentityKeyStore.swift */; };
+		BBA5393347A3B3BF9F196A71 /* ADBWirelessPairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4911A62B9DB9069394B164F /* ADBWirelessPairingTests.swift */; };
 		C1B34115520F70D9A2A20236 /* TrustedDevicesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6960669BE2825F47C218836F /* TrustedDevicesStore.swift */; };
 		C3B925013FE5345DD40849D7 /* ADBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77B464EF1997BB6647CB05B5 /* ADBClient.swift */; };
 		C3C17D1865BACEB48E906168 /* TrustedDevicesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 845DD794B62D4498D167B007 /* TrustedDevicesStoreTests.swift */; };
@@ -38,6 +41,7 @@
 		D8E32986179C76DBF251708B /* PairingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C430A1871D8467997697CD /* PairingViewModel.swift */; };
 		E1EB612FEF390BF6737B9EBE /* FileChunker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86551F4C86FB5F9E3F0AC1DD /* FileChunker.swift */; };
 		E7F881AC3A49D1FF24341D8F /* NotificationMirrorManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53DBE8A0704E8BAD1F3D8895 /* NotificationMirrorManagerTests.swift */; };
+		FAFAD009A051E2A5C2F08DD0 /* bin in Resources */ = {isa = PBXBuildFile; fileRef = 9A784B4A72BC93CA1974E821 /* bin */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -56,6 +60,7 @@
 		11BD4F56A5134E6F9A04F93C /* FileTransferManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTransferManager.swift; sourceTree = "<group>"; };
 		23E18F33C89E6BD8B27B75C5 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		2A542AA44C01C66849C16AC8 /* DNDSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSetupView.swift; sourceTree = "<group>"; };
+		2BF45EE121447A0E9D788FE9 /* ADBPairingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBPairingWindow.swift; sourceTree = "<group>"; };
 		2D354274C5CC8DBD217D35D5 /* NoiseSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoiseSessionTests.swift; sourceTree = "<group>"; };
 		3019A1BAA5AC068B9EE4BB7A /* ScreenMirrorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenMirrorController.swift; sourceTree = "<group>"; };
 		3CCA589484572D86ED0DEACA /* IdentityKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IdentityKeyStore.swift; sourceTree = "<group>"; };
@@ -71,9 +76,12 @@
 		845DD794B62D4498D167B007 /* TrustedDevicesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustedDevicesStoreTests.swift; sourceTree = "<group>"; };
 		86551F4C86FB5F9E3F0AC1DD /* FileChunker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileChunker.swift; sourceTree = "<group>"; };
 		91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardSyncManagerTests.swift; sourceTree = "<group>"; };
+		9A784B4A72BC93CA1974E821 /* bin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bin; path = Connect/Resources/bin; sourceTree = SOURCE_ROOT; };
+		A4911A62B9DB9069394B164F /* ADBWirelessPairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBWirelessPairingTests.swift; sourceTree = "<group>"; };
 		ACAD12F736759DC26C7803B4 /* MessageRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRouter.swift; sourceTree = "<group>"; };
 		B045AF4E25B84A06C024F5AC /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		B1BB9D5B177644A469733731 /* DNDSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSyncManagerTests.swift; sourceTree = "<group>"; };
+		B264DC12C12F5189146EDE45 /* ADBWirelessPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBWirelessPairing.swift; sourceTree = "<group>"; };
 		B4EF7E4742D8A6A53D3FB018 /* NoiseSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoiseSession.swift; sourceTree = "<group>"; };
 		BDE9F4317B5B8E0B8EB6C016 /* ConnectTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C3E859A56216280E295802D2 /* MediaControlManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaControlManager.swift; sourceTree = "<group>"; };
@@ -121,6 +129,7 @@
 		55471937A1ED8AA324AEBDD7 /* ConnectTests */ = {
 			isa = PBXGroup;
 			children = (
+				A4911A62B9DB9069394B164F /* ADBWirelessPairingTests.swift */,
 				91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */,
 				B1BB9D5B177644A469733731 /* DNDSyncManagerTests.swift */,
 				08221D1B5D04DB2E5101DD1B /* EnvelopeTests.swift */,
@@ -218,6 +227,7 @@
 				6B9C8BC1FC086693C9E08557 /* Crypto */,
 				13F7FCCC1EB59B64066E04A8 /* Features */,
 				C6AE25A2AEE434976AA61711 /* Pairing */,
+				F1BBAD1EEECCD5BA5E202CD3 /* Resources */,
 				D5B1037448F1CF23ED869F16 /* Transport */,
 				5124A420EBD2F1C16B623447 /* UI */,
 			);
@@ -239,11 +249,21 @@
 			isa = PBXGroup;
 			children = (
 				77B464EF1997BB6647CB05B5 /* ADBClient.swift */,
+				2BF45EE121447A0E9D788FE9 /* ADBPairingWindow.swift */,
+				B264DC12C12F5189146EDE45 /* ADBWirelessPairing.swift */,
 				6DC39E3844FEFC5C7D26392F /* H264Decoder.swift */,
 				3019A1BAA5AC068B9EE4BB7A /* ScreenMirrorController.swift */,
 				F4295E96CECFF944A70CA580 /* ScreenMirrorWindow.swift */,
 			);
 			path = ScreenMirror;
+			sourceTree = "<group>";
+		};
+		F1BBAD1EEECCD5BA5E202CD3 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				9A784B4A72BC93CA1974E821 /* bin */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -254,6 +274,8 @@
 			buildConfigurationList = 0321F397FFB6738E4D73DB2C /* Build configuration list for PBXNativeTarget "Connect" */;
 			buildPhases = (
 				B0A98DCC41B86D94413BA492 /* Sources */,
+				B3E994829DA309ABD7FB4461 /* Resources */,
+				3AFA15A6E7581A76767BA9FE /* Make bundled adb/scrcpy executable */,
 			);
 			buildRules = (
 			);
@@ -318,11 +340,44 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		B3E994829DA309ABD7FB4461 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FAFAD009A051E2A5C2F08DD0 /* bin in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		3AFA15A6E7581A76767BA9FE /* Make bundled adb/scrcpy executable */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Make bundled adb/scrcpy executable";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nBIN_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/bin\"\nif [ -d \"$BIN_DIR\" ]; then\n  chmod +x \"$BIN_DIR/adb\" \"$BIN_DIR/scrcpy\" 2>/dev/null || true\n  find \"$BIN_DIR/scrcpy-libs\" -type f -exec chmod +x {} \\; 2>/dev/null || true\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		2505D479C1A180BE87B713D7 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BBA5393347A3B3BF9F196A71 /* ADBWirelessPairingTests.swift in Sources */,
 				17D859B6D13662D1905B772B /* ClipboardSyncManagerTests.swift in Sources */,
 				5A247E6FEC91E35116CB0D80 /* DNDSyncManagerTests.swift in Sources */,
 				7A1B09577FA0670CA622ABA5 /* EnvelopeTests.swift in Sources */,
@@ -339,6 +394,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				C3B925013FE5345DD40849D7 /* ADBClient.swift in Sources */,
+				3322151AC534059AB917F954 /* ADBPairingWindow.swift in Sources */,
+				72BCE33379D5D47F9AC39ACA /* ADBWirelessPairing.swift in Sources */,
 				541AA90A2F842CF97F315523 /* AppDelegate.swift in Sources */,
 				19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */,
 				5AFC1213C710656A12BBE5E3 /* ConnectApp.swift in Sources */,
