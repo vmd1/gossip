@@ -8,6 +8,7 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.connect.crypto.TrustedDevice
 import com.connect.crypto.TrustedDevicesStore
@@ -87,6 +89,10 @@ class MainActivity : ComponentActivity() {
                         trustedDevicesStore = trustedDevicesStore,
                         onPairNewDevice = {
                             startActivity(Intent(this@MainActivity, QRScanActivity::class.java))
+                        },
+                        isNotificationAccessGranted = { isNotificationListenerEnabled(this@MainActivity) },
+                        onEnableNotificationAccess = {
+                            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                         }
                     )
                 }
@@ -100,15 +106,24 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Whether the user has granted this app "Notification access" special access, required
+ *  for [com.connect.features.notifications.NotificationListenerImpl] to run. This
+ *  permission has no runtime-dialog equivalent — it can only be granted from Settings. */
+fun isNotificationListenerEnabled(context: Context): Boolean =
+    NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+
 @Composable
 fun ConnectHomeScreen(
     connectionStateProvider: () -> kotlinx.coroutines.flow.StateFlow<ConnectionState>?,
     trustedDevicesStore: TrustedDevicesStore,
-    onPairNewDevice: () -> Unit
+    onPairNewDevice: () -> Unit,
+    isNotificationAccessGranted: () -> Boolean = { true },
+    onEnableNotificationAccess: () -> Unit = {}
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
     val connectionState by (stateFlow?.collectAsState() ?: remember { mutableStateOf(ConnectionState.DISCONNECTED) })
+    var notificationAccessGranted by remember { mutableStateOf(isNotificationAccessGranted()) }
 
     Scaffold { padding ->
         Column(
@@ -123,6 +138,21 @@ fun ConnectHomeScreen(
 
             Button(onClick = onPairNewDevice) {
                 Text("Pair New Device")
+            }
+
+            if (!notificationAccessGranted) {
+                Text(
+                    "Grant notification access so your Android notifications can be mirrored to your Mac.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(onClick = {
+                    onEnableNotificationAccess()
+                    notificationAccessGranted = isNotificationAccessGranted()
+                }) {
+                    Text("Enable Notification Mirroring")
+                }
+            } else {
+                Text("Notification mirroring is enabled.", style = MaterialTheme.typography.bodySmall)
             }
 
             PairedDevicesScreen(

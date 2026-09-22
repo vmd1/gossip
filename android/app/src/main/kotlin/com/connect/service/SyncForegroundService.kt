@@ -13,6 +13,7 @@ import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
+import com.connect.transport.TransportManagerHolder
 
 /**
  * Foreground service that owns the [TransportManager] for the lifetime of the app,
@@ -35,6 +36,7 @@ class SyncForegroundService : Service() {
             trustedDevicesStore = trustedDevices,
             messageRouter = MessageRouter()
         )
+        TransportManagerHolder.instance = transportManager
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -45,6 +47,9 @@ class SyncForegroundService : Service() {
 
     override fun onDestroy() {
         transportManager.shutdown()
+        if (TransportManagerHolder.instance === transportManager) {
+            TransportManagerHolder.instance = null
+        }
         super.onDestroy()
     }
 
