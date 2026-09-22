@@ -8,6 +8,7 @@ struct ConnectApp: App {
     @StateObject private var trustedDevicesStore = TrustedDevicesStore.shared
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
+    @StateObject private var fileTransferManager: FileTransferManager
     @StateObject private var mediaControlManager: MediaControlManager
     private let notificationMirrorManager: NotificationMirrorManager
     private let dndSyncManager: DNDSyncManager
@@ -17,6 +18,7 @@ struct ConnectApp: App {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         _pairingViewModel = StateObject(wrappedValue: PairingViewModel(transportManager: transport))
+        _fileTransferManager = StateObject(wrappedValue: FileTransferManager(transportManager: transport))
         _mediaControlManager = StateObject(wrappedValue: MediaControlManager(transportManager: transport))
         notificationMirrorManager = NotificationMirrorManager(transportManager: transport)
         UNUserNotificationCenter.current().delegate = notificationMirrorManager
@@ -30,6 +32,7 @@ struct ConnectApp: App {
                 transportManager: transportManager,
                 pairingViewModel: pairingViewModel,
                 trustedDevicesStore: trustedDevicesStore,
+                fileTransferManager: fileTransferManager,
                 mediaControlManager: mediaControlManager
             )
             .onAppear {

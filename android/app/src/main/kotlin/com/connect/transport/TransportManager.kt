@@ -73,6 +73,22 @@ class TransportManager(
     private var serverSocket: ServerSocket? = null
     private var connectionJob: Job? = null
 
+    /** When set, the *next* successfully decrypted post-handshake frame is
+     *  delivered here as raw bytes instead of being parsed as an [Envelope],
+     *  then cleared (one-shot). This is the receive side of the `file.chunk`
+     *  convention (see `schema/message-types.md`): a feature module arms
+     *  this synchronously from its `file.chunk` envelope handler, since that
+     *  envelope is always immediately followed by exactly one raw binary
+     *  frame on the wire — the connection loop below drains frames strictly
+     *  in order, so as long as the handler is invoked (and this armed)
+     *  before the loop reads the next frame, there's no race. */
+    @Volatile private var pendingRawFrameHandler: ((ByteArray) -> Unit)? = null
+
+    /** Arms [pendingRawFrameHandler]; see its doc for the ordering guarantee this relies on. */
+    fun setPendingRawFrameHandler(handler: (ByteArray) -> Unit) {
+        pendingRawFrameHandler = handler
+    }
+
     /** Listens for incoming connections (e.g. a previously-paired Mac reconnecting) and
      *  advertises this device over NSD so a Mac running discovery can find it. */
     fun listen(port: Int = DEFAULT_PORT) {
@@ -127,6 +143,20 @@ class TransportManager(
         }
     }
 
+    /** Encrypts and frames [data] exactly like [send], except the plaintext is raw
+     *  bytes rather than a JSON envelope. Used for the binary half of the `file.chunk`
+     *  convention (see `schema/message-types.md`): callers must send the matching
+     *  `file.chunk` metadata envelope via [send] immediately before calling this, and
+     *  only ever one raw frame per metadata frame. */
+    suspend fun sendRawFrame(data: ByteArray) {
+        val session = noiseSession ?: throw IllegalStateException("Not connected")
+        val out = output ?: throw IllegalStateException("Not connected")
+        val ciphertext = session.encryptTransportMessage(data)
+        writeMutex.withLock {
+            writeFrame(out, ciphertext)
+        }
+    }
+
     fun currentRemoteDeviceId(): String? = remoteDeviceId
 
     fun disconnect() {
@@ -173,6 +203,14 @@ class TransportManager(
                 while (true) {
                     val frame = readFrame(input)
                     val plaintext = session.decryptTransportMessage(frame)
+
+                    val rawHandler = pendingRawFrameHandler
+                    if (rawHandler != null) {
+                        pendingRawFrameHandler = null
+                        rawHandler(plaintext)
+                        continue
+                    }
+
                     val envelope = Envelope.decode(plaintext)
                     _incoming.emit(envelope)
                     messageRouter.dispatch(envelope)

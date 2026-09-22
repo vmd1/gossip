@@ -47,6 +47,18 @@ object MessageType {
     const val PRESENCE_ONLINE = "presence.online"
     const val PRESENCE_OFFLINE = "presence.offline"
     const val PRESENCE_HEARTBEAT = "presence.heartbeat"
+
+    // File transfer (Wave 2, unit 9 / M6). See schema/message-types.md.
+    const val FILE_OFFER = "file.offer"
+    const val FILE_ACCEPT = "file.accept"
+    const val FILE_REJECT = "file.reject"
+    const val FILE_COMPLETE = "file.complete"
+
+    /** Local convention (not a standalone binary-carrying type): a `file.chunk`
+     *  metadata envelope is always immediately followed by exactly one raw
+     *  binary frame of `byteLength` bytes. See schema/message-types.md. */
+    const val FILE_CHUNK = "file.chunk"
+
     const val NOTIFICATION_POSTED = "notification.posted"
     const val NOTIFICATION_REMOVED = "notification.removed"
     const val NOTIFICATION_REPLY = "notification.reply"
