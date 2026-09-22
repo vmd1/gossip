@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		34004F20B65647938E58849F /* ADBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3AA7ADB72B34228A9DB8948 /* ADBClient.swift */; };
+		C204389CE26E4814BFDC4198 /* H264Decoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E96BD9F3AB14B8B98D847B4 /* H264Decoder.swift */; };
+		F2213DD86CC14975B6494795 /* ScreenMirrorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51655A7DAFC14E88A336E9BD /* ScreenMirrorController.swift */; };
+		188291FDE53F48A7BB9B0087 /* ScreenMirrorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2F9CD25985242DC8150371E /* ScreenMirrorWindow.swift */; };
 		05C51B4B145C04605179B295 /* NoiseSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D354274C5CC8DBD217D35D5 /* NoiseSessionTests.swift */; };
 		0669DA7AF025F240466DDEC1 /* QRCodeGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DBF52E1EE1D559096C0A5A6 /* QRCodeGenerator.swift */; };
 		45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22D902BF5E5FB455B8C961A /* Envelope.swift */; };
@@ -35,6 +39,10 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B3AA7ADB72B34228A9DB8948 /* ADBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBClient.swift; sourceTree = "<group>"; };
+		3E96BD9F3AB14B8B98D847B4 /* H264Decoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264Decoder.swift; sourceTree = "<group>"; };
+		51655A7DAFC14E88A336E9BD /* ScreenMirrorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenMirrorController.swift; sourceTree = "<group>"; };
+		A2F9CD25985242DC8150371E /* ScreenMirrorWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenMirrorWindow.swift; sourceTree = "<group>"; };
 		08221D1B5D04DB2E5101DD1B /* EnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvelopeTests.swift; sourceTree = "<group>"; };
 		0EE53984833490A922AB8171 /* ConnectApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectApp.swift; sourceTree = "<group>"; };
 		23E18F33C89E6BD8B27B75C5 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
@@ -124,11 +132,31 @@
 			children = (
 				C183FD650F1EDFF5F8301566 /* App */,
 				6B9C8BC1FC086693C9E08557 /* Crypto */,
+				5A54ABBA949E4C54BC8BE0BB /* Features */,
 				C6AE25A2AEE434976AA61711 /* Pairing */,
 				D5B1037448F1CF23ED869F16 /* Transport */,
 				5124A420EBD2F1C16B623447 /* UI */,
 			);
 			path = Connect;
+			sourceTree = "<group>";
+		};
+		5A54ABBA949E4C54BC8BE0BB /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				CA36D7BC94AA490C915101EE /* ScreenMirror */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		CA36D7BC94AA490C915101EE /* ScreenMirror */ = {
+			isa = PBXGroup;
+			children = (
+				B3AA7ADB72B34228A9DB8948 /* ADBClient.swift */,
+				3E96BD9F3AB14B8B98D847B4 /* H264Decoder.swift */,
+				51655A7DAFC14E88A336E9BD /* ScreenMirrorController.swift */,
+				A2F9CD25985242DC8150371E /* ScreenMirrorWindow.swift */,
+			);
+			path = ScreenMirror;
 			sourceTree = "<group>";
 		};
 		D5B1037448F1CF23ED869F16 /* Transport */ = {
@@ -229,6 +257,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				34004F20B65647938E58849F /* ADBClient.swift in Sources */,
+				C204389CE26E4814BFDC4198 /* H264Decoder.swift in Sources */,
+				F2213DD86CC14975B6494795 /* ScreenMirrorController.swift in Sources */,
+				188291FDE53F48A7BB9B0087 /* ScreenMirrorWindow.swift in Sources */,
 				541AA90A2F842CF97F315523 /* AppDelegate.swift in Sources */,
 				5AFC1213C710656A12BBE5E3 /* ConnectApp.swift in Sources */,
 				45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */,

@@ -4,8 +4,10 @@ struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
     @ObservedObject var pairingViewModel: PairingViewModel
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
+    @ObservedObject var screenMirrorController: ScreenMirrorController
 
     @State private var showingPairingSheet = false
+    @State private var mirrorWindow: ScreenMirrorWindow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -17,6 +19,8 @@ struct MenuBarView: View {
                 pairingViewModel.startPairing()
                 showingPairingSheet = true
             }
+
+            mirrorScreenRow
 
             Divider()
 
@@ -56,6 +60,58 @@ struct MenuBarView: View {
         .sheet(isPresented: $showingPairingSheet) {
             PairingSheetView(pairingViewModel: pairingViewModel, isPresented: $showingPairingSheet)
         }
+    }
+
+    /// "Mirror Screen" — sends `screen.start` over the transport purely for
+    /// Android-side UI-state signaling (best-effort; ignored if not
+    /// connected), then kicks off the ADB-mediated mirroring pipeline, which
+    /// does NOT depend on the transport being connected — only on `adb
+    /// devices` showing the phone.
+    @ViewBuilder
+    private var mirrorScreenRow: some View {
+        switch screenMirrorController.state {
+        case .idle:
+            Button("Mirror Screen…") { startMirroring() }
+        case .starting:
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Starting mirroring…")
+            }
+        case .mirroring:
+            Button("Stop Mirroring") { stopMirroring() }
+        case .failed(let reason):
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Mirroring failed").foregroundStyle(.red)
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+                Button("Retry") { startMirroring() }
+            }
+        }
+    }
+
+    private func startMirroring() {
+        sendScreenSignal(type: "screen.start")
+        let window = ScreenMirrorWindow(controller: screenMirrorController)
+        mirrorWindow = window
+        screenMirrorController.start()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func stopMirroring() {
+        sendScreenSignal(type: "screen.stop")
+        screenMirrorController.stop()
+        mirrorWindow?.close()
+        mirrorWindow = nil
+    }
+
+    private func sendScreenSignal(type: String) {
+        guard case .connected(let deviceId) = transportManager.connectionState else { return }
+        let envelope = Envelope(
+            type: type,
+            senderId: IdentityKeyStore.shared.deviceId,
+            recipientId: deviceId
+        )
+        try? transportManager.send(envelope: envelope)
     }
 
     @ViewBuilder

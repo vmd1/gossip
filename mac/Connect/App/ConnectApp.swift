@@ -7,6 +7,7 @@ struct ConnectApp: App {
     @StateObject private var trustedDevicesStore = TrustedDevicesStore.shared
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
+    @StateObject private var screenMirrorController = ScreenMirrorController()
 
     init() {
         let transport = TransportManager()
@@ -19,7 +20,8 @@ struct ConnectApp: App {
             MenuBarView(
                 transportManager: transportManager,
                 pairingViewModel: pairingViewModel,
-                trustedDevicesStore: trustedDevicesStore
+                trustedDevicesStore: trustedDevicesStore,
+                screenMirrorController: screenMirrorController
             )
             .onAppear {
                 transportManager.start()

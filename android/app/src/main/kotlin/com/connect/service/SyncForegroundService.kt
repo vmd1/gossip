@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.screenmirror.ScreenMirrorState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
 
@@ -23,17 +24,20 @@ import com.connect.transport.TransportManager
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    val screenMirrorState = ScreenMirrorState()
 
     override fun onCreate() {
         super.onCreate()
         IdentityKeyStore.ensureInitialized(applicationContext)
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
+        val messageRouter = MessageRouter()
+        screenMirrorState.register(messageRouter)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = MessageRouter()
+            messageRouter = messageRouter
         )
     }
 
