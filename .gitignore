@@ -7,3 +7,4 @@ xcuserdata/
 # Swift Package Manager
 .build/
 .swiftpm/
+.claude/worktrees/
