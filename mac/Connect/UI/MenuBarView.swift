@@ -1,17 +1,26 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
     @ObservedObject var pairingViewModel: PairingViewModel
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
     @ObservedObject var screenMirrorController: ScreenMirrorController
+    @ObservedObject var fileTransferManager: FileTransferManager
+    @ObservedObject var mediaControlManager: MediaControlManager
 
     @State private var showingPairingSheet = false
+    @State private var showingDNDSetupSheet = false
     @State private var mirrorWindow: ScreenMirrorWindow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             statusRow
+
+            if let nowPlaying = mediaControlManager.nowPlaying {
+                Divider()
+                NowPlayingView(nowPlaying: nowPlaying, mediaControlManager: mediaControlManager)
+            }
 
             Divider()
 
@@ -21,6 +30,21 @@ struct MenuBarView: View {
             }
 
             mirrorScreenRow
+
+            Button("Do Not Disturb Sync Setup…") {
+                showingDNDSetupSheet = true
+            }
+
+            Divider()
+
+            FileDropZoneView(fileTransferManager: fileTransferManager, isConnected: isConnected)
+
+            if !fileTransferManager.activeTransfers.isEmpty {
+                Divider()
+                ForEach(Array(fileTransferManager.activeTransfers.values), id: \.id) { transfer in
+                    TransferRowView(transfer: transfer)
+                }
+            }
 
             Divider()
 
@@ -59,6 +83,9 @@ struct MenuBarView: View {
         .frame(width: 280)
         .sheet(isPresented: $showingPairingSheet) {
             PairingSheetView(pairingViewModel: pairingViewModel, isPresented: $showingPairingSheet)
+        }
+        .sheet(isPresented: $showingDNDSetupSheet) {
+            DNDSetupView(isPresented: $showingDNDSetupSheet)
         }
     }
 
@@ -142,6 +169,158 @@ struct MenuBarView: View {
         case .connected(let deviceId):
             let name = trustedDevicesStore.device(for: deviceId)?.deviceName ?? deviceId
             return "Connected to \(name)"
+        }
+    }
+
+    private var isConnected: Bool {
+        if case .connected = transportManager.connectionState { return true }
+        return false
+    }
+}
+
+/// Drag-and-drop target for sending a file to the paired device. Unstyled by
+/// design, matching the rest of this milestone's UI — the goal is working
+/// transfer plumbing, not visual polish.
+struct FileDropZoneView: View {
+    @ObservedObject var fileTransferManager: FileTransferManager
+    let isConnected: Bool
+
+    @State private var isTargeted = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                .background(RoundedRectangle(cornerRadius: 8).fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear))
+                .frame(height: 56)
+                .overlay(
+                    Text(isConnected ? "Drop a file here to send" : "Connect a device to send files")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+                )
+                .onDrop(of: [UTType.fileURL], isTargeted: $isTargeted) { providers in
+                    handleDrop(providers)
+                }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard isConnected, let provider = providers.first else { return false }
+        guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { return false }
+
+        _ = provider.loadObject(ofClass: URL.self) { url, error in
+            guard let url else {
+                DispatchQueue.main.async { errorMessage = error?.localizedDescription ?? "Couldn't read dropped file" }
+                return
+            }
+            Task {
+                do {
+                    try await fileTransferManager.sendFile(at: url)
+                    await MainActor.run { errorMessage = nil }
+                } catch {
+                    await MainActor.run { errorMessage = "Send failed: \(error.localizedDescription)" }
+                }
+            }
+        }
+        return true
+    }
+}
+
+/// One row of transfer progress, shown for both outbound and inbound
+/// transfers while they're in flight.
+struct TransferRowView: View {
+    let transfer: FileTransferManager.TransferProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Image(systemName: transfer.direction == .sending ? "arrow.up.circle" : "arrow.down.circle")
+                Text(transfer.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.callout)
+
+            if transfer.sizeBytes > 0 {
+                ProgressView(value: Double(transfer.bytesTransferred), total: Double(transfer.sizeBytes))
+            }
+        }
+    }
+}
+
+/// Now-playing section shown in the menu bar dropdown when the phone has an active
+/// media session: title/artist/artwork plus play/pause/next/previous controls, driven
+/// entirely by `MediaControlManager`'s published state and `media.command` sends.
+/// Unstyled by design, matching the rest of this milestone's minimal UI.
+struct NowPlayingView: View {
+    let nowPlaying: NowPlayingState
+    @ObservedObject var mediaControlManager: MediaControlManager
+
+    var body: some View {
+        HStack(spacing: 10) {
+            artworkView
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(nowPlaying.title.isEmpty ? "Nothing playing" : nowPlaying.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                if !nowPlaying.artist.isEmpty {
+                    Text(nowPlaying.artist)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                Button {
+                    mediaControlManager.previous()
+                } label: {
+                    Image(systemName: "backward.fill")
+                }
+                .buttonStyle(.borderless)
+
+                Button {
+                    nowPlaying.isPlaying ? mediaControlManager.pause() : mediaControlManager.play()
+                } label: {
+                    Image(systemName: nowPlaying.isPlaying ? "pause.fill" : "play.fill")
+                }
+                .buttonStyle(.borderless)
+
+                Button {
+                    mediaControlManager.next()
+                } label: {
+                    Image(systemName: "forward.fill")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var artworkView: some View {
+        if let artworkData = nowPlaying.artworkData, let nsImage = NSImage(data: artworkData) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 36, height: 36)
+                .overlay(Image(systemName: "music.note").foregroundStyle(.secondary))
         }
     }
 }

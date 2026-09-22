@@ -11,9 +11,21 @@ import androidx.core.app.NotificationCompat
 import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.clipboard.ClipboardSyncManager
+import com.connect.features.dnd.DndSyncManager
+import com.connect.features.filetransfer.FileTransferManager
+import com.connect.features.media.MediaControlBridge
 import com.connect.features.screenmirror.ScreenMirrorState
+import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
+import com.connect.transport.TransportManagerHolder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 /**
  * Foreground service that owns the [TransportManager] for the lifetime of the app,
@@ -25,6 +37,11 @@ class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
     val screenMirrorState = ScreenMirrorState()
+    private lateinit var fileTransferManager: FileTransferManager
+    private lateinit var mediaControlBridge: MediaControlBridge
+    private lateinit var clipboardSyncManager: ClipboardSyncManager
+    private lateinit var dndSyncManager: DndSyncManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
         super.onCreate()
@@ -39,22 +56,76 @@ class SyncForegroundService : Service() {
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter
         )
+        fileTransferManager = FileTransferManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            transportManager = transportManager,
+            messageRouter = messageRouter
+        )
+        mediaControlBridge = MediaControlBridge(
+            context = applicationContext,
+            messageRouter = messageRouter,
+            transportManager = transportManager,
+            identityKeyStore = identity,
+            remoteDeviceIdProvider = { transportManager.currentRemoteDeviceId() }
+        )
+        TransportManagerHolder.instance = transportManager
+        clipboardSyncManager = ClipboardSyncManager(
+            context = applicationContext,
+            transportManager = transportManager,
+            messageRouter = messageRouter,
+            deviceId = identity.deviceId,
+            scope = serviceScope
+        )
+        dndSyncManager = DndSyncManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            transportManager = transportManager,
+            messageRouter = messageRouter,
+            scope = serviceScope
+        )
+        dndSyncManager.start()
+
+        // Start/stop clipboard sync in lockstep with the transport connection, same as
+        // the loop-suppression contract in schema/message-types.md requires.
+        transportManager.connectionState
+            .onEach { state ->
+                if (state == ConnectionState.CONNECTED) {
+                    clipboardSyncManager.start()
+                } else {
+                    clipboardSyncManager.stop()
+                }
+            }
+            .launchIn(serviceScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
         transportManager.listen()
+        mediaControlBridge.start()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        fileTransferManager.shutdown()
+        mediaControlBridge.stop()
+        dndSyncManager.stop()
+        clipboardSyncManager.stop()
         transportManager.shutdown()
+        if (TransportManagerHolder.instance === transportManager) {
+            TransportManagerHolder.instance = null
+        }
+        serviceScope.cancel()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun transportManager(): TransportManager = transportManager
+
+    fun fileTransferManager(): FileTransferManager = fileTransferManager
+
+    fun dndSyncManager(): DndSyncManager = dndSyncManager
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService
