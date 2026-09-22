@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.filetransfer.FileTransferManager
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
 
@@ -23,17 +24,25 @@ import com.connect.transport.TransportManager
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    private lateinit var fileTransferManager: FileTransferManager
 
     override fun onCreate() {
         super.onCreate()
         IdentityKeyStore.ensureInitialized(applicationContext)
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
+        val router = MessageRouter()
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = MessageRouter()
+            messageRouter = router
+        )
+        fileTransferManager = FileTransferManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            transportManager = transportManager,
+            messageRouter = router
         )
     }
 
@@ -44,6 +53,7 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        fileTransferManager.shutdown()
         transportManager.shutdown()
         super.onDestroy()
     }
@@ -51,6 +61,8 @@ class SyncForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun transportManager(): TransportManager = transportManager
+
+    fun fileTransferManager(): FileTransferManager = fileTransferManager
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService

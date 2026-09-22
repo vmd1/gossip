@@ -1,9 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
     @ObservedObject var pairingViewModel: PairingViewModel
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
+    @ObservedObject var fileTransferManager: FileTransferManager
 
     @State private var showingPairingSheet = false
 
@@ -16,6 +18,17 @@ struct MenuBarView: View {
             Button("Pair New Device…") {
                 pairingViewModel.startPairing()
                 showingPairingSheet = true
+            }
+
+            Divider()
+
+            FileDropZoneView(fileTransferManager: fileTransferManager, isConnected: isConnected)
+
+            if !fileTransferManager.activeTransfers.isEmpty {
+                Divider()
+                ForEach(Array(fileTransferManager.activeTransfers.values), id: \.id) { transfer in
+                    TransferRowView(transfer: transfer)
+                }
             }
 
             Divider()
@@ -86,6 +99,90 @@ struct MenuBarView: View {
         case .connected(let deviceId):
             let name = trustedDevicesStore.device(for: deviceId)?.deviceName ?? deviceId
             return "Connected to \(name)"
+        }
+    }
+
+    private var isConnected: Bool {
+        if case .connected = transportManager.connectionState { return true }
+        return false
+    }
+}
+
+/// Drag-and-drop target for sending a file to the paired device. Unstyled by
+/// design, matching the rest of this milestone's UI — the goal is working
+/// transfer plumbing, not visual polish.
+struct FileDropZoneView: View {
+    @ObservedObject var fileTransferManager: FileTransferManager
+    let isConnected: Bool
+
+    @State private var isTargeted = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                .background(RoundedRectangle(cornerRadius: 8).fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear))
+                .frame(height: 56)
+                .overlay(
+                    Text(isConnected ? "Drop a file here to send" : "Connect a device to send files")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
+                )
+                .onDrop(of: [UTType.fileURL], isTargeted: $isTargeted) { providers in
+                    handleDrop(providers)
+                }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard isConnected, let provider = providers.first else { return false }
+        guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { return false }
+
+        _ = provider.loadObject(ofClass: URL.self) { url, error in
+            guard let url else {
+                DispatchQueue.main.async { errorMessage = error?.localizedDescription ?? "Couldn't read dropped file" }
+                return
+            }
+            Task {
+                do {
+                    try await fileTransferManager.sendFile(at: url)
+                    await MainActor.run { errorMessage = nil }
+                } catch {
+                    await MainActor.run { errorMessage = "Send failed: \(error.localizedDescription)" }
+                }
+            }
+        }
+        return true
+    }
+}
+
+/// One row of transfer progress, shown for both outbound and inbound
+/// transfers while they're in flight.
+struct TransferRowView: View {
+    let transfer: FileTransferManager.TransferProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Image(systemName: transfer.direction == .sending ? "arrow.up.circle" : "arrow.down.circle")
+                Text(transfer.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.callout)
+
+            if transfer.sizeBytes > 0 {
+                ProgressView(value: Double(transfer.bytesTransferred), total: Double(transfer.sizeBytes))
+            }
         }
     }
 }
