@@ -1,0 +1,63 @@
+package com.connect.protocol
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import java.util.UUID
+
+/**
+ * The wire-protocol envelope shared by every message exchanged between a
+ * Connect device pair, matching the schema unit's contract:
+ *
+ * ```json
+ * {"v":1,"id":"uuid-v4","type":"namespace.action","senderId":"device-uuid",
+ *  "recipientId":"device-uuid-or-null","broadcast":false,
+ *  "ts":1732300000000,"payload":{}}
+ * ```
+ */
+@Serializable
+data class Envelope(
+    val v: Int = 1,
+    val id: String = UUID.randomUUID().toString(),
+    val type: String,
+    val senderId: String,
+    val recipientId: String? = null,
+    val broadcast: Boolean = false,
+    val ts: Long = System.currentTimeMillis(),
+    val payload: JsonObject = JsonObject(emptyMap())
+) {
+    companion object {
+        val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
+
+        fun decode(bytes: ByteArray): Envelope = json.decodeFromString(serializer(), String(bytes, Charsets.UTF_8))
+    }
+
+    fun encode(): ByteArray = json.encodeToString(serializer(), this).toByteArray(Charsets.UTF_8)
+}
+
+/** Well-known `type` namespaces/actions used by this unit. */
+object MessageType {
+    const val HANDSHAKE_HELLO = "handshake.hello"
+    const val HANDSHAKE_ACK = "handshake.ack"
+    const val PRESENCE_ONLINE = "presence.online"
+    const val PRESENCE_OFFLINE = "presence.offline"
+    const val PRESENCE_HEARTBEAT = "presence.heartbeat"
+}
+
+/** Device types advertised in handshake payloads and pairing metadata. */
+enum class DeviceType(val wireValue: String) {
+    MAC("mac"),
+    ANDROID_PHONE("android-phone"),
+    ANDROID_TABLET("android-tablet");
+
+    companion object {
+        fun fromWire(value: String): DeviceType = entries.firstOrNull { it.wireValue == value } ?: ANDROID_PHONE
+    }
+}
+
+fun JsonElement.orEmptyObject(): JsonObject = this as? JsonObject ?: JsonObject(emptyMap())
