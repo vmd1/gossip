@@ -41,6 +41,15 @@ final class TransportManager: ObservableObject {
 
     let router = MessageRouter()
 
+    /// When set, the *next* successfully decrypted post-handshake frame is
+    /// delivered here as raw bytes instead of being parsed as an `Envelope`,
+    /// then the handler is cleared (one-shot). This is the receive side of
+    /// the `file.chunk` convention (see `schema/message-types.md`): a
+    /// feature module arms this right after handling a `file.chunk`
+    /// metadata envelope, since that envelope is always immediately
+    /// followed by exactly one raw binary frame on the wire.
+    var pendingRawFrameHandler: ((Data) -> Void)?
+
     private let discovery = LocalDiscovery()
     private let identity = IdentityKeyStore.shared
     private let trustedDevices: TrustedDevicesStore
@@ -310,9 +319,28 @@ final class TransportManager: ObservableObject {
     private func handleTransportFrame(_ payload: Data, session: NoiseSession) {
         do {
             let plaintext = try session.decrypt(payload)
+
+            // A feature module (e.g. file transfer) may have armed a one-shot
+            // raw-frame handler after seeing a `file.chunk` metadata envelope;
+            // if so, this frame is that raw binary chunk, not an envelope.
+            if let rawHandler = pendingRawFrameHandler {
+                pendingRawFrameHandler = nil
+                rawHandler(plaintext)
+                return
+            }
+
             let envelope = try Envelope.decode(plaintext)
+
+            // Routed synchronously, still on the transport's internal receive
+            // queue (per `MessageRouter`'s contract: handlers hop to the main
+            // thread themselves if they need to). This matters for feature
+            // modules like file transfer that arm `pendingRawFrameHandler`
+            // from a handler — it must take effect before the very next
+            // buffered frame (the raw chunk) is drained, which can happen
+            // synchronously within the same `drainFrames` loop and would
+            // otherwise race a main-queue dispatch.
+            router.route(envelope)
             DispatchQueue.main.async { [weak self] in
-                self?.router.route(envelope)
                 self?.onReceive?(envelope)
             }
         } catch {
@@ -330,6 +358,20 @@ final class TransportManager: ObservableObject {
         }
         let plaintext = try envelope.encoded()
         let ciphertext = try session.encrypt(plaintext)
+        sendFramed(ciphertext, over: connection)
+    }
+
+    /// Encrypts and frames `data` exactly like `send(envelope:)`, except the
+    /// plaintext is raw bytes rather than a JSON envelope. Used for the
+    /// binary half of the `file.chunk` convention (see
+    /// `schema/message-types.md`): callers must send the matching
+    /// `file.chunk` metadata envelope via `send(envelope:)` immediately
+    /// before calling this, and only ever one raw frame per metadata frame.
+    func sendRawFrame(_ data: Data) throws {
+        guard case .connected = connectionState, let session = noiseSession, let connection else {
+            throw SendError.notConnected
+        }
+        let ciphertext = try session.encrypt(data)
         sendFramed(ciphertext, over: connection)
     }
 

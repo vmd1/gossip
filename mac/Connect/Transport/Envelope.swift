@@ -107,4 +107,9 @@ indirect enum JSONValue: Codable, Equatable {
         if case .string(let s) = self { return s }
         return nil
     }
+
+    var numberValue: Double? {
+        if case .number(let n) = self { return n }
+        return nil
+    }
 }
