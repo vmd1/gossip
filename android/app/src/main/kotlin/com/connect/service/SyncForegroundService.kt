@@ -15,6 +15,7 @@ import com.connect.features.clipboard.ClipboardSyncManager
 import com.connect.features.dnd.DndSyncManager
 import com.connect.features.filetransfer.FileTransferManager
 import com.connect.features.media.MediaControlBridge
+import com.connect.features.screenmirror.ScreenMirrorState
 import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.onEach
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    val screenMirrorState = ScreenMirrorState()
     private lateinit var fileTransferManager: FileTransferManager
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
@@ -47,6 +49,7 @@ class SyncForegroundService : Service() {
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
         val messageRouter = MessageRouter()
+        screenMirrorState.register(messageRouter)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
