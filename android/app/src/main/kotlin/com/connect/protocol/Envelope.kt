@@ -47,6 +47,7 @@ object MessageType {
     const val PRESENCE_ONLINE = "presence.online"
     const val PRESENCE_OFFLINE = "presence.offline"
     const val PRESENCE_HEARTBEAT = "presence.heartbeat"
+    const val CLIPBOARD_UPDATE = "clipboard.update"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */
