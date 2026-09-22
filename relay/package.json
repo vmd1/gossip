@@ -1,0 +1,29 @@
+{
+  "name": "connect-relay",
+  "version": "0.1.0",
+  "description": "Minimal WebSocket relay server for Connect (Mac <-> Android bridge over Noise-encrypted opaque frames).",
+  "private": true,
+  "type": "module",
+  "main": "dist/relay.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/relay.ts",
+    "start": "node dist/relay.js",
+    "test": "vitest run",
+    "smoke-test": "tsx scripts/smoke-test.ts"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
