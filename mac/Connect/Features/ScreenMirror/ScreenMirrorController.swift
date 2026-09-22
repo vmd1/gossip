@@ -49,11 +49,15 @@ final class ScreenMirrorController: ObservableObject {
         }
     }
 
-    func start() {
+    /// - Parameter serial: When known (e.g. resolved by `ADBWirelessPairing`
+    ///   or an existing `adb devices -l` check in `MenuBarView`), every `adb`
+    ///   command is targeted at this exact device via `-s <serial>` instead
+    ///   of relying on `adb`'s single-device auto-detection.
+    func start(serial: String? = nil) {
         guard case .idle = state else { return }
         state = .starting
 
-        guard let adb = ADBClient() else {
+        guard let adb = ADBClient(serial: serial) else {
             setState(.failed("adb not found on PATH"))
             return
         }
