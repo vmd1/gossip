@@ -6,6 +6,7 @@ struct MenuBarView: View {
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
 
     @State private var showingPairingSheet = false
+    @State private var showingDNDSetupSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -16,6 +17,10 @@ struct MenuBarView: View {
             Button("Pair New Device…") {
                 pairingViewModel.startPairing()
                 showingPairingSheet = true
+            }
+
+            Button("Do Not Disturb Sync Setup…") {
+                showingDNDSetupSheet = true
             }
 
             Divider()
@@ -55,6 +60,9 @@ struct MenuBarView: View {
         .frame(width: 280)
         .sheet(isPresented: $showingPairingSheet) {
             PairingSheetView(pairingViewModel: pairingViewModel, isPresented: $showingPairingSheet)
+        }
+        .sheet(isPresented: $showingDNDSetupSheet) {
+            DNDSetupView(isPresented: $showingDNDSetupSheet)
         }
     }
 

@@ -11,8 +11,13 @@ import androidx.core.app.NotificationCompat
 import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.dnd.DndSyncManager
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * Foreground service that owns the [TransportManager] for the lifetime of the app,
@@ -23,18 +28,29 @@ import com.connect.transport.TransportManager
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    private lateinit var dndSyncManager: DndSyncManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
         IdentityKeyStore.ensureInitialized(applicationContext)
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
+        val router = MessageRouter()
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = MessageRouter()
+            messageRouter = router
         )
+        dndSyncManager = DndSyncManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            transportManager = transportManager,
+            messageRouter = router,
+            scope = serviceScope
+        )
+        dndSyncManager.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -44,13 +60,17 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        dndSyncManager.stop()
         transportManager.shutdown()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun transportManager(): TransportManager = transportManager
+
+    fun dndSyncManager(): DndSyncManager = dndSyncManager
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService
