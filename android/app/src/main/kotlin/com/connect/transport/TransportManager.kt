@@ -50,9 +50,9 @@ enum class ConnectionState { DISCONNECTED, DISCOVERING, HANDSHAKING, CONNECTED }
  */
 class TransportManager(
     private val context: Context,
-    private val identityKeyStore: IdentityKeyStore,
+    val identityKeyStore: IdentityKeyStore,
     private val trustedDevicesStore: TrustedDevicesStore,
-    private val messageRouter: MessageRouter,
+    val messageRouter: MessageRouter,
     private val deviceName: String = Build.MODEL ?: "Android device"
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
