@@ -32,6 +32,17 @@
 	<array>
 		<string>_connect._tcp</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.connect.app.dnd</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>connect</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

@@ -50,6 +50,9 @@ object MessageType {
     const val NOTIFICATION_POSTED = "notification.posted"
     const val NOTIFICATION_REMOVED = "notification.removed"
     const val NOTIFICATION_REPLY = "notification.reply"
+    const val DND_UPDATE = "dnd.update"
+    const val DND_SET = "dnd.set"
+    const val CLIPBOARD_UPDATE = "clipboard.update"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */
