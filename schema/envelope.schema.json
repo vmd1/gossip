@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vmd1/connect/schema/envelope.schema.json",
+  "title": "Connect Wire Envelope",
+  "description": "The outer envelope wrapping every message exchanged between a Mac and an Android device over the Connect wire protocol. Every message, regardless of feature, is serialized as JSON matching this shape after Noise decryption (see docs/wire-protocol.md). The `type` field selects a registered message type (see schema/message-types.md); `payload` is validated ad hoc per type, not by this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "id", "type", "senderId", "recipientId", "broadcast", "ts", "payload"],
+  "properties": {
+    "v": {
+      "description": "Envelope schema version. Bump only on a breaking change to this envelope shape (not on new message types, which are additive).",
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "description": "Unique identifier for this message instance, used for de-duplication, correlation, and ack/response matching.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "description": "Dotted namespace string identifying the message's purpose, e.g. 'handshake.hello' or 'presence.heartbeat'. Must be a type registered in schema/message-types.md before it ships.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+    },
+    "senderId": {
+      "description": "Stable device UUID of the device that produced this message. Every device has a stable UUID identity established at pairing time (see docs/architecture.md).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "recipientId": {
+      "description": "Stable device UUID of the intended recipient, or null when the message is addressed by the `broadcast` flag instead of a specific device. In v1 there are only ever two trusted devices, but this field exists from day one so multi-device addressing (see docs/adr/0002-device-group-addressing.md) does not require a protocol rewrite later.",
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "broadcast": {
+      "description": "When true, this message is addressed to all trusted devices in the local device group rather than a single recipientId. Unused in v1 (single-recipient only) but reserved for future multi-device fan-out.",
+      "type": "boolean"
+    },
+    "ts": {
+      "description": "Sender-local timestamp the message was created, in Unix epoch milliseconds.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": {
+      "description": "Type-specific message body. Its shape is defined per `type` in schema/message-types.md and is intentionally not validated by this schema.",
+      "type": "object"
+    }
+  }
+}
