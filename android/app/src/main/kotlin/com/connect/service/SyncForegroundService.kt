@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.media.MediaControlBridge
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
 
@@ -23,27 +24,38 @@ import com.connect.transport.TransportManager
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    private lateinit var mediaControlBridge: MediaControlBridge
 
     override fun onCreate() {
         super.onCreate()
         IdentityKeyStore.ensureInitialized(applicationContext)
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
+        val messageRouter = MessageRouter()
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = MessageRouter()
+            messageRouter = messageRouter
+        )
+        mediaControlBridge = MediaControlBridge(
+            context = applicationContext,
+            messageRouter = messageRouter,
+            transportManager = transportManager,
+            identityKeyStore = identity,
+            remoteDeviceIdProvider = { transportManager.currentRemoteDeviceId() }
         )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
         transportManager.listen()
+        mediaControlBridge.start()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        mediaControlBridge.stop()
         transportManager.shutdown()
         super.onDestroy()
     }

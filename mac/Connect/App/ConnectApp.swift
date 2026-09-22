@@ -7,11 +7,13 @@ struct ConnectApp: App {
     @StateObject private var trustedDevicesStore = TrustedDevicesStore.shared
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
+    @StateObject private var mediaControlManager: MediaControlManager
 
     init() {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         _pairingViewModel = StateObject(wrappedValue: PairingViewModel(transportManager: transport))
+        _mediaControlManager = StateObject(wrappedValue: MediaControlManager(transportManager: transport))
     }
 
     var body: some Scene {
@@ -19,7 +21,8 @@ struct ConnectApp: App {
             MenuBarView(
                 transportManager: transportManager,
                 pairingViewModel: pairingViewModel,
-                trustedDevicesStore: trustedDevicesStore
+                trustedDevicesStore: trustedDevicesStore,
+                mediaControlManager: mediaControlManager
             )
             .onAppear {
                 transportManager.start()
