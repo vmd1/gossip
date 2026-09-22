@@ -4,6 +4,7 @@ struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
     @ObservedObject var pairingViewModel: PairingViewModel
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
+    @ObservedObject var mediaControlManager: MediaControlManager
 
     @State private var showingPairingSheet = false
     @State private var showingDNDSetupSheet = false
@@ -11,6 +12,11 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             statusRow
+
+            if let nowPlaying = mediaControlManager.nowPlaying {
+                Divider()
+                NowPlayingView(nowPlaying: nowPlaying, mediaControlManager: mediaControlManager)
+            }
 
             Divider()
 
@@ -94,6 +100,74 @@ struct MenuBarView: View {
         case .connected(let deviceId):
             let name = trustedDevicesStore.device(for: deviceId)?.deviceName ?? deviceId
             return "Connected to \(name)"
+        }
+    }
+}
+
+/// Now-playing section shown in the menu bar dropdown when the phone has an active
+/// media session: title/artist/artwork plus play/pause/next/previous controls, driven
+/// entirely by `MediaControlManager`'s published state and `media.command` sends.
+/// Unstyled by design, matching the rest of this milestone's minimal UI.
+struct NowPlayingView: View {
+    let nowPlaying: NowPlayingState
+    @ObservedObject var mediaControlManager: MediaControlManager
+
+    var body: some View {
+        HStack(spacing: 10) {
+            artworkView
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(nowPlaying.title.isEmpty ? "Nothing playing" : nowPlaying.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                if !nowPlaying.artist.isEmpty {
+                    Text(nowPlaying.artist)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                Button {
+                    mediaControlManager.previous()
+                } label: {
+                    Image(systemName: "backward.fill")
+                }
+                .buttonStyle(.borderless)
+
+                Button {
+                    nowPlaying.isPlaying ? mediaControlManager.pause() : mediaControlManager.play()
+                } label: {
+                    Image(systemName: nowPlaying.isPlaying ? "pause.fill" : "play.fill")
+                }
+                .buttonStyle(.borderless)
+
+                Button {
+                    mediaControlManager.next()
+                } label: {
+                    Image(systemName: "forward.fill")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var artworkView: some View {
+        if let artworkData = nowPlaying.artworkData, let nsImage = NSImage(data: artworkData) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 36, height: 36)
+                .overlay(Image(systemName: "music.note").foregroundStyle(.secondary))
         }
     }
 }

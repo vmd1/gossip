@@ -13,6 +13,7 @@ import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.clipboard.ClipboardSyncManager
 import com.connect.features.dnd.DndSyncManager
+import com.connect.features.media.MediaControlBridge
 import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.onEach
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -48,6 +50,13 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter
+        )
+        mediaControlBridge = MediaControlBridge(
+            context = applicationContext,
+            messageRouter = messageRouter,
+            transportManager = transportManager,
+            identityKeyStore = identity,
+            remoteDeviceIdProvider = { transportManager.currentRemoteDeviceId() }
         )
         TransportManagerHolder.instance = transportManager
         clipboardSyncManager = ClipboardSyncManager(
@@ -82,10 +91,12 @@ class SyncForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification())
         transportManager.listen()
+        mediaControlBridge.start()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        mediaControlBridge.stop()
         dndSyncManager.stop()
         clipboardSyncManager.stop()
         transportManager.shutdown()
