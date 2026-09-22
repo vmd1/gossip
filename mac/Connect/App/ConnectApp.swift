@@ -8,6 +8,7 @@ struct ConnectApp: App {
     @StateObject private var trustedDevicesStore = TrustedDevicesStore.shared
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
+    @StateObject private var mediaControlManager: MediaControlManager
     private let notificationMirrorManager: NotificationMirrorManager
     private let dndSyncManager: DNDSyncManager
     @StateObject private var clipboardSyncManager: ClipboardSyncManager
@@ -16,6 +17,7 @@ struct ConnectApp: App {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         _pairingViewModel = StateObject(wrappedValue: PairingViewModel(transportManager: transport))
+        _mediaControlManager = StateObject(wrappedValue: MediaControlManager(transportManager: transport))
         notificationMirrorManager = NotificationMirrorManager(transportManager: transport)
         UNUserNotificationCenter.current().delegate = notificationMirrorManager
         dndSyncManager = DNDSyncManager(transportManager: transport)
@@ -27,7 +29,8 @@ struct ConnectApp: App {
             MenuBarView(
                 transportManager: transportManager,
                 pairingViewModel: pairingViewModel,
-                trustedDevicesStore: trustedDevicesStore
+                trustedDevicesStore: trustedDevicesStore,
+                mediaControlManager: mediaControlManager
             )
             .onAppear {
                 transportManager.start()
