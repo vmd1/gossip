@@ -8,12 +8,14 @@ struct ConnectApp: App {
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
     private let dndSyncManager: DNDSyncManager
+    @StateObject private var clipboardSyncManager: ClipboardSyncManager
 
     init() {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         _pairingViewModel = StateObject(wrappedValue: PairingViewModel(transportManager: transport))
         dndSyncManager = DNDSyncManager(transportManager: transport)
+        _clipboardSyncManager = StateObject(wrappedValue: ClipboardSyncManager(transportManager: transport))
     }
 
     var body: some Scene {
@@ -29,6 +31,13 @@ struct ConnectApp: App {
                     for url in urls {
                         dndSyncManager.handleIncomingURL(url)
                     }
+                }
+            }
+            .onChange(of: transportManager.connectionState) { _, newState in
+                if case .connected = newState {
+                    clipboardSyncManager.start()
+                } else {
+                    clipboardSyncManager.stop()
                 }
             }
         }

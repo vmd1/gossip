@@ -49,6 +49,7 @@ object MessageType {
     const val PRESENCE_HEARTBEAT = "presence.heartbeat"
     const val DND_UPDATE = "dnd.update"
     const val DND_SET = "dnd.set"
+    const val CLIPBOARD_UPDATE = "clipboard.update"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */
