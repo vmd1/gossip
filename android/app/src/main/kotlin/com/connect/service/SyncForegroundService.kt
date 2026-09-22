@@ -11,8 +11,16 @@ import androidx.core.app.NotificationCompat
 import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.clipboard.ClipboardSyncManager
+import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 
 /**
  * Foreground service that owns the [TransportManager] for the lifetime of the app,
@@ -23,18 +31,40 @@ import com.connect.transport.TransportManager
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
+    private lateinit var clipboardSyncManager: ClipboardSyncManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
         super.onCreate()
         IdentityKeyStore.ensureInitialized(applicationContext)
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
+        val messageRouter = MessageRouter()
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = MessageRouter()
+            messageRouter = messageRouter
         )
+        clipboardSyncManager = ClipboardSyncManager(
+            context = applicationContext,
+            transportManager = transportManager,
+            messageRouter = messageRouter,
+            deviceId = identity.deviceId,
+            scope = serviceScope
+        )
+
+        // Start/stop clipboard sync in lockstep with the transport connection, same as
+        // the loop-suppression contract in schema/message-types.md requires.
+        transportManager.connectionState
+            .onEach { state ->
+                if (state == ConnectionState.CONNECTED) {
+                    clipboardSyncManager.start()
+                } else {
+                    clipboardSyncManager.stop()
+                }
+            }
+            .launchIn(serviceScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -44,7 +74,9 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        clipboardSyncManager.stop()
         transportManager.shutdown()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
