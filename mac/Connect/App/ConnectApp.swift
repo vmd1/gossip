@@ -8,6 +8,7 @@ struct ConnectApp: App {
     @StateObject private var trustedDevicesStore = TrustedDevicesStore.shared
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
+    @StateObject private var screenMirrorController = ScreenMirrorController()
     @StateObject private var fileTransferManager: FileTransferManager
     @StateObject private var mediaControlManager: MediaControlManager
     private let notificationMirrorManager: NotificationMirrorManager
@@ -32,6 +33,7 @@ struct ConnectApp: App {
                 transportManager: transportManager,
                 pairingViewModel: pairingViewModel,
                 trustedDevicesStore: trustedDevicesStore,
+                screenMirrorController: screenMirrorController,
                 fileTransferManager: fileTransferManager,
                 mediaControlManager: mediaControlManager
             )
