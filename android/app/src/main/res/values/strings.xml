@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Connect</string>
+    <string name="sync_notification_channel">Connect Sync</string>
+    <string name="sync_notification_title">Connect is running</string>
+    <string name="sync_notification_text">Watching for your paired Mac</string>
+</resources>
