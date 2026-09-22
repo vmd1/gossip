@@ -16,6 +16,7 @@ import com.connect.features.dnd.DndSyncManager
 import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
+import com.connect.transport.TransportManagerHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,7 @@ class SyncForegroundService : Service() {
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter
         )
+        TransportManagerHolder.instance = transportManager
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
             transportManager = transportManager,
@@ -87,6 +89,9 @@ class SyncForegroundService : Service() {
         dndSyncManager.stop()
         clipboardSyncManager.stop()
         transportManager.shutdown()
+        if (TransportManagerHolder.instance === transportManager) {
+            TransportManagerHolder.instance = null
+        }
         serviceScope.cancel()
         super.onDestroy()
     }
