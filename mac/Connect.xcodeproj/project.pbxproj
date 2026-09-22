@@ -10,6 +10,8 @@
 		05C51B4B145C04605179B295 /* NoiseSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D354274C5CC8DBD217D35D5 /* NoiseSessionTests.swift */; };
 		0669DA7AF025F240466DDEC1 /* QRCodeGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DBF52E1EE1D559096C0A5A6 /* QRCodeGenerator.swift */; };
 		0C7FD68E83645C005D9E7004 /* DNDSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4093CDC914E922389BA863F /* DNDSyncManager.swift */; };
+		17D859B6D13662D1905B772B /* ClipboardSyncManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */; };
+		19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E959965E940BAC0A25F41520 /* ClipboardSyncManager.swift */; };
 		45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22D902BF5E5FB455B8C961A /* Envelope.swift */; };
 		49BFE6F763D27F1888455DBD /* LocalDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA24BBEFDE5080C1825AF716 /* LocalDiscovery.swift */; };
 		541AA90A2F842CF97F315523 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B045AF4E25B84A06C024F5AC /* AppDelegate.swift */; };
@@ -50,6 +52,7 @@
 		6CD0FFF8D292E7F374435FD7 /* TransportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportManager.swift; sourceTree = "<group>"; };
 		6DBF52E1EE1D559096C0A5A6 /* QRCodeGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeGenerator.swift; sourceTree = "<group>"; };
 		845DD794B62D4498D167B007 /* TrustedDevicesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustedDevicesStoreTests.swift; sourceTree = "<group>"; };
+		91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardSyncManagerTests.swift; sourceTree = "<group>"; };
 		ACAD12F736759DC26C7803B4 /* MessageRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRouter.swift; sourceTree = "<group>"; };
 		B045AF4E25B84A06C024F5AC /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		B1BB9D5B177644A469733731 /* DNDSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSyncManagerTests.swift; sourceTree = "<group>"; };
@@ -58,12 +61,14 @@
 		CA24BBEFDE5080C1825AF716 /* LocalDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDiscovery.swift; sourceTree = "<group>"; };
 		D22D902BF5E5FB455B8C961A /* Envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Envelope.swift; sourceTree = "<group>"; };
 		E4093CDC914E922389BA863F /* DNDSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSyncManager.swift; sourceTree = "<group>"; };
+		E959965E940BAC0A25F41520 /* ClipboardSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardSyncManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		13F7FCCC1EB59B64066E04A8 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				A21C629B6596EA3F7C8EEF6C /* Clipboard */,
 				9D46AAFC6A05F75199B47C3D /* DND */,
 			);
 			path = Features;
@@ -90,6 +95,7 @@
 		55471937A1ED8AA324AEBDD7 /* ConnectTests */ = {
 			isa = PBXGroup;
 			children = (
+				91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */,
 				B1BB9D5B177644A469733731 /* DNDSyncManagerTests.swift */,
 				08221D1B5D04DB2E5101DD1B /* EnvelopeTests.swift */,
 				2D354274C5CC8DBD217D35D5 /* NoiseSessionTests.swift */,
@@ -114,6 +120,14 @@
 				E4093CDC914E922389BA863F /* DNDSyncManager.swift */,
 			);
 			path = DND;
+			sourceTree = "<group>";
+		};
+		A21C629B6596EA3F7C8EEF6C /* Clipboard */ = {
+			isa = PBXGroup;
+			children = (
+				E959965E940BAC0A25F41520 /* ClipboardSyncManager.swift */,
+			);
+			path = Clipboard;
 			sourceTree = "<group>";
 		};
 		ADE518051217928D2371E59F /* Products */ = {
@@ -244,6 +258,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				17D859B6D13662D1905B772B /* ClipboardSyncManagerTests.swift in Sources */,
 				5A247E6FEC91E35116CB0D80 /* DNDSyncManagerTests.swift in Sources */,
 				7A1B09577FA0670CA622ABA5 /* EnvelopeTests.swift in Sources */,
 				05C51B4B145C04605179B295 /* NoiseSessionTests.swift in Sources */,
@@ -256,6 +271,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				541AA90A2F842CF97F315523 /* AppDelegate.swift in Sources */,
+				19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */,
 				5AFC1213C710656A12BBE5E3 /* ConnectApp.swift in Sources */,
 				81387C3CB83D22A4DAFCE1E4 /* DNDSetupView.swift in Sources */,
 				0C7FD68E83645C005D9E7004 /* DNDSyncManager.swift in Sources */,
