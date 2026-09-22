@@ -12,6 +12,7 @@ import com.connect.R
 import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.clipboard.ClipboardSyncManager
+import com.connect.features.dnd.DndSyncManager
 import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
@@ -32,6 +33,7 @@ class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
     private lateinit var clipboardSyncManager: ClipboardSyncManager
+    private lateinit var dndSyncManager: DndSyncManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -53,6 +55,14 @@ class SyncForegroundService : Service() {
             deviceId = identity.deviceId,
             scope = serviceScope
         )
+        dndSyncManager = DndSyncManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            transportManager = transportManager,
+            messageRouter = messageRouter,
+            scope = serviceScope
+        )
+        dndSyncManager.start()
 
         // Start/stop clipboard sync in lockstep with the transport connection, same as
         // the loop-suppression contract in schema/message-types.md requires.
@@ -74,6 +84,7 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        dndSyncManager.stop()
         clipboardSyncManager.stop()
         transportManager.shutdown()
         serviceScope.cancel()
@@ -83,6 +94,8 @@ class SyncForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun transportManager(): TransportManager = transportManager
+
+    fun dndSyncManager(): DndSyncManager = dndSyncManager
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService

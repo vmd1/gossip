@@ -10,6 +10,10 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Special-access grant (not a runtime dialog) required to read/set Do Not Disturb
+         state via NotificationManager; see features/dnd/DndSyncManager.kt. Requested by
+         deep-linking to Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <uses-feature
         android:name="android.hardware.camera"
