@@ -76,7 +76,12 @@ final class LocalDiscovery {
         let params = NWParameters.tcp
         params.includePeerToPeer = true
 
-        let browser = NWBrowser(for: .bonjour(type: Self.serviceType, domain: nil), using: params)
+        // `.bonjour(type:domain:)` never populates `result.metadata` (always
+        // `.none`) — TXT records must be explicitly requested via
+        // `.bonjourWithTXTRecord`, without which discovered peers' deviceId/fp
+        // TXT entries never parse and every browse result is silently
+        // discarded. See https://developer.apple.com/forums/thread/656570.
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: Self.serviceType, domain: nil), using: params)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             self?.handleResultsChanged(results)
         }

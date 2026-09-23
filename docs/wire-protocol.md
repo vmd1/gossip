@@ -2,6 +2,12 @@
 
 This document describes the byte-level framing used on the TCP socket between a paired Mac and Android device, once discovery (mDNS/Bonjour) has located a peer. See `docs/architecture.md` for the broader system picture and `docs/adr/0003-noise-ik-handshake.md` for why `Noise_IK` was chosen.
 
+## Port and reaching a peer off-LAN
+
+Both sides listen on a fixed TCP port, `7913` (`TransportManager.DEFAULT_PORT` on Android, `TransportManager.defaultPort` on Mac) — not an ephemeral one. On-LAN pairing/reconnection still goes through mDNS/Bonjour exactly as this doc's title implies (Bonjour resolves the actual advertised port either way), but the fixed port is also what makes a *manual* connection possible when discovery can't reach the peer at all (different networks, e.g. bridged only by a Tailscale tunnel). Android's "Paired Devices" screen lets the user record a fallback address per trusted device (`TrustedDevice.fallbackHost`); while disconnected, `SyncForegroundService` periodically dials that address directly on port 7913, bypassing discovery entirely — see its `runFallbackDialLoop`. This is Android-initiated only: Android is otherwise always the listener (`TransportManager.listen()`) and never dials out except through this fallback path, since normal on-LAN dialing is Mac-initiated (Bonjour browse + `NWConnection`).
+
+If the Mac's fixed port is already in use (e.g. a second local instance during development), it falls back to an ephemeral port for that run — on-LAN discovery still works, but the fallback-address dial path won't reach it until it's next started cleanly.
+
 ## Framing
 
 Every frame on the socket has the same shape:

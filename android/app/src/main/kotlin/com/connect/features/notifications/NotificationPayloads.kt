@@ -52,3 +52,15 @@ data class NotificationReplyPayload(val id: String, val text: String) {
             json.decodeFromJsonElement(serializer(), payload)
     }
 }
+
+/** `notification.dismiss` payload (mac -> android): the user dismissed the mirrored
+ *  notification on the Mac, so the original on Android should be cleared too. */
+@Serializable
+data class NotificationDismissPayload(val id: String) {
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true }
+
+        fun fromPayload(payload: JsonObject): NotificationDismissPayload =
+            json.decodeFromJsonElement(serializer(), payload)
+    }
+}

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
@@ -8,14 +9,18 @@ struct MenuBarView: View {
     @ObservedObject var screenMirrorController: ScreenMirrorController
     @ObservedObject var fileTransferManager: FileTransferManager
     @ObservedObject var mediaControlManager: MediaControlManager
+    @ObservedObject var notificationMirrorManager: NotificationMirrorManager
 
-    @State private var showingPairingSheet = false
-    @State private var showingDNDSetupSheet = false
-    @State private var mirrorWindow: ScreenMirrorWindow?
+    @State private var pairingWindow: PairingWindow?
+    @State private var dndSetupWindow: DNDSetupWindow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             statusRow
+
+            if notificationMirrorManager.authorizationStatus == .denied {
+                notificationsDisabledRow
+            }
 
             if let nowPlaying = mediaControlManager.nowPlaying {
                 Divider()
@@ -26,13 +31,19 @@ struct MenuBarView: View {
 
             Button("Pair New Device…") {
                 pairingViewModel.startPairing()
-                showingPairingSheet = true
+                let window = PairingWindow(pairingViewModel: pairingViewModel)
+                pairingWindow = window
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
             }
 
             mirrorScreenRow
 
             Button("Do Not Disturb Sync Setup…") {
-                showingDNDSetupSheet = true
+                let window = DNDSetupWindow()
+                dndSetupWindow = window
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
             }
 
             Divider()
@@ -81,12 +92,6 @@ struct MenuBarView: View {
         }
         .padding(12)
         .frame(width: 280)
-        .sheet(isPresented: $showingPairingSheet) {
-            PairingSheetView(pairingViewModel: pairingViewModel, isPresented: $showingPairingSheet)
-        }
-        .sheet(isPresented: $showingDNDSetupSheet) {
-            DNDSetupView(isPresented: $showingDNDSetupSheet)
-        }
     }
 
     /// "Mirror Screen" — sends `screen.start` over the transport purely for
@@ -115,20 +120,16 @@ struct MenuBarView: View {
         }
     }
 
+    /// Launches `scrcpy` as a subprocess — it opens and owns its own window,
+    /// Connect doesn't render anything itself. See `ScreenMirrorController`.
     private func startMirroring() {
         sendScreenSignal(type: "screen.start")
-        let window = ScreenMirrorWindow(controller: screenMirrorController)
-        mirrorWindow = window
         screenMirrorController.start()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func stopMirroring() {
         sendScreenSignal(type: "screen.stop")
         screenMirrorController.stop()
-        mirrorWindow?.close()
-        mirrorWindow = nil
     }
 
     private func sendScreenSignal(type: String) {
@@ -139,6 +140,23 @@ struct MenuBarView: View {
             recipientId: deviceId
         )
         try? transportManager.send(envelope: envelope)
+    }
+
+    /// Warns when notification permission is off, since mirrored notifications
+    /// otherwise fail completely silently — `UNUserNotificationCenter.add(_:)` reports
+    /// no error in this case, it just never shows anything. See `NotificationMirrorManager`.
+    @ViewBuilder
+    private var notificationsDisabledRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Notifications are disabled for Connect")
+                .foregroundStyle(.red)
+                .font(.callout)
+            Button("Open Notification Settings…") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -330,7 +348,15 @@ struct NowPlayingView: View {
 /// milestone is about the transport/crypto plumbing, not UI polish.
 struct PairingSheetView: View {
     @ObservedObject var pairingViewModel: PairingViewModel
-    @Binding var isPresented: Bool
+    /// Called when the user dismisses this view (Done/Close). Hosted in a
+    /// plain `NSWindow` (`PairingWindow`) rather than a SwiftUI `.sheet` —
+    /// presenting a `.sheet` from inside a `.menuBarExtraStyle(.window)`
+    /// content view causes the whole menu-bar panel to resign key and
+    /// auto-dismiss itself (and everything presented on top of it) the
+    /// moment any button inside it is pressed, which is why pairing could
+    /// never actually complete: the QR/confirm UI vanished before the user
+    /// could interact with it.
+    var onDismiss: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -363,7 +389,7 @@ struct PairingSheetView: View {
                     .font(.headline)
                 Button("Done") {
                     pairingViewModel.reset()
-                    isPresented = false
+                    onDismiss()
                 }
             case .failed(let reason):
                 Text("Pairing failed")
@@ -372,7 +398,7 @@ struct PairingSheetView: View {
                     .foregroundStyle(.secondary)
                 Button("Close") {
                     pairingViewModel.reset()
-                    isPresented = false
+                    onDismiss()
                 }
             }
         }

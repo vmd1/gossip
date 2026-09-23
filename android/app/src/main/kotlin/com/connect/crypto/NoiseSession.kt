@@ -55,9 +55,21 @@ class NoiseSession(
     private var receiveCipher: CipherState? = null
 
     init {
-        val protocolHash = sha256(PROTOCOL_NAME.toByteArray(Charsets.US_ASCII))
-        h = protocolHash
-        ck = protocolHash
+        // Noise spec ("Protocol names", section 3): if protocol_name is <= HASHLEN
+        // (32 for SHA256) bytes, h is set to protocol_name zero-padded to HASHLEN
+        // bytes -- NOT hashed. Only names longer than HASHLEN get SHA256'd. Our
+        // protocol name is exactly 32 bytes, so this must be used verbatim
+        // (zero-padded, here a no-op since it's already 32 bytes); hashing it
+        // unconditionally (the previous bug here) silently diverged the entire
+        // transcript hash chain from the Mac side, which implements this correctly.
+        val nameBytes = PROTOCOL_NAME.toByteArray(Charsets.US_ASCII)
+        val initialH = if (nameBytes.size <= 32) {
+            nameBytes + ByteArray(32 - nameBytes.size)
+        } else {
+            sha256(nameBytes)
+        }
+        h = initialH
+        ck = initialH
         mixHash(ByteArray(0)) // empty prologue
 
         when (role) {

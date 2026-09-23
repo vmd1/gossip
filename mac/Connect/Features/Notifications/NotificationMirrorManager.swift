@@ -24,12 +24,33 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     private let identity: IdentityKeyStore
     private let notificationCenter = UNUserNotificationCenter.current()
 
+    /// Drives the "notifications disabled" warning in `MenuBarView`. Mirroring degrades
+    /// silently otherwise: `UNUserNotificationCenter.add(_:)` (in `handlePosted`) succeeds
+    /// and calls back with no error even when the user has denied/turned off notification
+    /// permission for this app in System Settings — it just never shows anything. This
+    /// was the actual cause of a "notification mirroring doesn't work" report that had
+    /// nothing wrong with the transport or listener code on either platform.
+    @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
+
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared) {
         self.transportManager = transportManager
         self.identity = identity
         super.init()
         registerCategory()
         registerHandlers()
+        refreshAuthorizationStatus()
+    }
+
+    /// Re-queries the current authorization status. The user can flip this in System
+    /// Settings at any time outside the app, so callers should refresh at moments that
+    /// are actually informative — e.g. `ConnectApp` does this on every transport
+    /// reconnect, since that's when a real mirrored notification is about to matter.
+    func refreshAuthorizationStatus() {
+        notificationCenter.getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async {
+                self?.authorizationStatus = settings.authorizationStatus
+            }
+        }
     }
 
     // MARK: - Setup
@@ -76,6 +97,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
                 } else {
                     NSLog("Connect: notification authorization granted=\(granted)")
                 }
+                self.refreshAuthorizationStatus()
             }
         }
     }
@@ -155,6 +177,25 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Outbound: notification.dismiss
+
+    private func sendDismiss(id: String) {
+        guard let transportManager else { return }
+        do {
+            let payloadData = try JSONEncoder().encode(NotificationDismissPayload(id: id))
+            let payloadJSON = try JSONDecoder().decode(JSONValue.self, from: payloadData)
+            let envelope = Envelope(
+                type: "notification.dismiss",
+                senderId: identity.deviceId,
+                broadcast: true,
+                payload: payloadJSON
+            )
+            try transportManager.send(envelope: envelope)
+        } catch {
+            NSLog("Connect: failed to send notification.dismiss: \(error)")
+        }
+    }
+
     // MARK: - Helpers
 
     func localIdentifier(for androidId: String) -> String {
@@ -184,8 +225,10 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
         completionHandler([.banner, .sound, .list])
     }
 
-    /// Catches the user's inline reply (or a plain notification tap) and, for a reply,
-    /// forwards the typed text back to Android as `notification.reply`.
+    /// Catches the user's inline reply, a plain notification tap, or an explicit dismiss
+    /// (swipe away / click the close button — macOS reports this as
+    /// `UNNotificationDismissActionIdentifier`, same as iOS) and forwards the
+    /// corresponding action back to Android as `notification.reply` / `notification.dismiss`.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -193,12 +236,17 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
     ) {
         defer { completionHandler() }
 
-        guard response.actionIdentifier == Self.replyActionIdentifier,
-              let textResponse = response as? UNTextInputNotificationResponse,
-              let androidId = androidId(fromLocalIdentifier: response.notification.request.identifier)
-        else { return }
+        guard let androidId = androidId(fromLocalIdentifier: response.notification.request.identifier) else { return }
 
-        sendReply(id: androidId, text: textResponse.userText)
+        switch response.actionIdentifier {
+        case Self.replyActionIdentifier:
+            guard let textResponse = response as? UNTextInputNotificationResponse else { return }
+            sendReply(id: androidId, text: textResponse.userText)
+        case UNNotificationDismissActionIdentifier:
+            sendDismiss(id: androidId)
+        default:
+            break
+        }
     }
 }
 
@@ -222,4 +270,8 @@ struct NotificationRemovedPayload: Codable {
 struct NotificationReplyPayload: Codable {
     let id: String
     let text: String
+}
+
+struct NotificationDismissPayload: Codable {
+    let id: String
 }

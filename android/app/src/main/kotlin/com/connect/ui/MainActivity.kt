@@ -50,7 +50,16 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : ComponentActivity() {
 
-    private var boundService: SyncForegroundService? = null
+    /** A plain `var` here would never trigger recomposition when the async service
+     *  bind completes: `connectionStateProvider`/etc. below are plain lambdas whose
+     *  body only re-runs when something they read is observed Compose state, and a
+     *  raw property mutation outside Compose's snapshot system doesn't count. That
+     *  left every screen permanently showing whatever it captured at first
+     *  composition (near-certainly `null`/disconnected, since `bindService` is
+     *  async and its callback fires after `setContent` has already composed once) —
+     *  this is why the UI could show "disconnected" forever even once the real
+     *  transport connected. Compose state fixes it at the source. */
+    private var boundService by androidx.compose.runtime.mutableStateOf<SyncForegroundService?>(null)
     private var serviceConnection: ServiceConnection? = null
 
     /** Uris pulled from a share-sheet `ACTION_SEND`/`ACTION_SEND_MULTIPLE` intent
@@ -107,6 +116,7 @@ class MainActivity : ComponentActivity() {
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                         },
+                        onSendTestNotification = { postTestNotification() },
                         dndSyncManagerProvider = { boundService?.dndSyncManager() },
                         onRequestDndAccess = { dndSyncManager ->
                             startActivity(dndSyncManager.requestPolicyAccessIntent())
@@ -163,6 +173,37 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /** Posts a plain local notification (own dedicated channel — distinct from
+     *  [SyncForegroundService]'s persistent low-priority sync channel) so the
+     *  "Send Test Notification" button has something for
+     *  [com.connect.features.notifications.NotificationListenerImpl] to actually
+     *  pick up and mirror, without needing a real third-party app to trigger one.
+     *  Uses a fixed notification ID so repeated taps replace rather than stack. */
+    private fun postTestNotification() {
+        val channelId = "connect_test"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(android.app.NotificationManager::class.java)
+            val channel = android.app.NotificationChannel(
+                channelId,
+                "Test notifications",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT
+            )
+            manager.createNotificationChannel(channel)
+        }
+        val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Connect test notification")
+            .setContentText("If this shows up on your Mac, mirroring is working.")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(this).notify(TEST_NOTIFICATION_ID, notification)
+    }
+
+    companion object {
+        private const val TEST_NOTIFICATION_ID = 2001
+    }
 }
 
 /** Whether the user has granted this app "Notification access" special access, required
@@ -178,6 +219,7 @@ fun ConnectHomeScreen(
     onPairNewDevice: () -> Unit,
     isNotificationAccessGranted: () -> Boolean = { true },
     onEnableNotificationAccess: () -> Unit = {},
+    onSendTestNotification: () -> Unit = {},
     dndSyncManagerProvider: () -> DndSyncManager? = { null },
     onRequestDndAccess: (DndSyncManager) -> Unit = {}
 ) {
@@ -189,13 +231,19 @@ fun ConnectHomeScreen(
     // The service binds asynchronously and notification policy access can only change by
     // the user leaving for Settings and coming back, so re-check on every recomposition
     // pass through this lifecycle owner's RESUMED state (covers both cases without
-    // needing a dedicated observer).
+    // needing a dedicated observer). Also re-reads the trusted-devices list here: pairing
+    // happens in QRScanActivity (a separate Activity, whose PairingViewModel calls
+    // `trustedDevicesStore.addDevice` directly), and MainActivity's Compose tree survives
+    // across that round-trip without recomposing on its own — `devices` was otherwise a
+    // one-shot snapshot from whenever this screen first composed, so a newly-paired device
+    // never appeared until the app was force-restarted.
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     var dndAccessGranted by remember { mutableStateOf(false) }
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 dndAccessGranted = dndSyncManagerProvider()?.hasNotificationPolicyAccess() ?: false
+                devices = trustedDevicesStore.allDevices()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -230,6 +278,14 @@ fun ConnectHomeScreen(
                 }
             } else {
                 Text("Notification mirroring is enabled.", style = MaterialTheme.typography.bodySmall)
+                Button(onClick = onSendTestNotification) {
+                    Text("Send Test Notification")
+                }
+                Text(
+                    "Posts a local notification — a quick way to confirm the mirroring " +
+                        "pipeline reaches your Mac without waiting for a real app to notify you.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
 
             if (!dndAccessGranted) {
@@ -249,6 +305,10 @@ fun ConnectHomeScreen(
                 devices = devices,
                 onForget = { deviceId ->
                     trustedDevicesStore.revoke(deviceId)
+                    devices = trustedDevicesStore.allDevices()
+                },
+                onSetFallbackHost = { deviceId, fallbackHost ->
+                    trustedDevicesStore.setFallbackHost(deviceId, fallbackHost)
                     devices = trustedDevicesStore.allDevices()
                 }
             )

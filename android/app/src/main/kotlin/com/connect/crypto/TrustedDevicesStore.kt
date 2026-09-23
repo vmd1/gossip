@@ -15,7 +15,12 @@ data class TrustedDevice(
     val publicKey: ByteArray,
     val deviceName: String,
     val deviceType: DeviceType,
-    val addedAt: Long
+    val addedAt: Long,
+    /** User-entered fallback address (e.g. a Tailscale IP) to dial directly when normal
+     *  on-LAN discovery can't reach this peer — see `TransportManager`'s fallback-dial
+     *  loop, driven from `SyncForegroundService`. Manual because there is no discovery
+     *  mechanism that works off-LAN; `null`/blank means "not configured." */
+    val fallbackHost: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -24,7 +29,8 @@ data class TrustedDevice(
             publicKey.contentEquals(other.publicKey) &&
             deviceName == other.deviceName &&
             deviceType == other.deviceType &&
-            addedAt == other.addedAt
+            addedAt == other.addedAt &&
+            fallbackHost == other.fallbackHost
     }
 
     override fun hashCode(): Int = deviceId.hashCode()
@@ -36,7 +42,8 @@ private data class TrustedDeviceRow(
     val publicKeyBase64: String,
     val deviceName: String,
     val deviceType: String,
-    val addedAt: Long
+    val addedAt: Long,
+    val fallbackHost: String? = null
 )
 
 /**
@@ -59,9 +66,18 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             publicKeyBase64 = Base64.getEncoder().encodeToString(device.publicKey),
             deviceName = device.deviceName,
             deviceType = device.deviceType.wireValue,
-            addedAt = device.addedAt
+            addedAt = device.addedAt,
+            fallbackHost = device.fallbackHost
         )
         prefs.edit().putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row)).apply()
+    }
+
+    /** Updates just the fallback address for an already-trusted device (see
+     *  [TrustedDevice.fallbackHost]). No-ops if [deviceId] isn't trusted. */
+    @Synchronized
+    fun setFallbackHost(deviceId: String, fallbackHost: String?) {
+        val existing = getDevice(deviceId) ?: return
+        addDevice(existing.copy(fallbackHost = fallbackHost?.trim()?.takeIf { it.isNotEmpty() }))
     }
 
     @Synchronized
@@ -90,7 +106,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             publicKey = Base64.getDecoder().decode(row.publicKeyBase64),
             deviceName = row.deviceName,
             deviceType = DeviceType.fromWire(row.deviceType),
-            addedAt = row.addedAt
+            addedAt = row.addedAt,
+            fallbackHost = row.fallbackHost
         )
     }
 
