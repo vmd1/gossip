@@ -41,15 +41,6 @@ final class TransportManager: ObservableObject {
 
     let router = MessageRouter()
 
-    /// When set, the *next* successfully decrypted post-handshake frame is
-    /// delivered here as raw bytes instead of being parsed as an `Envelope`,
-    /// then the handler is cleared (one-shot). This is the receive side of
-    /// the `file.chunk` convention (see `schema/message-types.md`): a
-    /// feature module arms this right after handling a `file.chunk`
-    /// metadata envelope, since that envelope is always immediately
-    /// followed by exactly one raw binary frame on the wire.
-    var pendingRawFrameHandler: ((Data) -> Void)?
-
     private let discovery = LocalDiscovery()
     private let identity = IdentityKeyStore.shared
     private let trustedDevices: TrustedDevicesStore
@@ -160,6 +151,21 @@ final class TransportManager: ObservableObject {
     /// must be known ahead of time: either from `TrustedDevicesStore` (a
     /// reconnect) or from a freshly-scanned pairing QR code (first connect).
     func connect(to peer: DiscoveredPeer, remoteStaticKey: Curve25519.KeyAgreement.PublicKey) {
+        dial(endpoint: peer.endpoint, remoteStaticKey: remoteStaticKey)
+    }
+
+    /// Dials a manually-configured fallback address (e.g. a Tailscale IP) directly,
+    /// bypassing Bonjour discovery entirely — the Mac-side counterpart to Android's
+    /// `SyncForegroundService.runFallbackDialLoop`. Both sides normally rely on
+    /// LAN-only discovery (Mac browses, Android just listens); this is what makes
+    /// reconnecting possible at all once the two devices aren't on the same LAN/mDNS
+    /// domain. See `TrustedDevice.fallbackHost` and `docs/wire-protocol.md`.
+    func connect(toFallbackHost host: String, remoteStaticKey: Curve25519.KeyAgreement.PublicKey) {
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: Self.defaultPort)
+        dial(endpoint: endpoint, remoteStaticKey: remoteStaticKey)
+    }
+
+    private func dial(endpoint: NWEndpoint, remoteStaticKey: Curve25519.KeyAgreement.PublicKey) {
         teardownConnection()
         setState(.handshaking)
 
@@ -171,7 +177,7 @@ final class TransportManager: ObservableObject {
         )
         noiseSession = session
 
-        let nwConnection = NWConnection(to: peer.endpoint, using: .tcp)
+        let nwConnection = NWConnection(to: endpoint, using: .tcp)
         connection = nwConnection
         nwConnection.stateUpdateHandler = { [weak self] state in
             self?.handleConnectionState(state, connection: nwConnection)
@@ -434,26 +440,11 @@ final class TransportManager: ObservableObject {
         lastReceivedAt = Date()
         do {
             let plaintext = try session.decrypt(payload)
-
-            // A feature module (e.g. file transfer) may have armed a one-shot
-            // raw-frame handler after seeing a `file.chunk` metadata envelope;
-            // if so, this frame is that raw binary chunk, not an envelope.
-            if let rawHandler = pendingRawFrameHandler {
-                pendingRawFrameHandler = nil
-                rawHandler(plaintext)
-                return
-            }
-
             let envelope = try Envelope.decode(plaintext)
 
             // Routed synchronously, still on the transport's internal receive
             // queue (per `MessageRouter`'s contract: handlers hop to the main
-            // thread themselves if they need to). This matters for feature
-            // modules like file transfer that arm `pendingRawFrameHandler`
-            // from a handler — it must take effect before the very next
-            // buffered frame (the raw chunk) is drained, which can happen
-            // synchronously within the same `drainFrames` loop and would
-            // otherwise race a main-queue dispatch.
+            // thread themselves if they need to).
             router.route(envelope)
             DispatchQueue.main.async { [weak self] in
                 self?.onReceive?(envelope)
@@ -470,8 +461,8 @@ final class TransportManager: ObservableObject {
     /// Serializes every `session.encrypt(...)` + `sendFramed(...)` pair.
     /// `NoiseCipherState`'s nonce counter is mutable, unsynchronized state —
     /// `ClipboardSyncManager`'s poll timer, `NotificationMirrorManager`,
-    /// `MediaControlManager`, `DNDSyncManager`, and `FileTransferManager` can
-    /// all call `send`/`sendRawFrame` concurrently from different threads.
+    /// `MediaControlManager`, and `DNDSyncManager` can all call `send`/`sendRawFrame`
+    /// concurrently from different threads.
     /// Without serialization, two concurrent encrypts can race on the same
     /// nonce (or a `sendFramed` write can land on the wire out of order
     /// relative to the nonce it was encrypted with) — the receiver's AEAD
@@ -502,22 +493,6 @@ final class TransportManager: ObservableObject {
             }
             let plaintext = try envelope.encoded()
             let ciphertext = try session.encrypt(plaintext)
-            sendFramed(ciphertext, over: connection)
-        }
-    }
-
-    /// Encrypts and frames `data` exactly like `send(envelope:)`, except the
-    /// plaintext is raw bytes rather than a JSON envelope. Used for the
-    /// binary half of the `file.chunk` convention (see
-    /// `schema/message-types.md`): callers must send the matching
-    /// `file.chunk` metadata envelope via `send(envelope:)` immediately
-    /// before calling this, and only ever one raw frame per metadata frame.
-    func sendRawFrame(_ data: Data) throws {
-        try sendQueue.sync {
-            guard let session = noiseSession, let connection else {
-                throw SendError.notConnected
-            }
-            let ciphertext = try session.encrypt(data)
             sendFramed(ciphertext, over: connection)
         }
     }

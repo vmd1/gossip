@@ -15,7 +15,6 @@ final class ScreenMirrorController: ObservableObject {
         case idle
         case starting
         case mirroring
-        case failed(String)
     }
 
     @Published private(set) var state: State = .idle
@@ -27,20 +26,12 @@ final class ScreenMirrorController: ObservableObject {
     ///   command is targeted at this exact device via `-s <serial>` instead
     ///   of relying on `adb`'s single-device auto-detection.
     func start(serial: String? = nil) {
-        // Retry after a failure must actually restart, not silently no-op — `.failed` is a
-        // terminal state the user explicitly asked to leave via the Retry button, same as
-        // `.idle`. Only genuinely in-flight states (`.starting`, `.mirroring`) should block
-        // a fresh start.
-        switch state {
-        case .idle, .failed:
-            break
-        case .starting, .mirroring:
-            return
-        }
+        guard case .idle = state else { return }
         state = .starting
 
         guard let scrcpyPath = Self.resolveScrcpyPath() else {
-            state = .failed("scrcpy not found — install it with `brew install scrcpy`.")
+            NSLog("Connect: scrcpy not found")
+            state = .idle
             return
         }
 
@@ -92,18 +83,16 @@ final class ScreenMirrorController: ObservableObject {
             DispatchQueue.main.async {
                 guard let self, self.process === terminatedProcess else { return }
                 self.process = nil
-                if terminatedProcess.terminationStatus != 0, case .mirroring = self.state {
-                    // Exited unexpectedly (e.g. device unplugged) rather than via
-                    // an explicit Stop Mirroring click, which sets state to .idle
-                    // itself before terminating the process.
+                // Whatever the reason — the user closed scrcpy's own window, the device
+                // disconnected, a launch failure — the button should just go back to
+                // "Mirror Screen…" without surfacing an error; the detail is still logged
+                // for anyone debugging via Console, just not put in front of the user.
+                if terminatedProcess.terminationStatus != 0 {
                     let message = String(data: stderrData, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.state = .failed(message?.isEmpty == false ? message! : "scrcpy exited unexpectedly")
-                } else if terminatedProcess.terminationStatus != 0, case .starting = self.state {
-                    let message = String(data: stderrData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.state = .failed(message?.isEmpty == false ? message! : "scrcpy failed to start")
+                    NSLog("Connect: scrcpy exited with status \(terminatedProcess.terminationStatus): \(message ?? "")")
                 }
+                self.state = .idle
             }
         }
 
@@ -120,7 +109,8 @@ final class ScreenMirrorController: ObservableObject {
                 }
             }
         } catch {
-            state = .failed(error.localizedDescription)
+            NSLog("Connect: failed to launch scrcpy: \(error)")
+            state = .idle
         }
     }
 

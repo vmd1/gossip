@@ -1,6 +1,7 @@
 import SwiftUI
 import UserNotifications
 import Combine
+import CryptoKit
 
 @main
 struct ConnectApp: App {
@@ -10,7 +11,6 @@ struct ConnectApp: App {
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
     @StateObject private var screenMirrorController = ScreenMirrorController()
-    @StateObject private var fileTransferManager: FileTransferManager
     @StateObject private var mediaControlManager: MediaControlManager
     @StateObject private var notificationMirrorManager: NotificationMirrorManager
     private let dndSyncManager: DNDSyncManager
@@ -24,12 +24,12 @@ struct ConnectApp: App {
     private final class SubscriptionBox { var cancellable: AnyCancellable? }
     private let subscriptions = SubscriptionBox()
     private let dndResyncSubscriptions = SubscriptionBox()
+    private let fallbackDialSubscriptions = SubscriptionBox()
 
     init() {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         _pairingViewModel = StateObject(wrappedValue: PairingViewModel(transportManager: transport))
-        _fileTransferManager = StateObject(wrappedValue: FileTransferManager(transportManager: transport))
         _mediaControlManager = StateObject(wrappedValue: MediaControlManager(transportManager: transport))
         let notificationMirror = NotificationMirrorManager(transportManager: transport)
         _notificationMirrorManager = StateObject(wrappedValue: notificationMirror)
@@ -92,6 +92,32 @@ struct ConnectApp: App {
                     dndSyncManager.reportInitialSyncState()
                 }
             }
+
+        // Mac normally only ever *discovers* peers (Bonjour browse) — it has no equivalent
+        // to Android's fallback dial loop, so a Mac that isn't on the paired phone's LAN/mDNS
+        // domain (e.g. bridged only by a Tailscale tunnel) has no path back to CONNECTED at
+        // all. Mirrors Android's `SyncForegroundService.runFallbackDialLoop`: while not
+        // connected/handshaking, and only if the user configured a fallback address for a
+        // trusted device (Trusted Devices list in the menu), periodically dial it directly on
+        // the fixed port, bypassing discovery. See `TrustedDevice.fallbackHost` and
+        // `docs/wire-protocol.md`.
+        let trustedDevices = trustedDevicesStore
+        fallbackDialSubscriptions.cancellable = Timer.publish(every: 15, on: .main, in: .common)
+            .autoconnect()
+            .sink { [transport, trustedDevices] _ in
+                switch transport.connectionState {
+                case .connected, .handshaking:
+                    return
+                case .disconnected, .discovering:
+                    break
+                }
+                guard let target = trustedDevices.allDevices().first(where: { ($0.fallbackHost?.isEmpty == false) }),
+                      let host = target.fallbackHost,
+                      let keyData = Data(base64Encoded: target.publicKeyBase64),
+                      let staticKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: keyData)
+                else { return }
+                transport.connect(toFallbackHost: host, remoteStaticKey: staticKey)
+            }
     }
 
     var body: some Scene {
@@ -101,7 +127,6 @@ struct ConnectApp: App {
                 pairingViewModel: pairingViewModel,
                 trustedDevicesStore: trustedDevicesStore,
                 screenMirrorController: screenMirrorController,
-                fileTransferManager: fileTransferManager,
                 mediaControlManager: mediaControlManager,
                 notificationMirrorManager: notificationMirrorManager
             )
