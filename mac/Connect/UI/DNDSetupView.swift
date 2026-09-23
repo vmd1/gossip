@@ -6,7 +6,10 @@ import SwiftUI
 /// so none of this can be auto-provisioned — see `DNDSyncManager` for how each of these
 /// is consumed.
 struct DNDSetupView: View {
-    @Binding var isPresented: Bool
+    /// Hosted in a plain `NSWindow` (`DNDSetupWindow`), not a `.sheet` — see
+    /// the comment on `PairingSheetView.onDismiss` for why `.sheet` doesn't
+    /// work inside a `.menuBarExtraStyle(.window)` content view.
+    var onDismiss: () -> Void
 
     var body: some View {
         ScrollView {
@@ -84,7 +87,7 @@ struct DNDSetupView: View {
                 HStack {
                     Spacer()
                     Button("Done") {
-                        isPresented = false
+                        onDismiss()
                     }
                     .keyboardShortcut(.defaultAction)
                 }

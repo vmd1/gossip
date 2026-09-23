@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -90,13 +92,21 @@ class TransportManager(
     }
 
     /** Listens for incoming connections (e.g. a previously-paired Mac reconnecting) and
-     *  advertises this device over NSD so a Mac running discovery can find it. */
+     *  advertises this device over NSD so a Mac running discovery can find it.
+     *
+     *  Binding is retried rather than thrown synchronously: this is called unconditionally
+     *  from `SyncForegroundService.onStartCommand`, and a just-killed previous instance of
+     *  this same service (e.g. `am force-stop` racing the system's own `START_STICKY`
+     *  restart, observed directly in testing) can leave the port transiently unavailable
+     *  for a moment even though nothing is genuinely still using it — an uncaught
+     *  `BindException` there previously crashed the whole app on a race that clears
+     *  itself within milliseconds. */
     fun listen(port: Int = DEFAULT_PORT) {
         stopListening()
-        val server = ServerSocket(port)
-        serverSocket = server
-        discovery.startAdvertising(deviceName, server.localPort)
         scope.launch {
+            val server = bindServerSocket(port) ?: return@launch
+            serverSocket = server
+            discovery.startAdvertising(deviceName, server.localPort)
             while (!server.isClosed) {
                 val client = try {
                     server.accept()
@@ -106,6 +116,19 @@ class TransportManager(
                 launchConnectionLoop(client, role = NoiseRole.RESPONDER, remoteStaticPublicKey = null)
             }
         }
+    }
+
+    private suspend fun bindServerSocket(port: Int): ServerSocket? {
+        repeat(LISTEN_BIND_ATTEMPTS) { attempt ->
+            try {
+                return ServerSocket(port)
+            } catch (e: IOException) {
+                Log.w(TAG, "Failed to bind listen port $port (attempt ${attempt + 1}/$LISTEN_BIND_ATTEMPTS)", e)
+                delay(LISTEN_BIND_RETRY_DELAY_MS)
+            }
+        }
+        Log.e(TAG, "Giving up binding listen port $port after $LISTEN_BIND_ATTEMPTS attempts")
+        return null
     }
 
     fun stopListening() {
@@ -133,12 +156,31 @@ class TransportManager(
         }
     }
 
-    /** Encrypts and frames [envelope], sending it over the active connection. */
-    suspend fun send(envelope: Envelope) {
-        val session = noiseSession ?: throw IllegalStateException("Not connected")
-        val out = output ?: throw IllegalStateException("Not connected")
-        val ciphertext = session.encryptTransportMessage(envelope.encode())
+    /** Encrypts and frames [envelope], sending it over the active connection.
+     *
+     *  Encryption *and* the write must both happen inside [writeMutex]: `CipherState`'s
+     *  nonce counter is a plain, unsynchronized `var`. `ClipboardSyncManager`,
+     *  `NotificationListenerImpl`, `MediaControlBridge`, `DndSyncManager`, and
+     *  `FileTransferManager` can all call `send`/`sendRawFrame` concurrently from
+     *  different coroutines — encrypting outside the lock (the bug this replaces) let
+     *  two calls race on the same nonce, or let a write land on the wire out of order
+     *  relative to the nonce it was encrypted with. The receiver's AEAD nonce only
+     *  advances on a *successful* decrypt, so one corrupted frame permanently desyncs
+     *  the cipher and every message after it fails to decrypt for the rest of the
+     *  connection (mirrors the equivalent bug just fixed on the Mac side).
+     *
+     *  Also always hops onto [Dispatchers.IO] itself, rather than trusting the caller's
+     *  scope: the actual socket write is blocking, and several callers (`DndSyncManager`,
+     *  `ClipboardSyncManager`) are constructed with `SyncForegroundService`'s
+     *  `Dispatchers.Main` scope, which throws `NetworkOnMainThreadException` here
+     *  otherwise. `NotificationListenerImpl`/`FileTransferManager` happen to use their
+     *  own IO-dispatched scopes today, but nothing should have to know that to call this
+     *  safely. */
+    suspend fun send(envelope: Envelope) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
+            val session = noiseSession ?: throw IllegalStateException("Not connected")
+            val out = output ?: throw IllegalStateException("Not connected")
+            val ciphertext = session.encryptTransportMessage(envelope.encode())
             writeFrame(out, ciphertext)
         }
     }
@@ -147,12 +189,14 @@ class TransportManager(
      *  bytes rather than a JSON envelope. Used for the binary half of the `file.chunk`
      *  convention (see `schema/message-types.md`): callers must send the matching
      *  `file.chunk` metadata envelope via [send] immediately before calling this, and
-     *  only ever one raw frame per metadata frame. */
-    suspend fun sendRawFrame(data: ByteArray) {
-        val session = noiseSession ?: throw IllegalStateException("Not connected")
-        val out = output ?: throw IllegalStateException("Not connected")
-        val ciphertext = session.encryptTransportMessage(data)
+     *  only ever one raw frame per metadata frame. See [send]'s doc for why encryption
+     *  must happen inside [writeMutex], not just the write. Also hops onto
+     *  [Dispatchers.IO] itself — see [send]'s doc for why. */
+    suspend fun sendRawFrame(data: ByteArray) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
+            val session = noiseSession ?: throw IllegalStateException("Not connected")
+            val out = output ?: throw IllegalStateException("Not connected")
+            val ciphertext = session.encryptTransportMessage(data)
             writeFrame(out, ciphertext)
         }
     }
@@ -288,6 +332,8 @@ class TransportManager(
     companion object {
         const val DEFAULT_PORT = 7913
         private const val MAX_FRAME_BYTES = 16 * 1024 * 1024
+        private const val LISTEN_BIND_ATTEMPTS = 5
+        private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
 
         private fun writeFrame(out: DataOutputStream, payload: ByteArray) {
             out.writeInt(payload.size)

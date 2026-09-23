@@ -4,11 +4,15 @@ import com.connect.protocol.Envelope
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
-/** Payload for `dnd.update`: reports that the sender's own DND state changed. */
+/** Payload for `dnd.update`: reports that the sender's own DND state changed.
+ *  `isInitialSync` marks a once-per-connection report of the sender's real current state
+ *  (see `DndSyncManager.reportInitialSyncState`), which the receiver OR-merges against its
+ *  own real state rather than blindly mirroring — see `DndSyncManager.handleInitialSync`. */
 @Serializable
 data class DndUpdatePayload(
     val sourceDeviceId: String,
-    val enabled: Boolean
+    val enabled: Boolean,
+    val isInitialSync: Boolean = false
 ) {
     fun toJsonObject(): JsonObject = Envelope.json.encodeToJsonElement(serializer(), this) as JsonObject
 

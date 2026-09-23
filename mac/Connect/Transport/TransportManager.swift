@@ -68,11 +68,29 @@ final class TransportManager: ObservableObject {
         self.trustedDevices = trustedDevices
     }
 
+    /// Matches Android's `TransportManager.DEFAULT_PORT`. Used (rather than an ephemeral
+    /// Bonjour-assigned port) so Android's manual fallback-address dial — for reaching a
+    /// paired Mac that isn't visible over local mDNS, e.g. over a Tailscale IP — has a
+    /// fixed, known port to connect to. On-LAN discovery still works exactly as before;
+    /// Bonjour resolves the actual port from the advertisement either way.
+    static let defaultPort: NWEndpoint.Port = 7913
+
     // MARK: - Lifecycle
+
+    /// True once `start()` has set up advertising/browsing, so repeated calls
+    /// (the menu bar dropdown's `.onAppear` fires on every open, and
+    /// `PairingViewModel` also calls this when pairing begins) are no-ops
+    /// instead of each spinning up a brand-new `NWListener` on a fresh
+    /// ephemeral port — which left the previous listener's port stale
+    /// everywhere it had already been advertised/discovered.
+    private var hasStarted = false
 
     /// Starts advertising this Mac on the local network and browsing for
     /// peers. Automatically dials any discovered peer that is already trusted.
+    /// Safe to call repeatedly — only the first call has any effect.
     func start(deviceName: String = Host.current().localizedName ?? "Mac") {
+        guard !hasStarted else { return }
+        hasStarted = true
         setState(.discovering)
 
         discovery.onIncomingConnection = { [weak self] connection in
@@ -86,15 +104,30 @@ final class TransportManager: ObservableObject {
             try discovery.startAdvertising(
                 deviceId: identity.deviceId,
                 deviceName: deviceName,
-                publicKeyFingerprint: identity.publicKeyFingerprint
+                publicKeyFingerprint: identity.publicKeyFingerprint,
+                port: Self.defaultPort
             )
         } catch {
-            NSLog("Connect: failed to start advertising: \(error)")
+            // Most likely cause: another local process already holds the fixed port
+            // (e.g. a second Connect instance during development). Fall back to an
+            // ephemeral port so on-LAN pairing/discovery still works — only the
+            // fallback-address dial path from Android needs the fixed port.
+            NSLog("Connect: failed to advertise on fixed port \(Self.defaultPort), falling back to an ephemeral port: \(error)")
+            do {
+                try discovery.startAdvertising(
+                    deviceId: identity.deviceId,
+                    deviceName: deviceName,
+                    publicKeyFingerprint: identity.publicKeyFingerprint
+                )
+            } catch {
+                NSLog("Connect: failed to start advertising: \(error)")
+            }
         }
         discovery.startBrowsing()
     }
 
     func stop() {
+        hasStarted = false
         discovery.stopAdvertising()
         discovery.stopBrowsing()
         teardownConnection()
@@ -151,12 +184,28 @@ final class TransportManager: ObservableObject {
         }
     }
 
+    /// Handshake messages travel as plaintext JSON `Envelope`s — `type: "handshake.hello"` /
+    /// `"handshake.ack"` — with the raw Noise message bytes carried base64-encoded in a
+    /// `noise` payload field, and device identity (`deviceName`/`deviceType`) alongside it
+    /// in the envelope, per `schema/message-types.md`. The underlying Noise message itself
+    /// always carries an *empty* handshake payload (device info rides in the envelope, not
+    /// inside the encrypted Noise payload) — this must match the Android side exactly, since
+    /// both are independently-implemented Noise state machines that only agree on wire bytes,
+    /// not on Swift/Kotlin types.
     private func sendHandshakeMessage1(over connection: NWConnection) {
         guard let session = noiseSession else { return }
-        let hello = HandshakeHelloPayload(deviceId: identity.deviceId, deviceName: currentDeviceName(), deviceType: .mac)
-        guard let payloadData = try? JSONEncoder().encode(hello) else { return }
-        guard let message = try? session.createMessage1(payload: payloadData) else { return }
-        sendFramed(message, over: connection)
+        guard let message = try? session.createMessage1(payload: Data()) else { return }
+        let envelope = Envelope(
+            type: "handshake.hello",
+            senderId: identity.deviceId,
+            payload: .object([
+                "noise": .string(message.base64EncodedString()),
+                "deviceName": .string(currentDeviceName()),
+                "deviceType": .string(DeviceType.mac.rawValue)
+            ])
+        )
+        guard let framed = try? envelope.encoded() else { return }
+        sendFramed(framed, over: connection)
     }
 
     // MARK: - Inbound connection (responder role)
@@ -255,14 +304,34 @@ final class TransportManager: ObservableObject {
 
     private func handleMessage1(_ payload: Data, session: NoiseSession, connection: NWConnection) {
         do {
-            let helloData = try session.consumeMessage1(payload)
-            let hello = try JSONDecoder().decode(HandshakeHelloPayload.self, from: helloData)
-            pendingPeer = HandshakePeerInfo(deviceId: hello.deviceId, deviceName: hello.deviceName, deviceType: hello.deviceType)
+            let helloEnvelope = try Envelope.decode(payload)
+            guard helloEnvelope.type == "handshake.hello" else {
+                throw NoiseError.invalidMessage
+            }
+            guard let noiseBase64 = helloEnvelope.payload["noise"]?.stringValue,
+                  let noiseBytes = Data(base64Encoded: noiseBase64) else {
+                throw NoiseError.invalidMessage
+            }
+            _ = try session.consumeMessage1(noiseBytes)
 
-            let ack = HandshakeAckPayload(deviceId: identity.deviceId, deviceName: currentDeviceName(), deviceType: .mac)
-            let ackData = try JSONEncoder().encode(ack)
-            let message2 = try session.createMessage2(payload: ackData)
-            sendFramed(message2, over: connection)
+            let deviceName = helloEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
+            let deviceTypeRaw = helloEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
+            let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
+            pendingPeer = HandshakePeerInfo(deviceId: helloEnvelope.senderId, deviceName: deviceName, deviceType: deviceType)
+
+            let message2 = try session.createMessage2(payload: Data())
+            let ackEnvelope = Envelope(
+                type: "handshake.ack",
+                senderId: identity.deviceId,
+                recipientId: helloEnvelope.senderId,
+                payload: .object([
+                    "noise": .string(message2.base64EncodedString()),
+                    "deviceName": .string(currentDeviceName()),
+                    "deviceType": .string(DeviceType.mac.rawValue)
+                ])
+            )
+            let framed = try ackEnvelope.encoded()
+            sendFramed(framed, over: connection)
 
             finalizeHandshake(session: session)
         } catch {
@@ -274,9 +343,20 @@ final class TransportManager: ObservableObject {
 
     private func handleMessage2(_ payload: Data, session: NoiseSession, connection: NWConnection) {
         do {
-            let ackData = try session.consumeMessage2(payload)
-            let ack = try JSONDecoder().decode(HandshakeAckPayload.self, from: ackData)
-            pendingPeer = HandshakePeerInfo(deviceId: ack.deviceId, deviceName: ack.deviceName, deviceType: ack.deviceType)
+            let ackEnvelope = try Envelope.decode(payload)
+            guard ackEnvelope.type == "handshake.ack" else {
+                throw NoiseError.invalidMessage
+            }
+            guard let noiseBase64 = ackEnvelope.payload["noise"]?.stringValue,
+                  let noiseBytes = Data(base64Encoded: noiseBase64) else {
+                throw NoiseError.invalidMessage
+            }
+            _ = try session.consumeMessage2(noiseBytes)
+
+            let deviceName = ackEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
+            let deviceTypeRaw = ackEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
+            let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
+            pendingPeer = HandshakePeerInfo(deviceId: ackEnvelope.senderId, deviceName: deviceName, deviceType: deviceType)
             finalizeHandshake(session: session)
         } catch {
             NSLog("Connect: handshake message 2 failed: \(error)")
@@ -303,6 +383,12 @@ final class TransportManager: ObservableObject {
                         deviceType: peer.deviceType
                     )
                     self.setState(.connected(deviceId: peer.deviceId))
+                    // Freshly-confirmed pairing reaches the same "connected" outcome
+                    // as reconnecting to an already-trusted device — fire the same
+                    // callback so PairingViewModel's state machine actually advances
+                    // to `.paired` instead of being stuck at `.confirmingTrust`
+                    // forever once the user taps Confirm.
+                    self.onTrustedConnected?(peer)
                     self.sendPresence(online: true)
                 } else {
                     self.teardownConnection()
@@ -352,13 +438,43 @@ final class TransportManager: ObservableObject {
 
     enum SendError: Error { case notConnected }
 
+    /// Serializes every `session.encrypt(...)` + `sendFramed(...)` pair.
+    /// `NoiseCipherState`'s nonce counter is mutable, unsynchronized state —
+    /// `ClipboardSyncManager`'s poll timer, `NotificationMirrorManager`,
+    /// `MediaControlManager`, `DNDSyncManager`, and `FileTransferManager` can
+    /// all call `send`/`sendRawFrame` concurrently from different threads.
+    /// Without serialization, two concurrent encrypts can race on the same
+    /// nonce (or a `sendFramed` write can land on the wire out of order
+    /// relative to the nonce it was encrypted with) — the receiver's AEAD
+    /// nonce only advances on a *successful* decrypt, so one corrupted frame
+    /// permanently desyncs the cipher and every message after it fails to
+    /// decrypt for the rest of the connection. This must be a queue distinct
+    /// from `queue` (the connection's own receive-callback queue): handshake
+    /// completion (`finalizeHandshake` -> `sendPresence` -> `send`) runs
+    /// synchronously from a `queue`-context receive callback, so serializing
+    /// through `queue` itself here would deadlock.
+    private let sendQueue = DispatchQueue(label: "com.connect.app.transportmanager.send")
+
+    /// Neither this nor `sendRawFrame` gate on `connectionState` — only on `noiseSession`/
+    /// `connection` directly, which are the actual prerequisites for sending. `connectionState`
+    /// is `@Published`, and Combine's documented (if easy to forget) behavior is that a
+    /// `@Published` property's publisher fires *before* the underlying storage is actually
+    /// updated — a subscriber reading `self.connectionState` synchronously from inside its own
+    /// `.sink` (as `ConnectApp` does, to drive `DNDSyncManager.reportInitialSyncState()` on
+    /// every fresh connect) can therefore see the *previous* value even though the value it
+    /// was just handed says `.connected`. That raced this exact call, throwing `notConnected`
+    /// on literally the first send after every connection. `noiseSession`/`connection` are
+    /// plain stored properties set synchronously in the handshake-completion path itself, with
+    /// no such lag, and are the real truth of "is there something to send on."
     func send(envelope: Envelope) throws {
-        guard case .connected = connectionState, let session = noiseSession, let connection else {
-            throw SendError.notConnected
+        try sendQueue.sync {
+            guard let session = noiseSession, let connection else {
+                throw SendError.notConnected
+            }
+            let plaintext = try envelope.encoded()
+            let ciphertext = try session.encrypt(plaintext)
+            sendFramed(ciphertext, over: connection)
         }
-        let plaintext = try envelope.encoded()
-        let ciphertext = try session.encrypt(plaintext)
-        sendFramed(ciphertext, over: connection)
     }
 
     /// Encrypts and frames `data` exactly like `send(envelope:)`, except the
@@ -368,15 +484,16 @@ final class TransportManager: ObservableObject {
     /// `file.chunk` metadata envelope via `send(envelope:)` immediately
     /// before calling this, and only ever one raw frame per metadata frame.
     func sendRawFrame(_ data: Data) throws {
-        guard case .connected = connectionState, let session = noiseSession, let connection else {
-            throw SendError.notConnected
+        try sendQueue.sync {
+            guard let session = noiseSession, let connection else {
+                throw SendError.notConnected
+            }
+            let ciphertext = try session.encrypt(data)
+            sendFramed(ciphertext, over: connection)
         }
-        let ciphertext = try session.encrypt(data)
-        sendFramed(ciphertext, over: connection)
     }
 
     func sendPresence(online: Bool) {
-        guard case .connected = connectionState else { return }
         let envelope = Envelope(
             type: online ? "presence.online" : "presence.offline",
             senderId: identity.deviceId,
@@ -386,7 +503,6 @@ final class TransportManager: ObservableObject {
     }
 
     func sendHeartbeat() {
-        guard case .connected = connectionState else { return }
         let envelope = Envelope(type: "presence.heartbeat", senderId: identity.deviceId, broadcast: true)
         try? send(envelope: envelope)
     }
@@ -412,20 +528,3 @@ final class TransportManager: ObservableObject {
     }
 }
 
-// MARK: - Handshake payload shapes
-
-/// The `handshake.hello` payload, carried as the encrypted payload of Noise
-/// message 1 (initiator -> responder).
-struct HandshakeHelloPayload: Codable {
-    let deviceId: String
-    let deviceName: String
-    let deviceType: DeviceType
-}
-
-/// The `handshake.ack` payload, carried as the encrypted payload of Noise
-/// message 2 (responder -> initiator).
-struct HandshakeAckPayload: Codable {
-    let deviceId: String
-    let deviceName: String
-    let deviceType: DeviceType
-}

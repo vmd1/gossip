@@ -14,6 +14,7 @@ import android.util.Base64
 import android.util.Log
 import com.connect.protocol.Envelope
 import com.connect.protocol.MessageType
+import com.connect.service.SyncForegroundService
 import com.connect.transport.EnvelopeHandler
 import com.connect.transport.TransportManagerHolder
 import kotlinx.coroutines.CoroutineScope
@@ -53,21 +54,42 @@ class NotificationListenerImpl : NotificationListenerService() {
     private val replyTargets = ConcurrentHashMap<String, ReplyTarget>()
     private var scope: CoroutineScope? = null
     private var replyHandler: EnvelopeHandler? = null
+    private var dismissHandler: EnvelopeHandler? = null
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        // The system can call this while already connected (its own base-class doc warns
+        // "this can result in duplicate events") — observed directly in testing, where it
+        // registered a second `replyHandler` alongside the first and doubled every
+        // outgoing `notification.posted`. Tear down any existing registration first so a
+        // redundant connect is idempotent rather than additive.
+        if (scope != null) {
+            Log.w(TAG, "onListenerConnected called while already connected; resetting")
+            tearDown()
+        }
+
         val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = serviceScope
 
         val handler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
         replyHandler = handler
         TransportManagerHolder.instance?.messageRouter?.register(MessageType.NOTIFICATION_REPLY, handler)
+
+        val dismiss = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
+        dismissHandler = dismiss
+        TransportManagerHolder.instance?.messageRouter?.register(MessageType.NOTIFICATION_DISMISS, dismiss)
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
+        tearDown()
+    }
+
+    private fun tearDown() {
         replyHandler?.let { TransportManagerHolder.instance?.messageRouter?.unregister(it) }
         replyHandler = null
+        dismissHandler?.let { TransportManagerHolder.instance?.messageRouter?.unregister(it) }
+        dismissHandler = null
         scope?.cancel()
         scope = null
         replyTargets.clear()
@@ -75,7 +97,11 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
-        if (sbn.packageName == packageName) return // never mirror our own "Connect is running" notification
+        // Never mirror our own persistent "Connect is running" foreground-service
+        // notification specifically — but DO mirror any other notification this app
+        // posts (e.g. a manual "Send Test Notification" button), so that button is
+        // actually useful for testing the mirroring pipeline end to end.
+        if (sbn.packageName == packageName && sbn.id == SyncForegroundService.NOTIFICATION_ID) return
         if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
 
         val id = sbn.key
@@ -111,6 +137,24 @@ class NotificationListenerImpl : NotificationListenerService() {
         replyTargets.remove(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
         send(payload.toEnvelope(senderId = deviceId(), recipientId = remoteDeviceId()))
+    }
+
+    // MARK: - notification.dismiss (mac -> android)
+
+    /** [cancelNotification] is the same special capability `BIND_NOTIFICATION_LISTENER_SERVICE`
+     *  grants for snooze/dismiss features — it can clear another app's notification, which a
+     *  normal app has no way to do. Clearing it here also fires our own [onNotificationRemoved],
+     *  which sends `notification.removed` straight back to the Mac; harmless (it just no-ops
+     *  removing an already-removed mirrored notification), not a loop, since the Mac never
+     *  reacts to `notification.removed` by dismissing anything itself. */
+    private fun handleDismiss(payload: JsonObject) {
+        val dismiss = try {
+            NotificationDismissPayload.fromPayload(payload)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to decode notification.dismiss payload", e)
+            return
+        }
+        cancelNotification(dismiss.id)
     }
 
     // MARK: - notification.reply (mac -> android)
@@ -174,8 +218,17 @@ class NotificationListenerImpl : NotificationListenerService() {
     }
 
     private fun send(envelope: Envelope) {
-        val transportManager = TransportManagerHolder.instance ?: return
-        scope?.launch {
+        val transportManager = TransportManagerHolder.instance
+        if (transportManager == null) {
+            Log.w(TAG, "Dropping ${envelope.type}: TransportManagerHolder.instance is null")
+            return
+        }
+        val scope = scope
+        if (scope == null) {
+            Log.w(TAG, "Dropping ${envelope.type}: listener scope is null (onListenerConnected not called yet?)")
+            return
+        }
+        scope.launch {
             try {
                 transportManager.send(envelope)
             } catch (e: Exception) {

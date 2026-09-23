@@ -64,6 +64,7 @@ object MessageType {
     const val NOTIFICATION_POSTED = "notification.posted"
     const val NOTIFICATION_REMOVED = "notification.removed"
     const val NOTIFICATION_REPLY = "notification.reply"
+    const val NOTIFICATION_DISMISS = "notification.dismiss"
     const val DND_UPDATE = "dnd.update"
     const val DND_SET = "dnd.set"
     const val CLIPBOARD_UPDATE = "clipboard.update"
