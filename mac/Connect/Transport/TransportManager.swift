@@ -54,6 +54,12 @@ final class TransportManager: ObservableObject {
     private let identity = IdentityKeyStore.shared
     private let trustedDevices: TrustedDevicesStore
 
+    /// The remote endpoint's IP address (no port) for the current connection,
+    /// once resolved. Used by `ADBWirelessPairing`'s defense-in-depth check
+    /// to confirm the ADB-paired device is the same phone already
+    /// trust-paired over Connect's Noise-encrypted transport.
+    private(set) var connectedPeerIPAddress: String?
+
     private var connection: NWConnection?
     private var noiseSession: NoiseSession?
     private var pendingPeer: HandshakePeerInfo?
@@ -176,6 +182,7 @@ final class TransportManager: ObservableObject {
     private func handleConnectionState(_ state: NWConnection.State, connection: NWConnection) {
         switch state {
         case .ready:
+            resolvePeerIPAddress(connection)
             sendHandshakeMessage1(over: connection)
             startReceiveLoop(on: connection)
         case .failed(let error):
@@ -240,7 +247,21 @@ final class TransportManager: ObservableObject {
             }
         }
         connection.start(queue: queue)
+        resolvePeerIPAddress(connection)
         startReceiveLoop(on: connection)
+    }
+
+    /// Extracts the remote endpoint's bare IP address (stripping any zone
+    /// ID like `%en0`) from an `NWConnection`'s current path, for both the
+    /// initiator (dials an already-resolved `.hostPort`/IP endpoint) and
+    /// responder (inbound connection; the remote endpoint is populated by
+    /// the time the connection is ready/accepted) roles.
+    private func resolvePeerIPAddress(_ connection: NWConnection) {
+        guard let remote = connection.currentPath?.remoteEndpoint ?? connection.endpoint as NWEndpoint? else { return }
+        if case .hostPort(let host, _) = remote {
+            let ipString = "\(host)"
+            connectedPeerIPAddress = ipString.split(separator: "%").first.map(String.init) ?? ipString
+        }
     }
 
     // MARK: - Framing: [4-byte big-endian length][payload]
@@ -563,6 +584,7 @@ final class TransportManager: ObservableObject {
         noiseSession = nil
         pendingPeer = nil
         receiveBuffer.removeAll()
+        connectedPeerIPAddress = nil
     }
 
     private func setState(_ state: ConnectionState) {
