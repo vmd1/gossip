@@ -79,22 +79,6 @@ class TransportManager(
      *  [launchConnectionLoop]'s receive loop — see [heartbeatLoop]'s doc for why this exists. */
     @Volatile private var lastReceivedAt: Long = 0L
 
-    /** When set, the *next* successfully decrypted post-handshake frame is
-     *  delivered here as raw bytes instead of being parsed as an [Envelope],
-     *  then cleared (one-shot). This is the receive side of the `file.chunk`
-     *  convention (see `schema/message-types.md`): a feature module arms
-     *  this synchronously from its `file.chunk` envelope handler, since that
-     *  envelope is always immediately followed by exactly one raw binary
-     *  frame on the wire — the connection loop below drains frames strictly
-     *  in order, so as long as the handler is invoked (and this armed)
-     *  before the loop reads the next frame, there's no race. */
-    @Volatile private var pendingRawFrameHandler: ((ByteArray) -> Unit)? = null
-
-    /** Arms [pendingRawFrameHandler]; see its doc for the ordering guarantee this relies on. */
-    fun setPendingRawFrameHandler(handler: (ByteArray) -> Unit) {
-        pendingRawFrameHandler = handler
-    }
-
     /** Listens for incoming connections (e.g. a previously-paired Mac reconnecting) and
      *  advertises this device over NSD so a Mac running discovery can find it.
      *
@@ -164,12 +148,11 @@ class TransportManager(
      *
      *  Encryption *and* the write must both happen inside [writeMutex]: `CipherState`'s
      *  nonce counter is a plain, unsynchronized `var`. `ClipboardSyncManager`,
-     *  `NotificationListenerImpl`, `MediaControlBridge`, `DndSyncManager`, and
-     *  `FileTransferManager` can all call `send`/`sendRawFrame` concurrently from
-     *  different coroutines — encrypting outside the lock (the bug this replaces) let
-     *  two calls race on the same nonce, or let a write land on the wire out of order
-     *  relative to the nonce it was encrypted with. The receiver's AEAD nonce only
-     *  advances on a *successful* decrypt, so one corrupted frame permanently desyncs
+     *  `NotificationListenerImpl`, `MediaControlBridge`, and `DndSyncManager` can all call
+     *  `send` concurrently from different coroutines — encrypting outside the lock (the bug
+     *  this replaces) let two calls race on the same nonce, or let a write land on the wire
+     *  out of order relative to the nonce it was encrypted with. The receiver's AEAD nonce
+     *  only advances on a *successful* decrypt, so one corrupted frame permanently desyncs
      *  the cipher and every message after it fails to decrypt for the rest of the
      *  connection (mirrors the equivalent bug just fixed on the Mac side).
      *
@@ -177,30 +160,13 @@ class TransportManager(
      *  scope: the actual socket write is blocking, and several callers (`DndSyncManager`,
      *  `ClipboardSyncManager`) are constructed with `SyncForegroundService`'s
      *  `Dispatchers.Main` scope, which throws `NetworkOnMainThreadException` here
-     *  otherwise. `NotificationListenerImpl`/`FileTransferManager` happen to use their
-     *  own IO-dispatched scopes today, but nothing should have to know that to call this
-     *  safely. */
+     *  otherwise. `NotificationListenerImpl` happens to use its own IO-dispatched scope
+     *  today, but nothing should have to know that to call this safely. */
     suspend fun send(envelope: Envelope) = withContext(Dispatchers.IO) {
         writeMutex.withLock {
             val session = noiseSession ?: throw IllegalStateException("Not connected")
             val out = output ?: throw IllegalStateException("Not connected")
             val ciphertext = session.encryptTransportMessage(envelope.encode())
-            writeFrame(out, ciphertext)
-        }
-    }
-
-    /** Encrypts and frames [data] exactly like [send], except the plaintext is raw
-     *  bytes rather than a JSON envelope. Used for the binary half of the `file.chunk`
-     *  convention (see `schema/message-types.md`): callers must send the matching
-     *  `file.chunk` metadata envelope via [send] immediately before calling this, and
-     *  only ever one raw frame per metadata frame. See [send]'s doc for why encryption
-     *  must happen inside [writeMutex], not just the write. Also hops onto
-     *  [Dispatchers.IO] itself — see [send]'s doc for why. */
-    suspend fun sendRawFrame(data: ByteArray) = withContext(Dispatchers.IO) {
-        writeMutex.withLock {
-            val session = noiseSession ?: throw IllegalStateException("Not connected")
-            val out = output ?: throw IllegalStateException("Not connected")
-            val ciphertext = session.encryptTransportMessage(data)
             writeFrame(out, ciphertext)
         }
     }
@@ -255,13 +221,6 @@ class TransportManager(
                         val frame = readFrame(input)
                         val plaintext = session.decryptTransportMessage(frame)
                         lastReceivedAt = System.currentTimeMillis()
-
-                        val rawHandler = pendingRawFrameHandler
-                        if (rawHandler != null) {
-                            pendingRawFrameHandler = null
-                            rawHandler(plaintext)
-                            continue
-                        }
 
                         val envelope = Envelope.decode(plaintext)
                         _incoming.emit(envelope)

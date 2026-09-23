@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import UserNotifications
 import Combine
 
@@ -8,7 +7,6 @@ struct MenuBarView: View {
     @ObservedObject var pairingViewModel: PairingViewModel
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
     @ObservedObject var screenMirrorController: ScreenMirrorController
-    @ObservedObject var fileTransferManager: FileTransferManager
     @ObservedObject var mediaControlManager: MediaControlManager
     @ObservedObject var notificationMirrorManager: NotificationMirrorManager
 
@@ -51,17 +49,6 @@ struct MenuBarView: View {
 
             Divider()
 
-            FileDropZoneView(fileTransferManager: fileTransferManager, isConnected: isConnected)
-
-            if !fileTransferManager.activeTransfers.isEmpty {
-                Divider()
-                ForEach(Array(fileTransferManager.activeTransfers.values), id: \.id) { transfer in
-                    TransferRowView(transfer: transfer)
-                }
-            }
-
-            Divider()
-
             Text("Trusted Devices")
                 .font(.headline)
 
@@ -71,18 +58,21 @@ struct MenuBarView: View {
                     .font(.callout)
             } else {
                 ForEach(trustedDevicesStore.devices) { device in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(device.deviceName)
-                            Text(device.deviceType.rawValue)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(device.deviceName)
+                                Text(device.deviceType.rawValue)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Forget") {
+                                trustedDevicesStore.revoke(deviceId: device.deviceId)
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        Spacer()
-                        Button("Forget") {
-                            trustedDevicesStore.revoke(deviceId: device.deviceId)
-                        }
-                        .buttonStyle(.borderless)
+                        FallbackHostField(device: device, trustedDevicesStore: trustedDevicesStore)
                     }
                 }
             }
@@ -114,19 +104,6 @@ struct MenuBarView: View {
             }
         case .mirroring:
             Button("Stop Mirroring") { stopMirroring() }
-        case .failed(let reason):
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Mirroring failed").foregroundStyle(.red)
-                // scrcpy's own stderr can run long (a stack of ERROR/WARN lines) — wrap
-                // rather than the default single-line truncation, so the actual reason is
-                // readable without needing to reproduce the failure with extra logging.
-                Text(reason)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                Button("Retry") { startMirroring() }
-            }
         }
     }
 
@@ -244,84 +221,26 @@ struct MenuBarView: View {
     }
 }
 
-/// Drag-and-drop target for sending a file to the paired device. Unstyled by
-/// design, matching the rest of this milestone's UI — the goal is working
-/// transfer plumbing, not visual polish.
-struct FileDropZoneView: View {
-    @ObservedObject var fileTransferManager: FileTransferManager
-    let isConnected: Bool
+/// Editable field for `TrustedDevice.fallbackHost`, committed on Return/focus loss rather
+/// than every keystroke, so a fallback dial attempt never fires against a half-typed
+/// address — matches Android's `PairedDevicesScreen.FallbackHostField`.
+struct FallbackHostField: View {
+    let device: TrustedDevice
+    @ObservedObject var trustedDevicesStore: TrustedDevicesStore
 
-    @State private var isTargeted = false
-    @State private var errorMessage: String?
+    @State private var text: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4]))
-                .background(RoundedRectangle(cornerRadius: 8).fill(isTargeted ? Color.accentColor.opacity(0.08) : Color.clear))
-                .frame(height: 56)
-                .overlay(
-                    Text(isConnected ? "Drop a file here to send" : "Connect a device to send files")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-                )
-                .onDrop(of: [UTType.fileURL], isTargeted: $isTargeted) { providers in
-                    handleDrop(providers)
-                }
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+        TextField("Fallback IP (e.g. Tailscale)", text: $text)
+            .textFieldStyle(.roundedBorder)
+            .font(.caption)
+            .onAppear { text = device.fallbackHost ?? "" }
+            .onSubmit {
+                trustedDevicesStore.setFallbackHost(deviceId: device.deviceId, fallbackHost: text)
             }
-        }
-    }
-
-    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard isConnected, let provider = providers.first else { return false }
-        guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { return false }
-
-        _ = provider.loadObject(ofClass: URL.self) { url, error in
-            guard let url else {
-                DispatchQueue.main.async { errorMessage = error?.localizedDescription ?? "Couldn't read dropped file" }
-                return
-            }
-            Task {
-                do {
-                    try await fileTransferManager.sendFile(at: url)
-                    await MainActor.run { errorMessage = nil }
-                } catch {
-                    await MainActor.run { errorMessage = "Send failed: \(error.localizedDescription)" }
-                }
-            }
-        }
-        return true
     }
 }
 
-/// One row of transfer progress, shown for both outbound and inbound
-/// transfers while they're in flight.
-struct TransferRowView: View {
-    let transfer: FileTransferManager.TransferProgress
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Image(systemName: transfer.direction == .sending ? "arrow.up.circle" : "arrow.down.circle")
-                Text(transfer.name)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .font(.callout)
-
-            if transfer.sizeBytes > 0 {
-                ProgressView(value: Double(transfer.bytesTransferred), total: Double(transfer.sizeBytes))
-            }
-        }
-    }
-}
 
 /// Now-playing section shown in the menu bar dropdown when the phone has an active
 /// media session: title/artist/artwork plus play/pause/next/previous controls, driven

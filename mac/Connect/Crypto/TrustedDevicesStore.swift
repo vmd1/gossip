@@ -21,6 +21,10 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
     var deviceName: String
     var deviceType: DeviceType
     let addedAt: Date
+    /// User-entered fallback address (e.g. a Tailscale IP) to dial directly when normal
+    /// on-LAN discovery can't reach this peer — see `TransportManager.connect(toFallbackHost:remoteStaticKey:)`.
+    /// `nil`/blank means "not configured." Mirrors Android's `TrustedDevice.fallbackHost`.
+    var fallbackHost: String? = nil
 }
 
 /// Persists the `TrustedDevices` table to a JSON file in
@@ -80,6 +84,16 @@ final class TrustedDevicesStore: ObservableObject {
     func revoke(deviceId: String) {
         queue.sync {
             devices.removeAll { $0.deviceId == deviceId }
+        }
+        persist()
+        publishOnMain()
+    }
+
+    func setFallbackHost(deviceId: String, fallbackHost: String?) {
+        let trimmed = fallbackHost?.trimmingCharacters(in: .whitespacesAndNewlines)
+        queue.sync {
+            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
+            devices[index].fallbackHost = (trimmed?.isEmpty == false) ? trimmed : nil
         }
         persist()
         publishOnMain()

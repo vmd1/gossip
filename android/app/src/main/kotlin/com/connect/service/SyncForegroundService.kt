@@ -13,7 +13,6 @@ import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.clipboard.ClipboardSyncManager
 import com.connect.features.dnd.DndSyncManager
-import com.connect.features.filetransfer.FileTransferManager
 import com.connect.features.media.MediaControlBridge
 import com.connect.features.screenmirror.ScreenMirrorState
 import com.connect.transport.ConnectionState
@@ -40,7 +39,6 @@ class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
     val screenMirrorState = ScreenMirrorState()
-    private lateinit var fileTransferManager: FileTransferManager
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
@@ -57,12 +55,6 @@ class SyncForegroundService : Service() {
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = messageRouter
-        )
-        fileTransferManager = FileTransferManager(
-            context = applicationContext,
-            identityKeyStore = identity,
-            transportManager = transportManager,
             messageRouter = messageRouter
         )
         mediaControlBridge = MediaControlBridge(
@@ -168,7 +160,6 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
-        fileTransferManager.shutdown()
         mediaControlBridge.stop()
         dndSyncManager.stop()
         clipboardSyncManager.stop()
@@ -183,8 +174,6 @@ class SyncForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun transportManager(): TransportManager = transportManager
-
-    fun fileTransferManager(): FileTransferManager = fileTransferManager
 
     fun dndSyncManager(): DndSyncManager = dndSyncManager
 

@@ -4,7 +4,7 @@ This document describes the byte-level framing used on the TCP socket between a 
 
 ## Port and reaching a peer off-LAN
 
-Both sides listen on a fixed TCP port, `7913` (`TransportManager.DEFAULT_PORT` on Android, `TransportManager.defaultPort` on Mac) — not an ephemeral one. On-LAN pairing/reconnection still goes through mDNS/Bonjour exactly as this doc's title implies (Bonjour resolves the actual advertised port either way), but the fixed port is also what makes a *manual* connection possible when discovery can't reach the peer at all (different networks, e.g. bridged only by a Tailscale tunnel). Android's "Paired Devices" screen lets the user record a fallback address per trusted device (`TrustedDevice.fallbackHost`); while disconnected, `SyncForegroundService` periodically dials that address directly on port 7913, bypassing discovery entirely — see its `runFallbackDialLoop`. This is Android-initiated only: Android is otherwise always the listener (`TransportManager.listen()`) and never dials out except through this fallback path, since normal on-LAN dialing is Mac-initiated (Bonjour browse + `NWConnection`).
+Both sides listen on a fixed TCP port, `7913` (`TransportManager.DEFAULT_PORT` on Android, `TransportManager.defaultPort` on Mac) — not an ephemeral one. On-LAN pairing/reconnection still goes through mDNS/Bonjour exactly as this doc's title implies (Bonjour resolves the actual advertised port either way), but the fixed port is also what makes a *manual* connection possible when discovery can't reach the peer at all (different networks, e.g. bridged only by a Tailscale tunnel). Both platforms let the user record a fallback address per trusted device (`TrustedDevice.fallbackHost` — Android's "Paired Devices" screen, Mac's "Trusted Devices" list in the menu bar); while not connected, each side periodically dials that address directly on port 7913, bypassing discovery entirely — `SyncForegroundService.runFallbackDialLoop` on Android, a `Timer` in `ConnectApp.init()` calling `TransportManager.connect(toFallbackHost:remoteStaticKey:)` on Mac. Android is otherwise always the listener (`TransportManager.listen()`) and Mac otherwise always the discoverer/dialer (Bonjour browse + `NWConnection`) — the fallback path is the one case either side dials out manually, outside its normal role.
 
 If the Mac's fixed port is already in use (e.g. a second local instance during development), it falls back to an ephemeral port for that run — on-LAN discovery still works, but the fallback-address dial path won't reach it until it's next started cleanly.
 
@@ -27,11 +27,11 @@ Once a transport frame's ciphertext is decrypted via the established Noise sessi
 - `type` selects the message's meaning and payload shape. See `schema/message-types.md` — the authoritative registry both codebases hand-sync against — for the full list of valid types and their payload fields.
 - One decrypted frame carries exactly one envelope (no batching of multiple envelopes into a single frame in Wave 1).
 
-## Large binary payloads (future waves, not in scope now)
+## Large binary payloads (no current message type uses this)
 
-Wave 1 has no message types that carry large binary data. When features that do (file transfer chunks, screen-mirroring frames, etc.) are added in later waves, the convention is:
+No message type currently carries large binary data (file transfer, the one feature that did, was removed — see below). If a future feature needs to, the convention this codebase previously used is worth keeping:
 
 - The binary bytes are sent as their **own raw frame** (length-prefixed exactly like any other frame, still Noise-encrypted), sent **immediately following** a JSON metadata frame (a normal envelope) that describes what the binary frame contains (e.g. byte length, chunk index, content type, checksum).
 - Binary data must **never** be base64-embedded inside a JSON `payload`. Base64 in JSON costs ~33% size overhead and forces full buffering/parsing of large blobs as text; a raw follow-up frame avoids both.
 
-This convention is recorded here now so that any future message type introducing binary payloads has an established pattern to follow, rather than each feature inventing its own.
+This requires a `sendRawFrame`/one-shot raw-frame-handler primitive alongside the normal envelope `send` — both `TransportManager`s had one (added for file transfer's `file.chunk`), removed along with the feature. Re-add it the same way if needed: a `pendingRawFrameHandler`/equivalent armed synchronously from the metadata envelope's handler, consumed by the very next frame the receive loop reads.
