@@ -24,6 +24,11 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     private let identity: IdentityKeyStore
     private let notificationCenter = UNUserNotificationCenter.current()
 
+    /// Local identifiers of mirrored notifications we believe are still showing — see
+    /// `pollForDismissedNotifications`'s doc for why this exists.
+    private var trackedIdentifiers: Set<String> = []
+    private var dismissPollTimer: Timer?
+
     /// Drives the "notifications disabled" warning in `MenuBarView`. Mirroring degrades
     /// silently otherwise: `UNUserNotificationCenter.add(_:)` (in `handlePosted`) succeeds
     /// and calls back with no error even when the user has denied/turned off notification
@@ -39,6 +44,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         registerCategory()
         registerHandlers()
         refreshAuthorizationStatus()
+        startDismissPolling()
     }
 
     /// Re-queries the current authorization status. The user can flip this in System
@@ -126,9 +132,11 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
                 content: contentWithIcon,
                 trigger: nil
             )
-            self.notificationCenter.add(request) { error in
+            self.notificationCenter.add(request) { [weak self] error in
                 if let error {
                     NSLog("Connect: failed to post mirrored notification: \(error)")
+                } else {
+                    self?.trackedIdentifiers.insert(request.identifier)
                 }
             }
         }
@@ -139,7 +147,44 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             NSLog("Connect: failed to decode notification.removed payload")
             return
         }
-        notificationCenter.removeDeliveredNotifications(withIdentifiers: [localIdentifier(for: removed.id)])
+        let identifier = localIdentifier(for: removed.id)
+        trackedIdentifiers.remove(identifier)
+        notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    /// Self-healing substitute for a dismiss callback macOS won't reliably give us: unlike
+    /// iOS, `userNotificationCenter(_:didReceive:)` is *not* consistently invoked with
+    /// `UNNotificationDismissActionIdentifier` for a plain banner swipe/close on macOS
+    /// (confirmed directly — zero deliveries for a swipe-dismissed banner in testing, even
+    /// with unconditional logging at the very top of that delegate method, so this isn't a
+    /// bug in how we handle the callback, the callback itself just doesn't come). Instead,
+    /// periodically diff the real delivered-notifications list against `trackedIdentifiers`
+    /// (everything we posted and haven't already resolved): anything that dropped out
+    /// without us removing it ourselves was dismissed by the user, so tell Android.
+    private func startDismissPolling() {
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            self?.pollForDismissedNotifications()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dismissPollTimer = timer
+    }
+
+    private func pollForDismissedNotifications() {
+        guard !trackedIdentifiers.isEmpty else { return }
+        notificationCenter.getDeliveredNotifications { [weak self] delivered in
+            guard let self else { return }
+            let stillShowing = Set(delivered.map { $0.request.identifier })
+            let dismissedIdentifiers = self.trackedIdentifiers.subtracting(stillShowing)
+            guard !dismissedIdentifiers.isEmpty else { return }
+            DispatchQueue.main.async {
+                for identifier in dismissedIdentifiers {
+                    self.trackedIdentifiers.remove(identifier)
+                    if let androidId = self.androidId(fromLocalIdentifier: identifier) {
+                        self.sendDismiss(id: androidId)
+                    }
+                }
+            }
+        }
     }
 
     private func attachIcon(base64: String?, to content: UNMutableNotificationContent, completion: @escaping (UNMutableNotificationContent) -> Void) {
@@ -243,6 +288,10 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
             guard let textResponse = response as? UNTextInputNotificationResponse else { return }
             sendReply(id: androidId, text: textResponse.userText)
         case UNNotificationDismissActionIdentifier:
+            // In practice macOS rarely if ever delivers this (see `pollForDismissedNotifications`,
+            // the actual mechanism this relies on) — kept as a fast path in case some
+            // interaction or future macOS version does provide it.
+            trackedIdentifiers.remove(response.notification.request.identifier)
             sendDismiss(id: androidId)
         default:
             break

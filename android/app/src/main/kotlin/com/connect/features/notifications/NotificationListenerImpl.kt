@@ -103,6 +103,14 @@ class NotificationListenerImpl : NotificationListenerService() {
         // actually useful for testing the mirroring pipeline end to end.
         if (sbn.packageName == packageName && sbn.id == SyncForegroundService.NOTIFICATION_ID) return
         if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
+        // Media playback notifications (Spotify, YouTube Music, etc.) are already covered
+        // end to end by the dedicated media.nowplaying/media.command pipeline
+        // (MediaControlBridge -> Mac's NowPlayingView), which has real transport controls
+        // and updates live with playback position — a mirrored copy of the notification
+        // itself would just be redundant clutter, and would re-post on every playback
+        // tick as the notification's progress/timestamp changes. `EXTRA_MEDIA_SESSION` is
+        // the same signal the system itself uses to identify a `MediaStyle` notification.
+        if (sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return
 
         val id = sbn.key
         val notification = sbn.notification
