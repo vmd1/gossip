@@ -75,6 +75,10 @@ class TransportManager(
     private var serverSocket: ServerSocket? = null
     private var connectionJob: Job? = null
 
+    /** Updated on every successfully-decrypted frame (any type, not just heartbeats) in
+     *  [launchConnectionLoop]'s receive loop — see [heartbeatLoop]'s doc for why this exists. */
+    @Volatile private var lastReceivedAt: Long = 0L
+
     /** When set, the *next* successfully decrypted post-handshake frame is
      *  delivered here as raw bytes instead of being parsed as an [Envelope],
      *  then cleared (one-shot). This is the receive side of the `file.chunk`
@@ -241,23 +245,30 @@ class TransportManager(
                 remoteDeviceId = remoteId
                 _connectionState.value = ConnectionState.CONNECTED
                 Log.i(TAG, "Connected ($role) to device $remoteId")
+                lastReceivedAt = System.currentTimeMillis()
 
                 sendPresence(MessageType.PRESENCE_ONLINE, remoteId)
+                val heartbeatJob = scope.launch { heartbeatLoop(client, remoteId) }
 
-                while (true) {
-                    val frame = readFrame(input)
-                    val plaintext = session.decryptTransportMessage(frame)
+                try {
+                    while (true) {
+                        val frame = readFrame(input)
+                        val plaintext = session.decryptTransportMessage(frame)
+                        lastReceivedAt = System.currentTimeMillis()
 
-                    val rawHandler = pendingRawFrameHandler
-                    if (rawHandler != null) {
-                        pendingRawFrameHandler = null
-                        rawHandler(plaintext)
-                        continue
+                        val rawHandler = pendingRawFrameHandler
+                        if (rawHandler != null) {
+                            pendingRawFrameHandler = null
+                            rawHandler(plaintext)
+                            continue
+                        }
+
+                        val envelope = Envelope.decode(plaintext)
+                        _incoming.emit(envelope)
+                        messageRouter.dispatch(envelope)
                     }
-
-                    val envelope = Envelope.decode(plaintext)
-                    _incoming.emit(envelope)
-                    messageRouter.dispatch(envelope)
+                } finally {
+                    heartbeatJob.cancel()
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Connection loop ended: ${e.message}")
@@ -270,6 +281,31 @@ class TransportManager(
                     remoteDeviceId = null
                     _connectionState.value = ConnectionState.DISCONNECTED
                 }
+            }
+        }
+    }
+
+    /** Detects a *silently* dropped connection — the case a clean TCP close doesn't cover.
+     *  The receive loop's `readFrame` blocks on the socket and throws promptly when the
+     *  peer sends a FIN/RST, but Wi-Fi dropping out, doze/NAT killing the path, or the Mac
+     *  sleeping without a clean disconnect can leave the socket sitting open from this
+     *  side's perspective with nothing ever arriving to unblock that read — `connectionState`
+     *  would then say CONNECTED indefinitely while the link is actually dead, and nothing
+     *  would ever trigger the auto-reconnect loop. This sends `presence.heartbeat`
+     *  periodically (proving outbound liveness) and independently tracks [lastReceivedAt]
+     *  (proving inbound liveness, from *any* received frame, not just heartbeat replies);
+     *  if either send fails or too long passes without receiving anything, force-closes the
+     *  socket, which unblocks the blocking read in [launchConnectionLoop] with an
+     *  `IOException` and lets its existing cleanup/disconnect path run normally. */
+    private suspend fun heartbeatLoop(client: Socket, remoteId: String) {
+        while (true) {
+            delay(HEARTBEAT_INTERVAL_MS)
+            val sendResult = runCatching { send(presenceEnvelope(MessageType.PRESENCE_HEARTBEAT, remoteId)) }
+            val stale = System.currentTimeMillis() - lastReceivedAt > HEARTBEAT_TIMEOUT_MS
+            if (sendResult.isFailure || stale) {
+                Log.w(TAG, "Heartbeat failed or peer went stale (sendFailed=${sendResult.isFailure}, stale=$stale); closing connection")
+                runCatching { client.close() }
+                return
             }
         }
     }
@@ -320,20 +356,23 @@ class TransportManager(
     }
 
     private suspend fun sendPresence(type: String, recipientId: String) {
-        val envelope = Envelope(
-            type = type,
-            senderId = identityKeyStore.deviceId,
-            recipientId = recipientId,
-            payload = JsonObject(emptyMap())
-        )
-        runCatching { send(envelope) }
+        runCatching { send(presenceEnvelope(type, recipientId)) }
     }
+
+    private fun presenceEnvelope(type: String, recipientId: String) = Envelope(
+        type = type,
+        senderId = identityKeyStore.deviceId,
+        recipientId = recipientId,
+        payload = JsonObject(emptyMap())
+    )
 
     companion object {
         const val DEFAULT_PORT = 7913
         private const val MAX_FRAME_BYTES = 16 * 1024 * 1024
         private const val LISTEN_BIND_ATTEMPTS = 5
         private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
+        private const val HEARTBEAT_INTERVAL_MS = 20_000L
+        private const val HEARTBEAT_TIMEOUT_MS = 3 * HEARTBEAT_INTERVAL_MS
 
         private fun writeFrame(out: DataOutputStream, payload: ByteArray) {
             out.writeInt(payload.size)

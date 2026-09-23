@@ -64,6 +64,11 @@ final class TransportManager: ObservableObject {
     /// the initiator, we need to know which trusted static key to expect).
     private var expectedRemoteStaticKey: Curve25519.KeyAgreement.PublicKey?
 
+    /// Updated on every successfully-decrypted frame (any type, not just heartbeats) in
+    /// `handleTransportFrame` — see `startHeartbeatMonitoring`'s doc for why this exists.
+    private var lastReceivedAt: Date = .distantPast
+    private var heartbeatTimer: Timer?
+
     init(trustedDevices: TrustedDevicesStore = .shared) {
         self.trustedDevices = trustedDevices
     }
@@ -372,6 +377,7 @@ final class TransportManager: ObservableObject {
             setState(.connected(deviceId: peer.deviceId))
             onTrustedConnected?(peer)
             sendPresence(online: true)
+            startHeartbeatMonitoring()
         } else if let onUntrustedHandshake {
             onUntrustedHandshake(peer, publicKey) { [weak self] confirmed in
                 guard let self else { return }
@@ -390,6 +396,7 @@ final class TransportManager: ObservableObject {
                     // forever once the user taps Confirm.
                     self.onTrustedConnected?(peer)
                     self.sendPresence(online: true)
+                    self.startHeartbeatMonitoring()
                 } else {
                     self.teardownConnection()
                     self.setState(.discovering)
@@ -403,6 +410,7 @@ final class TransportManager: ObservableObject {
     }
 
     private func handleTransportFrame(_ payload: Data, session: NoiseSession) {
+        lastReceivedAt = Date()
         do {
             let plaintext = try session.decrypt(payload)
 
@@ -502,14 +510,54 @@ final class TransportManager: ObservableObject {
         try? send(envelope: envelope)
     }
 
-    func sendHeartbeat() {
+    func sendHeartbeat() throws {
         let envelope = Envelope(type: "presence.heartbeat", senderId: identity.deviceId, broadcast: true)
-        try? send(envelope: envelope)
+        try send(envelope: envelope)
     }
+
+    /// Detects a *silently* dropped connection — the case `NWConnection`'s own
+    /// path-viability tracking doesn't reliably cover. `NWConnection` reports `.failed`
+    /// when the *local* network path becomes unusable (Wi-Fi off, etc.), but the peer
+    /// vanishing without that — its Wi-Fi dropping, the OS killing/sleeping its process
+    /// without a clean socket close, a NAT/carrier timeout on a cross-network path — can
+    /// leave this side's connection sitting at `.connected` indefinitely, with nothing to
+    /// ever trigger the auto-reconnect loop. Sends `presence.heartbeat` periodically
+    /// (proving outbound liveness) and checks `lastReceivedAt` (proving inbound liveness,
+    /// from *any* received frame, not just heartbeat replies); if either fails, tears the
+    /// connection down and returns to `.discovering` so it can actually recover.
+    private func startHeartbeatMonitoring() {
+        heartbeatTimer?.invalidate()
+        lastReceivedAt = Date()
+        let timer = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
+            self?.checkHeartbeat()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        heartbeatTimer = timer
+    }
+
+    private func checkHeartbeat() {
+        let sendFailed: Bool
+        do {
+            try sendHeartbeat()
+            sendFailed = false
+        } catch {
+            sendFailed = true
+        }
+        let stale = Date().timeIntervalSince(lastReceivedAt) > Self.heartbeatTimeout
+        guard sendFailed || stale else { return }
+        NSLog("Connect: heartbeat failed or peer went stale (sendFailed=\(sendFailed), stale=\(stale)); closing connection")
+        teardownConnection()
+        setState(.discovering)
+    }
+
+    private static let heartbeatInterval: TimeInterval = 20
+    private static let heartbeatTimeout: TimeInterval = 3 * heartbeatInterval
 
     // MARK: - Teardown
 
     private func teardownConnection() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
         connection?.cancel()
         connection = nil
         noiseSession = nil
