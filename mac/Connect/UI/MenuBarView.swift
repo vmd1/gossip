@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import UserNotifications
+import Combine
 
 struct MenuBarView: View {
     @ObservedObject var transportManager: TransportManager
@@ -13,6 +14,8 @@ struct MenuBarView: View {
 
     @State private var pairingWindow: PairingWindow?
     @State private var dndSetupWindow: DNDSetupWindow?
+    @State private var adbPairingWindow: ADBPairingWindow?
+    @State private var adbPairingCancellable: AnyCancellable?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -114,17 +117,62 @@ struct MenuBarView: View {
         case .failed(let reason):
             VStack(alignment: .leading, spacing: 4) {
                 Text("Mirroring failed").foregroundStyle(.red)
-                Text(reason).font(.caption).foregroundStyle(.secondary)
+                // scrcpy's own stderr can run long (a stack of ERROR/WARN lines) — wrap
+                // rather than the default single-line truncation, so the actual reason is
+                // readable without needing to reproduce the failure with extra logging.
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
                 Button("Retry") { startMirroring() }
             }
         }
     }
 
-    /// Launches `scrcpy` as a subprocess — it opens and owns its own window,
-    /// Connect doesn't render anything itself. See `ScreenMirrorController`.
+    /// Before launching the mirroring pipeline, makes sure `adb` already sees an
+    /// authorized device (typically already connected via USB or a previous wireless
+    /// pairing); if not, opens the QR wireless-pairing flow first and only starts
+    /// mirroring once it reaches `.connected`. Either way, mirroring itself is just
+    /// `scrcpy` launched as a subprocess — it opens and owns its own window, Connect
+    /// doesn't render anything itself. See `ScreenMirrorController`.
     private func startMirroring() {
         sendScreenSignal(type: "screen.start")
-        screenMirrorController.start()
+        guard let adbPath = ADBClient.resolveADBPath() else {
+            screenMirrorController.start() // surfaces the "adb/scrcpy not found" failure state
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let output = (try? ADBClient.run(["devices", "-l"])).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let existingSerial = ADBWirelessPairing.firstAuthorizedSerial(output)
+            DispatchQueue.main.async {
+                if let existingSerial {
+                    screenMirrorController.start(serial: existingSerial)
+                } else {
+                    beginADBPairing(adbPath: adbPath)
+                }
+            }
+        }
+    }
+
+    private func beginADBPairing(adbPath: String) {
+        let pairing = ADBWirelessPairing(adbPath: adbPath)
+        pairing.trustedPeerIP = transportManager.connectedPeerIPAddress
+        let window = ADBPairingWindow(pairing: pairing)
+        adbPairingWindow = window
+
+        adbPairingCancellable = pairing.$state.sink { state in
+            if case .connected(let serial, _) = state {
+                adbPairingCancellable = nil
+                window.close()
+                adbPairingWindow = nil
+                screenMirrorController.start(serial: serial)
+            }
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func stopMirroring() {
