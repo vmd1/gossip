@@ -20,4 +20,20 @@ class ClipboardSyncManagerTest {
     fun `suppresses send when value matches last remote-set value`() {
         assertFalse(ClipboardSyncManager.shouldSend(newValue = "hello", lastRemoteSetValue = "hello"))
     }
+
+    @Test
+    fun `sends image when data differs from last remote-set image data`() {
+        assertTrue(ClipboardSyncManager.shouldSendImage(byteArrayOf(1, 2), byteArrayOf(3, 4)))
+    }
+
+    @Test
+    fun `sends image when there is no last remote-set image data yet`() {
+        assertTrue(ClipboardSyncManager.shouldSendImage(byteArrayOf(1), null))
+    }
+
+    @Test
+    fun `suppresses image send when data matches last remote-set image data`() {
+        val data = byteArrayOf(1, 2, 3)
+        assertFalse(ClipboardSyncManager.shouldSendImage(data, data.copyOf()))
+    }
 }

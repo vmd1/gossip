@@ -1,18 +1,24 @@
 import AppKit
 import Combine
 
-/// Bidirectional plain-text clipboard sync between this Mac and its paired peer.
+/// Bidirectional clipboard sync between this Mac and the rest of the mesh — plain text
+/// (broadcast, relayed through the whole mesh like any other message) and images
+/// (broadcast too, but the actual bytes travel as a raw follow-up frame per
+/// `docs/wire-protocol.md`'s "Large binary payloads" convention, relayed hop-by-hop
+/// alongside their metadata envelope — see `TransportManager.handleReceivedEnvelope`).
 ///
 /// `NSPasteboard` has no push/change-notification API, so this manager polls
-/// `NSPasteboard.general.changeCount` on a timer while the transport is connected.
-/// On a genuine local copy it sends a `clipboard.update` envelope; on a received
-/// `clipboard.update` it writes the text into the local pasteboard.
+/// `NSPasteboard.general.changeCount` on a timer while the transport is connected. On a
+/// genuine local copy it sends a `clipboard.update` envelope (text inline, or an image
+/// normalized to PNG and sent as a raw follow-up frame); on a received `clipboard.update`
+/// it writes the content into the local pasteboard.
 ///
 /// Loop suppression: writing to the pasteboard ourselves (in response to a remote
 /// update) bumps `changeCount` exactly like a real local copy would, which would
 /// otherwise be observed by the very next poll and re-sent right back to the
 /// sender. To avoid that, we remember the last value *we* wrote programmatically
-/// and skip sending when the newly-observed pasteboard text matches it exactly.
+/// (text or image, whichever) and skip sending when the newly-observed pasteboard
+/// content matches it exactly.
 final class ClipboardSyncManager: ObservableObject {
     private let transportManager: TransportManager
     private let identity: IdentityKeyStore
@@ -21,6 +27,7 @@ final class ClipboardSyncManager: ObservableObject {
     private var timer: Timer?
     private var lastChangeCount: Int
     private var lastRemoteSetValue: String?
+    private var lastRemoteSetImageData: Data?
 
     init(
         transportManager: TransportManager,
@@ -34,6 +41,9 @@ final class ClipboardSyncManager: ObservableObject {
 
         transportManager.router.register(prefix: "clipboard.update") { [weak self] envelope in
             self?.handleIncoming(envelope)
+        }
+        transportManager.onRawFrameReceived = { [weak self] envelope, data in
+            self?.handleIncomingImage(envelope, data)
         }
     }
 
@@ -63,10 +73,17 @@ final class ClipboardSyncManager: ObservableObject {
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
 
-        guard let text = pasteboard.string(forType: .string) else { return }
-        guard Self.shouldSend(newValue: text, lastRemoteSetValue: lastRemoteSetValue) else { return }
+        // Text takes priority when both are somehow present, matching pre-image
+        // behavior exactly for plain-text copies.
+        if let text = pasteboard.string(forType: .string) {
+            guard Self.shouldSend(newValue: text, lastRemoteSetValue: lastRemoteSetValue) else { return }
+            sendClipboardUpdate(text: text)
+            return
+        }
 
-        sendClipboardUpdate(text: text)
+        guard let pngData = Self.imagePNGData(from: pasteboard) else { return }
+        guard Self.shouldSend(newImageData: pngData, lastRemoteSetImageData: lastRemoteSetImageData) else { return }
+        sendClipboardImage(data: pngData)
     }
 
     private func sendClipboardUpdate(text: String) {
@@ -75,11 +92,28 @@ final class ClipboardSyncManager: ObservableObject {
             senderId: identity.deviceId,
             broadcast: true,
             payload: .object([
+                "kind": .string("text"),
                 "text": .string(text),
                 "sourceDeviceId": .string(identity.deviceId),
             ])
         )
         try? transportManager.send(envelope: envelope)
+    }
+
+    private func sendClipboardImage(data: Data) {
+        let envelope = Envelope(
+            type: "clipboard.update",
+            senderId: identity.deviceId,
+            broadcast: true,
+            hasRawFollowup: true,
+            payload: .object([
+                "kind": .string("image"),
+                "sourceDeviceId": .string(identity.deviceId),
+                "contentType": .string("image/png"),
+                "byteLength": .number(Double(data.count)),
+            ])
+        )
+        try? transportManager.send(envelope, withRawFollowup: data)
     }
 
     // MARK: - Inbound: wire -> local pasteboard
@@ -97,6 +131,18 @@ final class ClipboardSyncManager: ObservableObject {
         lastRemoteSetValue = text
     }
 
+    private func handleIncomingImage(_ envelope: Envelope, _ data: Data) {
+        guard envelope.type == "clipboard.update",
+              envelope.payload["kind"]?.stringValue == "image" else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(data, forType: .png)
+
+        lastChangeCount = pasteboard.changeCount
+        lastRemoteSetImageData = data
+    }
+
     // MARK: - Loop-suppression (pure, unit-testable)
 
     /// Returns whether a newly-observed pasteboard value should be sent over the
@@ -106,5 +152,32 @@ final class ClipboardSyncManager: ObservableObject {
     /// otherwise (a genuine local copy, or the very first observation).
     static func shouldSend(newValue: String, lastRemoteSetValue: String?) -> Bool {
         newValue != lastRemoteSetValue
+    }
+
+    /// Same loop-suppression check as `shouldSend(newValue:lastRemoteSetValue:)`, for
+    /// image content.
+    static func shouldSend(newImageData: Data, lastRemoteSetImageData: Data?) -> Bool {
+        newImageData != lastRemoteSetImageData
+    }
+
+    // MARK: - Image handling (pure enough to unit test the byte-level parts; pasteboard read is not)
+
+    /// Reads whatever image is currently on the pasteboard (if any) and normalizes it
+    /// to PNG — regardless of which representation the source app actually put there
+    /// (TIFF is the one AppKit guarantees is always present for image content) — so
+    /// the wire format is always a single, universally-decodable content type
+    /// (`image/png`) rather than whatever the copying app happened to provide.
+    static func imagePNGData(from pasteboard: NSPasteboard) -> Data? {
+        guard pasteboard.canReadItem(withDataConformingToTypes: [NSPasteboard.PasteboardType.tiff.rawValue, NSPasteboard.PasteboardType.png.rawValue]) else {
+            return nil
+        }
+        if let pngData = pasteboard.data(forType: .png) {
+            return pngData
+        }
+        guard let tiffData = pasteboard.data(forType: .tiff),
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
     }
 }

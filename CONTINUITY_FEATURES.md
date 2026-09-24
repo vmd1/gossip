@@ -7,9 +7,10 @@ Status is based on the current state of `schema/message-types.md` and the `Featu
 ## Legend
 
 - ✅ **Implemented** — shipped in this repo, with a corresponding wire-protocol entry where applicable
-- 🔜 **Could implement** — technically feasible on Mac + Android, not yet built
-- ❓ **Unsure** — feasible but doubtful fit, or blocked by something outside this project's control (iOS-only APIs, Apple-silicon-only frameworks, closed Android/macOS APIs)
-- 🚫 **Not applicable** — depends on iOS/iCloud/Apple-ecosystem infrastructure that has no Android equivalent, or was explicitly implemented then removed
+- 🔜 **Could implement** — technically feasible on Mac + Android, not yet built, reasonably scoped
+- 🗄️ **Shelved** — desirable and feasible, but complicated enough to defer as a large standalone effort
+- ❓ **Unsure** — feasible but doubtful value given overlap with what's already covered elsewhere
+- 🚫 **Not applicable** — infeasible, redundant with an existing non-Connect solution, or depends on Apple-ecosystem infrastructure with no Android equivalent
 
 ## Implemented ✅
 
@@ -26,30 +27,34 @@ Status is based on the current state of `schema/message-types.md` and the `Featu
 
 | Feature | Apple's version | Notes |
 |---|---|---|
-| File transfer (AirDrop-style) | AirDrop | Was previously attempted and explicitly removed (see commit `998d08d`, "remove file transfer"). Re-implementable over the existing transport; would need a new `files.*` message-type family and a strategy for large binary payloads (the wire protocol currently avoids base64 blobs beyond small icons/art — see the `media.nowplaying` note in `schema/message-types.md`). |
 | Continuity Camera | Use iPhone as a Mac webcam/scanner | Android exposes camera2/CameraX APIs; would need a Mac-side virtual camera driver (e.g. CoreMediaIO DAL plugin) and a video-streaming transport separate from the JSON envelope framing — similar to how screen mirroring already sidesteps Noise-encrypted envelopes for bulk data. |
-| SMS/RCS relay (Text Message Forwarding equivalent) | Forward iPhone texts to Mac and reply | Android's `NotificationListenerService`/SMS provider access could mirror texts distinctly from generic notifications, enabling Mac-side send, not just reply-to-existing-thread. |
 | Phone call relay (Mac-as-speakerphone equivalent) | Continuity for calls on Mac | Needs Android telecom APIs (`InCallService`) plus real-time audio routing over the transport — nontrivial but not blocked by any iOS-only API. |
 | Auto Unlock (unlock Mac via nearby trusted device) | Apple Watch/iPhone auto-unlock | Android device presence is already tracked via the transport's connection state; would need a macOS unlock-authorization integration point (e.g. a PAM/AuthorizationPlugin) — more invasive than the app's current scope but not impossible. |
 | Instant Hotspot (use phone's cellular as Mac internet) | Instant Hotspot | Android already exposes tethering/hotspot toggling via system APIs (with user permission); Connect could send a `hotspot.enable` command type and surface signal/battery info Apple shows in its UI. |
-| Handoff (resume an in-progress task on another device) | Handoff | Would require per-app "activity" state to hand off, which has no generic Android equivalent — feasible only for specific first-party features Connect itself controls (e.g. "resume clipboard/notification context"), not arbitrary third-party apps like Apple's version. |
-| Shared system clipboard for rich content (images/files) | Universal Clipboard (images, files) | Natural extension of the already-implemented plain-text `clipboard.update`; blocked mainly by the same large-binary-payload question as file transfer. |
+| Shared system clipboard for rich content (images/files) | Universal Clipboard (images, files) | Natural extension of the already-implemented plain-text `clipboard.update`; blocked mainly by the large-binary-payload question that also applies to any file-transfer-style feature. |
+
+## Shelved — desirable but complicated 🗄️
+
+| Feature | Apple's version | Why shelved |
+|---|---|---|
+| Sidecar (use iPad as a second Mac display) | Sidecar | Android tablets could plausibly serve as an extended/mirrored display via a screen-sharing protocol, but this is architecturally a very different (continuous, low-latency, GPU-composited) problem than the existing scrcpy-based *phone-mirrors-onto-Mac* flow, which runs in the opposite direction. Possible, but a substantial standalone effort. |
+| AirPlay (audio/video streaming to Mac) | AirPlay 2 | Android does not implement the AirPlay protocol (it's Apple-licensed); an alternative would mean building a custom streaming protocol rather than "replicating" AirPlay. Grouped with Sidecar as a large, separate streaming effort rather than a natural extension of the current notification/media/DND feature set. |
+| Universal Control (share one mouse/keyboard across devices) | Universal Control | Feasible in principle (synthetic input injection via Android Accessibility Service + macOS `CGEvent` posting) but is a much larger, latency-sensitive undertaking than anything currently in this repo, and cursor hand-off between differing OS input models is nontrivial. Desirable, but complicated enough to shelve for now. |
 
 ## Unsure ❓
 
 | Feature | Apple's version | Why uncertain |
 |---|---|---|
-| Sidecar (use iPad as a second Mac display) | Sidecar | Android tablets could plausibly serve as an extended/mirrored display via a screen-sharing protocol, but this is architecturally a very different (continuous, low-latency, GPU-composited) problem than the existing scrcpy-based *phone-mirrors-onto-Mac* flow, which runs in the opposite direction. Unclear if it fits this project's scope or ADB-based approach. |
-| Continuity Markup / Sketch (annotate a doc from iPad) | Continuity Markup, Continuity Sketch | Needs Mac-initiated "send this document to be annotated" flow, real-time drawing sync, and a way to insert the result back into the originating app (e.g. Mail, Preview) — plausible but would need per-app integration work on the Mac side that's uncertain in value for a mostly notification/media/DND-focused app. |
-| AirPlay (audio/video streaming to Mac) | AirPlay 2 | Android does not implement the AirPlay protocol (it's Apple-licensed); an alternative would mean building a custom streaming protocol rather than "replicating" AirPlay, which is really a distinct feature from device continuity. |
-| Universal Control (share one mouse/keyboard across devices) | Universal Control | Feasible in principle (synthetic input injection via Android Accessibility Service + macOS `CGEvent` posting) but is a much larger, latency-sensitive undertaking than anything currently in this repo, and cursor hand-off between differing OS input models is nontrivial. |
-| Watch-based notification/DND source | Apple Watch as the Focus/DND source of truth | Connect has no Watch counterpart at all — Apple Watch's role in Continuity depends on iPhone pairing infrastructure Connect doesn't have a bridge into. Could be relevant only if a WearOS counterpart app were built, which is out of scope as far as this repo currently shows. |
-| iCloud Keychain / password AutoFill handoff | Continuity-based Keychain/password AutoFill | Technically buildable (a secure companion "autofill request" protocol), but overlaps heavily with password-manager territory and raises materially higher security/trust requirements than the notification/media/clipboard features already shipped — unclear if this project wants to take on that liability. |
+| Watch-based notification/DND source | Apple Watch as the Focus/DND source of truth | Deliberately limited scope: WearOS already mirrors virtually everything happening on the paired Android phone onto the watch, so a Connect-side Watch/WearOS integration would likely be redundant with what WearOS itself already surfaces rather than adding new capability. Only worth revisiting for something WearOS doesn't already replicate from the phone. |
 
 ## Not applicable 🚫
 
 | Feature | Apple's version | Why |
 |---|---|---|
-| Handoff via iCloud (cross-app activity continuity tied to iCloud/NSUserActivity) | Handoff | Requires iCloud account infrastructure and `NSUserActivity` — no Android/non-Apple equivalent; the "Handoff"-flavored idea above is listed separately as a narrower, Connect-native possibility. |
+| File transfer (AirDrop-style) | AirDrop | Was previously attempted and explicitly removed (see commit `998d08d`, "remove file transfer"). Not needed going forward — NearDrop already covers AirDrop-style transfer to/from Apple devices. |
+| SMS/RCS relay (Text Message Forwarding equivalent) | Forward iPhone texts to Mac and reply | Not needed — Google Messages already provides web/desktop access to Android SMS/RCS. |
+| Handoff (resume an in-progress task on another device) | Handoff | Not feasible: would require per-app "activity" state with no generic Android equivalent, and no practical way to hand off arbitrary third-party app state the way Apple's `NSUserActivity`-based mechanism does. |
+| Continuity Markup / Sketch (annotate a doc from iPad) | Continuity Markup, Continuity Sketch | Not a useful fit — low value relative to the effort of a Mac-initiated "send this document to be annotated" flow with real-time drawing sync and per-app (Mail, Preview, etc.) integration. |
+| iCloud Keychain / password AutoFill handoff | Continuity-based Keychain/password AutoFill | Pointless to build here — dedicated password managers already solve this, and taking it on would add security/trust liability well beyond the notification/media/clipboard scope of this app. |
 | Continuity between Apple Watch and iPhone specifically (e.g. unlocking apps, Wallet handoff) | Watch↔iPhone Continuity | Entirely dependent on WatchOS/iOS pairing, which this project (Mac↔Android) has no path into. |
-| eSIM/Continuity phone-number features tied to carrier + iCloud account | Continuity (calls/SMS via iCloud-linked Apple ID) | The call/SMS *relay* idea above is listed as feasible; the Apple-specific "same number across all your Apple devices via iCloud" mechanism itself is not portable. |
+| eSIM/Continuity phone-number features tied to carrier + iCloud account | Continuity (calls/SMS via iCloud-linked Apple ID) | The call relay idea above is listed as feasible; the Apple-specific "same number across all your Apple devices via iCloud" mechanism itself is not portable, and SMS/RCS specifically is already covered by Google Messages. |

@@ -5,7 +5,7 @@
   "description": "The outer envelope wrapping every message exchanged between a Mac and an Android device over the Connect wire protocol. Every message, regardless of feature, is serialized as JSON matching this shape after Noise decryption (see docs/wire-protocol.md). The `type` field selects a registered message type (see schema/message-types.md); `payload` is validated ad hoc per type, not by this schema.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "id", "type", "senderId", "recipientId", "broadcast", "ttl", "ts", "payload"],
+  "required": ["v", "id", "type", "senderId", "recipientId", "broadcast", "ttl", "hasRawFollowup", "ts", "payload"],
   "properties": {
     "v": {
       "description": "Envelope schema version. Bump only on a breaking change to this envelope shape (not on new message types, which are additive).",
@@ -41,6 +41,10 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 8
+    },
+    "hasRawFollowup": {
+      "description": "When true, this envelope's metadata is immediately followed on the wire by a second, raw (non-envelope) Noise-encrypted frame carrying a large binary payload (e.g. a clipboard image) — see docs/wire-protocol.md's 'Large binary payloads' section. Relayed hop-by-hop atomically alongside the envelope itself: a relaying device always forwards the metadata and its raw frame together, never the metadata alone.",
+      "type": "boolean"
     },
     "ts": {
       "description": "Sender-local timestamp the message was created, in Unix epoch milliseconds.",

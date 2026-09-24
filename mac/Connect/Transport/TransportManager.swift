@@ -37,8 +37,18 @@ final class TransportManager: ObservableObject {
 
     /// Fired for every successfully decoded, post-handshake envelope this
     /// device is the intended recipient of (directly addressed, or broadcast).
-    /// Not fired for envelopes merely being relayed through this device.
+    /// Not fired for envelopes merely being relayed through this device. For an
+    /// envelope with `hasRawFollowup: true`, this fires only once the raw frame
+    /// that follows it has actually arrived (see `onRawFrameReceived`) — never
+    /// with the metadata alone.
     var onReceive: ((Envelope) -> Void)?
+
+    /// Fired alongside `onReceive`/`router.route`, but only for an envelope whose
+    /// `hasRawFollowup` is `true`, once its raw binary frame has arrived — pairs the
+    /// metadata `Envelope` with the raw `Data` so a feature manager (e.g.
+    /// `ClipboardSyncManager` for image sync) can consume both together. See
+    /// `docs/wire-protocol.md`'s "Large binary payloads" section.
+    var onRawFrameReceived: ((Envelope, Data) -> Void)?
 
     /// Fired when a Noise handshake completes with a peer that is not yet in
     /// `TrustedDevicesStore`. `PairingViewModel` uses this to prompt the user
@@ -259,7 +269,33 @@ final class TransportManager: ObservableObject {
             self?.handleConnectionState(state, pending: pending)
         }
         nwConnection.start(queue: queue)
+        scheduleTimeout(for: pending)
     }
+
+    /// Guards against a dial or handshake that never resolves either way — most
+    /// notably `NWConnection`'s `.waiting(NWError)` state, which the switch in
+    /// `handleConnectionState` deliberately doesn't treat as failure (Apple's own
+    /// docs: "the connection cannot currently be completed... but may attempt to
+    /// connect again after changes", and it commonly *does* self-heal once the
+    /// network path recovers) but which can also persist indefinitely on a
+    /// genuinely unreachable peer (phone locked into aggressive Doze, its
+    /// foreground service killed, etc.) — observed directly as the Android app
+    /// looking permanently "stuck" on its discovering/disconnected state, because
+    /// this Mac's `dialingDeviceIds`/`pendingByObjectId` entry for it never clears,
+    /// which blocks `handleDiscoveredPeers` from ever retrying that same device.
+    /// A hung handshake read (peer accepts the TCP connection but never completes
+    /// Noise) has the same failure mode and is covered by the same timeout, since
+    /// nothing here distinguishes "still connecting" from "still handshaking".
+    private func scheduleTimeout(for pending: PeerConnection) {
+        let key = ObjectIdentifier(pending.connection)
+        queue.asyncAfter(deadline: .now() + Self.pendingConnectionTimeout) { [weak self] in
+            guard let self, self.pendingByObjectId[key] === pending else { return } // already resolved (either way)
+            NSLog("Connect: dial/handshake to \(pending.dialTargetDeviceId ?? "unknown peer") timed out after \(Self.pendingConnectionTimeout)s; tearing down")
+            self.teardownPending(pending)
+        }
+    }
+
+    private static let pendingConnectionTimeout: TimeInterval = 15
 
     private func handleConnectionState(_ state: NWConnection.State, pending: PeerConnection) {
         switch state {
@@ -326,6 +362,7 @@ final class TransportManager: ObservableObject {
         connection.start(queue: queue)
         resolvePeerIPAddress(pending)
         startReceiveLoop(pending: pending)
+        scheduleTimeout(for: pending)
     }
 
     /// Extracts the remote endpoint's bare IP address (stripping any zone
@@ -543,12 +580,29 @@ final class TransportManager: ObservableObject {
         guard let arrivedFrom = pending.deviceId else { return }
         do {
             let plaintext = try pending.noiseSession.decrypt(payload)
+            // A raw (non-envelope) frame armed while handling the metadata envelope
+            // that announced it (`hasRawFollowup: true`) — see `handleReceivedEnvelope`
+            // and `docs/wire-protocol.md`'s "Large binary payloads" section. Must be
+            // checked before attempting `Envelope.decode`, since a raw frame isn't JSON.
+            if let rawHandler = pendingRawFrameHandlers.removeValue(forKey: arrivedFrom) {
+                rawHandler(plaintext)
+                return
+            }
             let envelope = try Envelope.decode(plaintext)
             handleReceivedEnvelope(envelope, arrivedFrom: arrivedFrom)
         } catch {
             NSLog("Connect: failed to decrypt/decode incoming envelope: \(error)")
         }
     }
+
+    /// One-shot handlers for the raw binary frame expected to follow a metadata
+    /// envelope from a specific peer, keyed by that peer's `deviceId`. Only ever
+    /// touched from `handleTransportFrame`/`handleReceivedEnvelope`, both on `queue`.
+    /// Every envelope with `hasRawFollowup: true` arms exactly one entry here — even
+    /// a duplicate being dropped, or one neither addressed to us nor being forwarded —
+    /// since the raw frame is physically coming next on this connection regardless,
+    /// and must be consumed to keep the frame boundary in sync even when discarded.
+    private var pendingRawFrameHandlers: [String: (Data) -> Void] = [:]
 
     /// The core mesh routing decision, run on every successfully decoded
     /// inbound envelope: deliver locally if it's addressed to us (directly or
@@ -560,19 +614,53 @@ final class TransportManager: ObservableObject {
     /// pairwise, so a frame decrypted under the sender's session here is
     /// re-encrypted from scratch under each forward target's own session by
     /// `send(envelope:to:)`.
+    ///
+    /// `hasRawFollowup` envelopes are handled differently: delivery and
+    /// forwarding are both *deferred* until the raw frame that follows this
+    /// envelope actually arrives (armed via `pendingRawFrameHandlers`), so that
+    /// a relayed hop always forwards the metadata envelope and its raw frame
+    /// atomically as a pair — never the metadata alone, which would desync a
+    /// downstream hop's own "next frame is raw" expectation if some other
+    /// message interleaved in between.
     private func handleReceivedEnvelope(_ envelope: Envelope, arrivedFrom: String) {
-        guard recordSeen(envelope.id) else { return } // already processed this one; drop silently
+        guard recordSeen(envelope.id) else {
+            // Already processed/forwarded this one — but if it carries a raw
+            // follow-up, that frame is still physically coming next on this
+            // connection and must be drained, just discarded rather than acted on.
+            if envelope.hasRawFollowup {
+                pendingRawFrameHandlers[arrivedFrom] = { _ in }
+            }
+            return
+        }
 
         let isForMe = envelope.recipientId == identity.deviceId || envelope.broadcast
+        let targets = envelope.ttl > 0 ? forwardTargets(for: envelope, arrivedFrom: arrivedFrom) : []
+
+        if envelope.hasRawFollowup {
+            pendingRawFrameHandlers[arrivedFrom] = { [weak self] data in
+                guard let self else { return }
+                if isForMe {
+                    self.router.route(envelope)
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onReceive?(envelope)
+                        self?.onRawFrameReceived?(envelope, data)
+                    }
+                }
+                guard !targets.isEmpty else { return }
+                let forwarded = envelope.withTTL(envelope.ttl - 1)
+                for target in targets {
+                    try? self.send(forwarded, withRawFollowup: data, to: target)
+                }
+            }
+            return
+        }
+
         if isForMe {
             router.route(envelope)
             DispatchQueue.main.async { [weak self] in
                 self?.onReceive?(envelope)
             }
         }
-
-        guard envelope.ttl > 0 else { return }
-        let targets = forwardTargets(for: envelope, arrivedFrom: arrivedFrom)
         guard !targets.isEmpty else { return }
         let forwarded = envelope.withTTL(envelope.ttl - 1)
         for target in targets {
@@ -662,6 +750,47 @@ final class TransportManager: ObservableObject {
             let plaintext = try envelope.encoded()
             let ciphertext = try peer.noiseSession.encrypt(plaintext)
             sendFramed(ciphertext, over: peer.connection)
+        }
+    }
+
+    /// Sends `envelope` to one directly-connected peer, immediately followed by a
+    /// second raw (non-envelope) Noise-encrypted frame carrying `rawData` — the "large
+    /// binary payload" convention in `docs/wire-protocol.md`. Both frames are written
+    /// atomically under the peer's own send queue so nothing else (e.g. a concurrent
+    /// DND update) can interleave a third frame between them, which would break that
+    /// peer's "the very next frame is the raw payload" expectation — this holds at
+    /// every hop, which is what makes relaying a raw-followup envelope safe (see
+    /// `handleReceivedEnvelope`).
+    private func send(_ envelope: Envelope, withRawFollowup rawData: Data, to peer: PeerConnection) throws {
+        try peer.sendQueue.sync {
+            let plaintext = try envelope.encoded()
+            let ciphertext = try peer.noiseSession.encrypt(plaintext)
+            sendFramed(ciphertext, over: peer.connection)
+            let rawCiphertext = try peer.noiseSession.encrypt(rawData)
+            sendFramed(rawCiphertext, over: peer.connection)
+        }
+    }
+
+    /// Originates a `hasRawFollowup` envelope + its raw binary frame — the
+    /// counterpart to `send(envelope:)` for a locally-originated (not relayed) send
+    /// carrying a large binary payload (e.g. clipboard image sync). Resolves targets
+    /// from `envelope.broadcast`/`recipientId` exactly like `send(envelope:)`; devices
+    /// with no direct connection to any of those targets receive it via each target's
+    /// own relay (see `handleReceivedEnvelope`), not directly from here.
+    func send(_ envelope: Envelope, withRawFollowup rawData: Data) throws {
+        recordSeen(envelope.id)
+        let targets = forwardTargets(for: envelope, arrivedFrom: nil)
+        guard !targets.isEmpty else { throw SendError.notConnected }
+        var lastError: Error?
+        for target in targets {
+            do {
+                try send(envelope, withRawFollowup: rawData, to: target)
+            } catch {
+                lastError = error
+            }
+        }
+        if let lastError {
+            throw lastError
         }
     }
 

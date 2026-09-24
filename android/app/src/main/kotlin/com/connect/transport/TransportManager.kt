@@ -33,6 +33,7 @@ import kotlinx.serialization.json.JsonObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
@@ -105,6 +106,22 @@ class TransportManager(
 
     private val _incoming = MutableSharedFlow<Envelope>(extraBufferCapacity = 64)
     val incoming: SharedFlow<Envelope> = _incoming.asSharedFlow()
+
+    /** Fired alongside [incoming]/[MessageRouter] delivery, but only for an envelope
+     *  whose `hasRawFollowup` is `true`, once its raw binary frame has arrived — pairs
+     *  the metadata [Envelope] with the raw bytes so a feature manager (e.g.
+     *  [com.connect.features.clipboard.ClipboardSyncManager] for image sync) can
+     *  consume both together. See `docs/wire-protocol.md`'s "Large binary payloads"
+     *  section. Single-subscriber, like [onUntrustedHandshake]/[onNewDevicePaired]. */
+    var onRawFrameReceived: ((Envelope, ByteArray) -> Unit)? = null
+
+    /** One-shot handlers for the raw binary frame expected to follow a metadata
+     *  envelope from a specific peer, keyed by that peer's `deviceId`. Every envelope
+     *  with `hasRawFollowup = true` arms exactly one entry here — even a duplicate
+     *  being dropped, or one neither addressed to us nor being forwarded — since the
+     *  raw frame is physically coming next on this connection regardless, and must be
+     *  consumed to keep the frame boundary in sync even when discarded. */
+    private val pendingRawFrameHandlers = ConcurrentHashMap<String, suspend (ByteArray) -> Unit>()
 
     val discovery = NsdDiscovery(context, identityKeyStore.deviceId, identityKeyStore.publicKeyFingerprint())
 
@@ -208,7 +225,12 @@ class TransportManager(
         recomputeConnectionState()
         scope.launch {
             val client = try {
-                Socket(host, port)
+                // The (host, port) convenience constructor has no connect timeout of its
+                // own — on some networks/hosts the platform default can be very long
+                // (tens of seconds to minutes) for a genuinely unreachable address, during
+                // which `dialingDeviceIds` blocks any retry to this same peer. An explicit
+                // bounded timeout here is what actually makes that guard self-heal.
+                Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
             } catch (e: IOException) {
                 Log.w(TAG, "Connect to $host:$port failed", e)
                 dialingDeviceIds.remove(deviceId)
@@ -249,6 +271,44 @@ class TransportManager(
         peer.sendMutex.withLock {
             val ciphertext = peer.noiseSession.encryptTransportMessage(envelope.encode())
             writeFrame(peer.output, ciphertext)
+        }
+    }
+
+    /** Originates a `hasRawFollowup` envelope + its raw binary frame — the counterpart
+     *  to [send] for a locally-originated (not relayed) send carrying a large binary
+     *  payload (e.g. clipboard image sync). Resolves targets from
+     *  `envelope.broadcast`/`recipientId` exactly like [send]; devices with no direct
+     *  connection to any of those targets receive it via each target's own relay (see
+     *  [handleReceivedEnvelope]), not directly from here. */
+    suspend fun send(envelope: Envelope, rawFollowup: ByteArray) = withContext(Dispatchers.IO) {
+        recordSeen(envelope.id)
+        val targets = forwardTargets(envelope, arrivedFrom = null)
+        if (targets.isEmpty()) throw IllegalStateException("Not connected")
+        var lastError: Throwable? = null
+        for (target in targets) {
+            try {
+                sendWithRawFollowup(envelope, rawFollowup, target)
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        lastError?.let { throw it }
+    }
+
+    /** Encrypts + writes [envelope] to one specific peer, immediately followed by a
+     *  second raw (non-envelope) Noise-encrypted frame carrying [rawData] — the "large
+     *  binary payload" convention in `docs/wire-protocol.md`. Both frames are written
+     *  atomically inside [PeerConnection.sendMutex] so nothing else (e.g. a concurrent
+     *  DND update) can interleave a third frame between them, which would break that
+     *  peer's "the very next frame is the raw payload" expectation — this holds at
+     *  every hop, which is what makes relaying a raw-followup envelope safe (see
+     *  [handleReceivedEnvelope]). */
+    private suspend fun sendWithRawFollowup(envelope: Envelope, rawData: ByteArray, peer: PeerConnection) {
+        peer.sendMutex.withLock {
+            val ciphertext = peer.noiseSession.encryptTransportMessage(envelope.encode())
+            writeFrame(peer.output, ciphertext)
+            val rawCiphertext = peer.noiseSession.encryptTransportMessage(rawData)
+            writeFrame(peer.output, rawCiphertext)
         }
     }
 
@@ -296,6 +356,16 @@ class TransportManager(
         scope.launch {
             var peer: PeerConnection? = null
             try {
+                // Bounds the blocking handshake reads below to HANDSHAKE_TIMEOUT_MS: a
+                // peer that accepts the TCP connection but never completes Noise (app
+                // killed mid-handshake, aggressive Doze, etc.) would otherwise block this
+                // coroutine — and hold `dialingDeviceIds`/`inFlightHandshakes` — forever,
+                // observed directly as this device looking permanently "stuck" reconnecting
+                // (the fallback-dial loop's own guard sees a dial as still in progress and
+                // never retries). Cleared back to infinite once the handshake completes —
+                // steady-state idle periods between messages are expected and covered by
+                // `heartbeatLoop`'s own liveness check instead, not a socket-level timeout.
+                client.soTimeout = HANDSHAKE_TIMEOUT_MS.toInt()
                 val input = DataInputStream(client.getInputStream())
                 val out = DataOutputStream(client.getOutputStream())
 
@@ -305,6 +375,7 @@ class TransportManager(
                 } else {
                     performResponderHandshake(session, out, input)
                 }
+                client.soTimeout = 0
                 val remoteId = peerInfo.deviceId
                 settleDialing()
                 recomputeConnectionState()
@@ -360,6 +431,16 @@ class TransportManager(
                         val frame = readFrame(input)
                         val plaintext = session.decryptTransportMessage(frame)
                         newPeer.lastReceivedAt = System.currentTimeMillis()
+                        // A raw (non-envelope) frame armed while handling the metadata
+                        // envelope that announced it (`hasRawFollowup = true`) — see
+                        // `handleReceivedEnvelope` and `docs/wire-protocol.md`'s "Large
+                        // binary payloads" section. Must be checked before attempting
+                        // `Envelope.decode`, since a raw frame isn't JSON at all.
+                        val rawHandler = pendingRawFrameHandlers.remove(remoteId)
+                        if (rawHandler != null) {
+                            rawHandler(plaintext)
+                            continue
+                        }
                         val envelope = Envelope.decode(plaintext)
                         handleReceivedEnvelope(envelope, arrivedFrom = remoteId)
                     }
@@ -411,18 +492,48 @@ class TransportManager(
      *
      *  Forwarding is never a raw-ciphertext relay: each hop's Noise session is pairwise, so
      *  a frame decrypted under the sender's session here is re-encrypted from scratch under
-     *  each forward target's own session by [sendTo]. */
+     *  each forward target's own session by [sendTo].
+     *
+     *  A `hasRawFollowup` envelope is handled differently: delivery and forwarding are both
+     *  *deferred* until the raw frame that follows this envelope actually arrives (armed via
+     *  [pendingRawFrameHandlers]), so that a relayed hop always forwards the metadata
+     *  envelope and its raw frame atomically as a pair — never the metadata alone, which
+     *  would desync a downstream hop's own "next frame is raw" expectation if some other
+     *  message interleaved in between. */
     private suspend fun handleReceivedEnvelope(envelope: Envelope, arrivedFrom: String) {
-        if (!recordSeen(envelope.id)) return // already processed this one; drop silently
+        if (!recordSeen(envelope.id)) {
+            // Already processed/forwarded this one — but if it carries a raw follow-up,
+            // that frame is still physically coming next on this connection and must be
+            // drained, just discarded rather than acted on.
+            if (envelope.hasRawFollowup) {
+                pendingRawFrameHandlers[arrivedFrom] = {}
+            }
+            return
+        }
 
         val isForMe = envelope.recipientId == identityKeyStore.deviceId || envelope.broadcast
+        val targets = if (envelope.ttl > 0) forwardTargets(envelope, arrivedFrom) else emptyList()
+
+        if (envelope.hasRawFollowup) {
+            pendingRawFrameHandlers[arrivedFrom] = handler@{ data ->
+                if (isForMe) {
+                    _incoming.emit(envelope)
+                    messageRouter.dispatch(envelope)
+                    onRawFrameReceived?.invoke(envelope, data)
+                }
+                if (targets.isEmpty()) return@handler
+                val forwarded = envelope.copy(ttl = envelope.ttl - 1)
+                for (target in targets) {
+                    runCatching { sendWithRawFollowup(forwarded, data, target) }
+                }
+            }
+            return
+        }
+
         if (isForMe) {
             _incoming.emit(envelope)
             messageRouter.dispatch(envelope)
         }
-
-        if (envelope.ttl <= 0) return
-        val targets = forwardTargets(envelope, arrivedFrom)
         if (targets.isEmpty()) return
         val forwarded = envelope.copy(ttl = envelope.ttl - 1)
         for (target in targets) {
@@ -552,6 +663,8 @@ class TransportManager(
         private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
         private const val HEARTBEAT_INTERVAL_MS = 20_000L
         private const val HEARTBEAT_TIMEOUT_MS = 3 * HEARTBEAT_INTERVAL_MS
+        private const val CONNECT_TIMEOUT_MS = 10_000
+        private const val HANDSHAKE_TIMEOUT_MS = 15_000L
         private const val DEDUPE_CACHE_LIMIT = 512
 
         private fun writeFrame(out: DataOutputStream, payload: ByteArray) {

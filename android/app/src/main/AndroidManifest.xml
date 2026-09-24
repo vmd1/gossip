@@ -92,6 +92,20 @@
             </intent-filter>
         </service>
 
+        <!-- Backs a content:// Uri for a received clipboard image — the system
+             clipboard's image items must be Uri-backed, not raw bytes. See
+             features/clipboard/ClipboardSyncManager.kt and
+             res/xml/clipboard_file_paths.xml. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.clipboardprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/clipboard_file_paths" />
+        </provider>
+
     </application>
 
 </manifest>
