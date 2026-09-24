@@ -14,11 +14,16 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     static let replyCategoryIdentifier = "com.connect.app.notification.reply"
     static let replyActionIdentifier = "com.connect.app.notification.replyAction"
 
-    /// Prefix applied to the Android-supplied notification `id` to form the local
-    /// `UNNotificationRequest` identifier, so `notification.removed` (and a received
-    /// reply) can map back to the originating Android notification without a separate
-    /// side table.
+    /// Prefix applied to the source device ID + Android-supplied notification `id` to
+    /// form the local `UNNotificationRequest` identifier, so `notification.removed` (and
+    /// a received reply/dismiss) can map back to both the originating *device* and its
+    /// notification without a separate side table. Encoding the source device matters
+    /// once more than one Android device can post notifications into the mesh — a bare
+    /// `id` could otherwise collide between two different phones/tablets, and a reply or
+    /// dismiss must be routed back to the specific device that posted the original
+    /// notification, not broadcast to all of them.
     private static let identifierPrefix = "com.connect.app.androidNotification."
+    private static let identifierSeparator = "|"
 
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
@@ -120,7 +125,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         content.title = posted.appName
         content.subtitle = posted.title
         content.body = posted.body
-        content.userInfo = ["androidNotificationId": posted.id]
+        content.userInfo = ["androidNotificationId": posted.id, "sourceDeviceId": envelope.senderId]
         if posted.hasReplyAction {
             content.categoryIdentifier = Self.replyCategoryIdentifier
         }
@@ -128,7 +133,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         attachIcon(base64: posted.iconBase64, to: content) { [weak self] contentWithIcon in
             guard let self else { return }
             let request = UNNotificationRequest(
-                identifier: self.localIdentifier(for: posted.id),
+                identifier: self.localIdentifier(for: posted.id, sourceDeviceId: envelope.senderId),
                 content: contentWithIcon,
                 trigger: nil
             )
@@ -147,7 +152,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             NSLog("Connect: failed to decode notification.removed payload")
             return
         }
-        let identifier = localIdentifier(for: removed.id)
+        let identifier = localIdentifier(for: removed.id, sourceDeviceId: envelope.senderId)
         trackedIdentifiers.remove(identifier)
         notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
     }
@@ -179,8 +184,8 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             DispatchQueue.main.async {
                 for identifier in dismissedIdentifiers {
                     self.trackedIdentifiers.remove(identifier)
-                    if let androidId = self.androidId(fromLocalIdentifier: identifier) {
-                        self.sendDismiss(id: androidId)
+                    if let (sourceDeviceId, androidId) = self.decodeLocalIdentifier(identifier) {
+                        self.sendDismiss(id: androidId, to: sourceDeviceId)
                     }
                 }
             }
@@ -205,7 +210,10 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
     // MARK: - Outbound: notification.reply
 
-    private func sendReply(id: String, text: String) {
+    /// Targeted at the specific device that posted the original notification — not
+    /// broadcast — since with more than one Android device in the mesh, a reply must
+    /// only be delivered to whichever one actually owns that notification/conversation.
+    private func sendReply(id: String, text: String, to sourceDeviceId: String) {
         guard let transportManager else { return }
         do {
             let payloadData = try JSONEncoder().encode(NotificationReplyPayload(id: id, text: text))
@@ -213,7 +221,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             let envelope = Envelope(
                 type: "notification.reply",
                 senderId: identity.deviceId,
-                broadcast: true,
+                recipientId: sourceDeviceId,
                 payload: payloadJSON
             )
             try transportManager.send(envelope: envelope)
@@ -224,7 +232,10 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
     // MARK: - Outbound: notification.dismiss
 
-    private func sendDismiss(id: String) {
+    /// Targeted at the specific device that posted the original notification — see
+    /// `sendReply`'s doc for why this can't be a broadcast once there's more than one
+    /// Android device in the mesh.
+    private func sendDismiss(id: String, to sourceDeviceId: String) {
         guard let transportManager else { return }
         do {
             let payloadData = try JSONEncoder().encode(NotificationDismissPayload(id: id))
@@ -232,7 +243,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             let envelope = Envelope(
                 type: "notification.dismiss",
                 senderId: identity.deviceId,
-                broadcast: true,
+                recipientId: sourceDeviceId,
                 payload: payloadJSON
             )
             try transportManager.send(envelope: envelope)
@@ -243,13 +254,22 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
     // MARK: - Helpers
 
-    func localIdentifier(for androidId: String) -> String {
-        Self.identifierPrefix + androidId
+    func localIdentifier(for androidId: String, sourceDeviceId: String) -> String {
+        Self.identifierPrefix + sourceDeviceId + Self.identifierSeparator + androidId
     }
 
-    func androidId(fromLocalIdentifier identifier: String) -> String? {
+    /// Splits a local identifier back into `(sourceDeviceId, androidId)`. Returns `nil`
+    /// for anything not produced by `localIdentifier(for:sourceDeviceId:)` — including,
+    /// notably, identifiers from a pre-mesh build that only encoded a bare `androidId`
+    /// with no separator; there's no way to recover a source device for those, so they're
+    /// just treated as unrecognized rather than guessed at.
+    func decodeLocalIdentifier(_ identifier: String) -> (sourceDeviceId: String, androidId: String)? {
         guard identifier.hasPrefix(Self.identifierPrefix) else { return nil }
-        return String(identifier.dropFirst(Self.identifierPrefix.count))
+        let remainder = identifier.dropFirst(Self.identifierPrefix.count)
+        guard let separatorIndex = remainder.range(of: Self.identifierSeparator) else { return nil }
+        let sourceDeviceId = String(remainder[remainder.startIndex..<separatorIndex.lowerBound])
+        let androidId = String(remainder[separatorIndex.upperBound...])
+        return (sourceDeviceId, androidId)
     }
 
     func decode<T: Decodable>(_ type: T.Type, from payload: JSONValue) throws -> T {
@@ -281,18 +301,18 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
     ) {
         defer { completionHandler() }
 
-        guard let androidId = androidId(fromLocalIdentifier: response.notification.request.identifier) else { return }
+        guard let (sourceDeviceId, androidId) = decodeLocalIdentifier(response.notification.request.identifier) else { return }
 
         switch response.actionIdentifier {
         case Self.replyActionIdentifier:
             guard let textResponse = response as? UNTextInputNotificationResponse else { return }
-            sendReply(id: androidId, text: textResponse.userText)
+            sendReply(id: androidId, text: textResponse.userText, to: sourceDeviceId)
         case UNNotificationDismissActionIdentifier:
             // In practice macOS rarely if ever delivers this (see `pollForDismissedNotifications`,
             // the actual mechanism this relies on) — kept as a fast path in case some
             // interaction or future macOS version does provide it.
             trackedIdentifiers.remove(response.notification.request.identifier)
-            sendDismiss(id: androidId)
+            sendDismiss(id: androidId, to: sourceDeviceId)
         default:
             break
         }

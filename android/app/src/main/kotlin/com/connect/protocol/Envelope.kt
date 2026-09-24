@@ -13,7 +13,7 @@ import java.util.UUID
  *
  * ```json
  * {"v":1,"id":"uuid-v4","type":"namespace.action","senderId":"device-uuid",
- *  "recipientId":"device-uuid-or-null","broadcast":false,
+ *  "recipientId":"device-uuid-or-null","broadcast":false,"ttl":8,
  *  "ts":1732300000000,"payload":{}}
  * ```
  */
@@ -25,6 +25,11 @@ data class Envelope(
     val senderId: String,
     val recipientId: String? = null,
     val broadcast: Boolean = false,
+    /** Hop budget for flood-forwarding across the mesh: set to [DEFAULT_TTL] by the
+     *  originating sender, decremented by 1 at every relaying hop (a device forwarding
+     *  an envelope it did not originate), dropped (not forwarded further) once it
+     *  reaches 0. See `docs/wire-protocol.md`'s "Multi-hop relay" section. */
+    val ttl: Int = DEFAULT_TTL,
     val ts: Long = System.currentTimeMillis(),
     val payload: JsonObject = JsonObject(emptyMap())
 ) {
@@ -33,6 +38,10 @@ data class Envelope(
             ignoreUnknownKeys = true
             encodeDefaults = true
         }
+
+        /** Default hop budget for an originating send — generous relative to any
+         *  realistically-sized mesh of a handful of devices. */
+        const val DEFAULT_TTL = 8
 
         fun decode(bytes: ByteArray): Envelope = json.decodeFromString(serializer(), String(bytes, Charsets.UTF_8))
     }
@@ -68,6 +77,8 @@ object MessageType {
     const val DND_UPDATE = "dnd.update"
     const val DND_SET = "dnd.set"
     const val CLIPBOARD_UPDATE = "clipboard.update"
+    const val TRUST_ROSTER_UPDATE = "trust.roster_update"
+    const val TRUST_REVOKE = "trust.revoke"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */

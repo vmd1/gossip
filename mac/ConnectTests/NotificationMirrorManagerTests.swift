@@ -8,14 +8,16 @@ final class NotificationMirrorManagerTests: XCTestCase {
 
     func testLocalIdentifierRoundTrip() {
         let manager = makeManager()
-        let local = manager.localIdentifier(for: "android-notif-42")
+        let local = manager.localIdentifier(for: "android-notif-42", sourceDeviceId: "device-abc")
         XCTAssertTrue(local.hasSuffix("android-notif-42"))
-        XCTAssertEqual(manager.androidId(fromLocalIdentifier: local), "android-notif-42")
+        let decoded = manager.decodeLocalIdentifier(local)
+        XCTAssertEqual(decoded?.sourceDeviceId, "device-abc")
+        XCTAssertEqual(decoded?.androidId, "android-notif-42")
     }
 
-    func testAndroidIdReturnsNilForUnrelatedIdentifier() {
+    func testDecodeLocalIdentifierReturnsNilForUnrelatedIdentifier() {
         let manager = makeManager()
-        XCTAssertNil(manager.androidId(fromLocalIdentifier: "some.other.identifier"))
+        XCTAssertNil(manager.decodeLocalIdentifier("some.other.identifier"))
     }
 
     func testDecodeNotificationPostedPayload() throws {

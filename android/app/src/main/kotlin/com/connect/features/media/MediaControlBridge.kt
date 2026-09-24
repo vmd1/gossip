@@ -98,8 +98,7 @@ class MediaControlBridge(
     private val context: Context,
     private val messageRouter: MessageRouter,
     private val transportManager: TransportManager,
-    private val identityKeyStore: IdentityKeyStore,
-    private val remoteDeviceIdProvider: () -> String?
+    private val identityKeyStore: IdentityKeyStore
 ) {
     private val mediaSessionManager =
         context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
@@ -171,10 +170,14 @@ class MediaControlBridge(
     private fun publishNowPlaying() {
         val controller = activeController ?: return
         val snapshot = snapshotFrom(controller) ?: return
+        // Broadcast (mesh support): every trusted Mac should see this device's
+        // now-playing state, not just whichever single peer used to be tracked — each
+        // Mac keys its own now-playing state per sender (senderId), so multiple phones'
+        // sessions can be shown/controlled independently.
         val envelope = Envelope(
             type = MediaMessageType.NOWPLAYING,
             senderId = identityKeyStore.deviceId,
-            recipientId = remoteDeviceIdProvider(),
+            broadcast = true,
             payload = snapshot.toPayload()
         )
         scope.launch {

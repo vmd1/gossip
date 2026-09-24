@@ -268,6 +268,23 @@ final class ADBWirelessPairing: ObservableObject {
         return nil
     }
 
+    /// Parses `adb devices -l` for the first authorized (`device`-state) serial whose
+    /// address matches `ip` — the IP portion of a wireless `ip:port` adb serial. Used
+    /// to resolve which physical `adb`-visible device corresponds to a *specific*
+    /// mesh-trusted device, now that more than one Android device can be trusted (and
+    /// visible to `adb`) at once — unlike `firstAuthorizedSerial(_:)` above, which just
+    /// grabs whichever device `adb` happens to list first.
+    static func firstAuthorizedSerial(_ output: String, matchingIP ip: String) -> String? {
+        for rawLine in output.split(separator: "\n").dropFirst() {
+            let fields = rawLine.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard let serial = fields.first.map(String.init) else { continue }
+            guard fields.count >= 2, fields[1] == "device" else { continue }
+            let serialIP = serial.split(separator: ":").first.map(String.init) ?? serial
+            if serialIP == ip { return serial }
+        }
+        return nil
+    }
+
     /// Defense-in-depth device-identity check (see this unit's PR
     /// description): compares the IP the ADB pairing/connect flow discovered
     /// over mDNS against the IP of the phone already trust-paired over the

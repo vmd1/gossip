@@ -7,6 +7,18 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
+/** Bundle extra key set (to `true`) on every notification [NotificationMirrorReceiver]
+ *  posts locally to mirror a peer's notification. [NotificationListenerImpl] must check
+ *  this and skip re-mirroring it — otherwise a phone mirroring a tablet's notification
+ *  would immediately re-detect its own mirrored copy as "a new local notification" and
+ *  broadcast it right back out, ping-ponging (and duplicating) it around the mesh
+ *  forever. This is a distinct, more general guard than the one exclusion
+ *  `NotificationListenerImpl` already had (skipping only its own persistent foreground
+ *  "Connect is running" notification by exact package+id) — it must apply regardless of
+ *  package/id, since this class posts under this app's own package but must never be
+ *  re-mirrored. */
+const val EXTRA_IS_MIRROR = "com.connect.app.isMirroredNotification"
+
 /** `notification.posted` payload (android -> mac). See `schema/message-types.md`. */
 @Serializable
 data class NotificationPostedPayload(
@@ -19,10 +31,13 @@ data class NotificationPostedPayload(
     val hasReplyAction: Boolean,
     val timestamp: Long
 ) {
-    fun toEnvelope(senderId: String, recipientId: String?): Envelope = Envelope(
+    /** Broadcast (not targeted): every other trusted device in the mesh — Macs *and*
+     *  other Android devices (phones/tablets) — should mirror this notification, not
+     *  just whichever single peer this device happened to be tracking as "the" one. */
+    fun toEnvelope(senderId: String): Envelope = Envelope(
         type = MessageType.NOTIFICATION_POSTED,
         senderId = senderId,
-        recipientId = recipientId,
+        broadcast = true,
         payload = json.encodeToJsonElement(serializer(), this).jsonObject
     )
 
@@ -31,13 +46,13 @@ data class NotificationPostedPayload(
     }
 }
 
-/** `notification.removed` payload (android -> mac). */
+/** `notification.removed` payload (android -> mesh, broadcast). */
 @Serializable
 data class NotificationRemovedPayload(val id: String) {
-    fun toEnvelope(senderId: String, recipientId: String?): Envelope = Envelope(
+    fun toEnvelope(senderId: String): Envelope = Envelope(
         type = MessageType.NOTIFICATION_REMOVED,
         senderId = senderId,
-        recipientId = recipientId,
+        broadcast = true,
         payload = Json.encodeToJsonElement(serializer(), this).jsonObject
     )
 }

@@ -14,7 +14,10 @@ import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.clipboard.ClipboardSyncManager
 import com.connect.features.dnd.DndSyncManager
 import com.connect.features.media.MediaControlBridge
+import com.connect.features.notifications.NotificationMirrorReceiver
 import com.connect.features.screenmirror.ScreenMirrorState
+import com.connect.features.trust.RosterGossipManager
+import com.connect.protocol.detectDeviceType
 import com.connect.transport.ConnectionState
 import com.connect.transport.MessageRouter
 import com.connect.transport.TransportManager
@@ -42,6 +45,7 @@ class SyncForegroundService : Service() {
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
+    private lateinit var rosterGossipManager: RosterGossipManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -50,19 +54,20 @@ class SyncForegroundService : Service() {
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
         val messageRouter = MessageRouter()
+        val deviceType = detectDeviceType(applicationContext)
         screenMirrorState.register(messageRouter)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
-            messageRouter = messageRouter
+            messageRouter = messageRouter,
+            deviceType = deviceType
         )
         mediaControlBridge = MediaControlBridge(
             context = applicationContext,
             messageRouter = messageRouter,
             transportManager = transportManager,
-            identityKeyStore = identity,
-            remoteDeviceIdProvider = { transportManager.currentRemoteDeviceId() }
+            identityKeyStore = identity
         )
         TransportManagerHolder.instance = transportManager
         clipboardSyncManager = ClipboardSyncManager(
@@ -80,6 +85,22 @@ class SyncForegroundService : Service() {
             scope = serviceScope
         )
         dndSyncManager.start()
+        NotificationMirrorReceiver.instance = NotificationMirrorReceiver(
+            context = applicationContext,
+            transportManager = transportManager,
+            identityKeyStore = identity,
+            messageRouter = messageRouter,
+            scope = serviceScope
+        )
+        rosterGossipManager = RosterGossipManager(
+            transportManager = transportManager,
+            trustedDevicesStore = trustedDevices,
+            identityKeyStore = identity,
+            messageRouter = messageRouter,
+            scope = serviceScope,
+            deviceName = Build.MODEL ?: "Android device",
+            deviceType = deviceType
+        )
 
         // Start/stop clipboard sync in lockstep with the transport connection, same as
         // the loop-suppression contract in schema/message-types.md requires.
@@ -102,6 +123,21 @@ class SyncForegroundService : Service() {
 
         runFallbackDialLoop(trustedDevices)
         runDndResyncLoop()
+        runRosterResyncLoop()
+    }
+
+    /** Self-healing backstop for roster gossip, on top of the event-driven paths (a fresh
+     *  connection, or a brand-new pairing): periodically re-broadcasts the full local
+     *  roster to every connected peer. Mirrors [runDndResyncLoop] — safe to call
+     *  repeatedly, since re-adding an already-trusted device is a no-op (see
+     *  `RosterGossipManager.handleRosterUpdate`). */
+    private fun runRosterResyncLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(ROSTER_RESYNC_INTERVAL_MS)
+                rosterGossipManager.periodicResync()
+            }
+        }
     }
 
     /** Self-healing backstop for DND sync, on top of the event-driven paths
@@ -124,30 +160,32 @@ class SyncForegroundService : Service() {
         }
     }
 
-    /** Android only ever listens for an inbound connection (`transportManager.listen()`)
-     *  — on-LAN discovery/dialing is entirely Mac-initiated (Bonjour browse + `NWConnection`).
-     *  That has no equivalent once the two devices aren't on the same LAN/mDNS domain (e.g.
-     *  different networks bridged only by a Tailscale tunnel), so there is no path back to
-     *  CONNECTED at all in that case unless *something* dials out. This loop is that
-     *  something: while disconnected, and only if the user configured a fallback address for
-     *  a trusted device (see `TrustedDevice.fallbackHost`, set from the Paired Devices UI),
-     *  periodically attempt an outbound `connect()` to it directly, bypassing discovery.
-     *  Checking `connectionState == DISCONNECTED` immediately before each attempt is what
-     *  keeps this from piling up overlapping attempts: a connect in progress (or already
-     *  succeeded) moves off `DISCONNECTED` until it fails, per `TransportManager.connect`. */
+    /** Android only ever listens for inbound connections (`transportManager.listen()`) on
+     *  the LAN — Mac-initiated discovery/dialing (Bonjour browse + `NWConnection`) doesn't
+     *  reach a device that isn't on the same LAN/mDNS domain (e.g. different networks
+     *  bridged only by a Tailscale tunnel), so there is no path to a connection at all in
+     *  that case unless *something* dials out. This loop is that something: dials *every*
+     *  trusted device with a configured fallback address (see `TrustedDevice.fallbackHost`,
+     *  set from the Paired Devices UI) that isn't already connected — not just the first
+     *  one found while fully idle, since with a mesh this device may already be connected
+     *  to some trusted devices while still needing to fallback-dial others.
+     *  `TransportManager.connect`'s own dedupe guard (skips if already connected/dialing to
+     *  that exact `deviceId`) is what keeps this from piling up overlapping attempts. */
     private fun runFallbackDialLoop(trustedDevices: TrustedDevicesStore) {
         serviceScope.launch {
             while (isActive) {
                 delay(FALLBACK_DIAL_INTERVAL_MS)
-                if (transportManager.connectionState.value != ConnectionState.DISCONNECTED) continue
-
-                val target = trustedDevices.allDevices().firstOrNull { !it.fallbackHost.isNullOrBlank() }
-                    ?: continue
-                transportManager.connect(
-                    host = target.fallbackHost!!,
-                    port = TransportManager.DEFAULT_PORT,
-                    remoteStaticPublicKey = target.publicKey
-                )
+                val connected = transportManager.connectedDeviceIds.value
+                for (target in trustedDevices.allDevices()) {
+                    val host = target.fallbackHost
+                    if (host.isNullOrBlank() || target.deviceId in connected) continue
+                    transportManager.connect(
+                        host = host,
+                        port = TransportManager.DEFAULT_PORT,
+                        remoteStaticPublicKey = target.publicKey,
+                        deviceId = target.deviceId
+                    )
+                }
             }
         }
     }
@@ -167,6 +205,7 @@ class SyncForegroundService : Service() {
         if (TransportManagerHolder.instance === transportManager) {
             TransportManagerHolder.instance = null
         }
+        NotificationMirrorReceiver.instance = null
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -176,6 +215,8 @@ class SyncForegroundService : Service() {
     fun transportManager(): TransportManager = transportManager
 
     fun dndSyncManager(): DndSyncManager = dndSyncManager
+
+    fun rosterGossipManager(): RosterGossipManager = rosterGossipManager
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService
@@ -216,5 +257,6 @@ class SyncForegroundService : Service() {
         const val NOTIFICATION_ID = 1001
         private const val FALLBACK_DIAL_INTERVAL_MS = 15_000L
         private const val DND_RESYNC_INTERVAL_MS = 60_000L
+        private const val ROSTER_RESYNC_INTERVAL_MS = 300_000L
     }
 }

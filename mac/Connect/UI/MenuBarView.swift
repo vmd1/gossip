@@ -9,6 +9,7 @@ struct MenuBarView: View {
     @ObservedObject var screenMirrorController: ScreenMirrorController
     @ObservedObject var mediaControlManager: MediaControlManager
     @ObservedObject var notificationMirrorManager: NotificationMirrorManager
+    let rosterGossipManager: RosterGossipManager
 
     @State private var pairingWindow: PairingWindow?
     @State private var dndSetupWindow: DNDSetupWindow?
@@ -25,6 +26,9 @@ struct MenuBarView: View {
 
             if let nowPlaying = mediaControlManager.nowPlaying {
                 Divider()
+                if mediaControlManager.nowPlayingByDevice.count > 1 {
+                    mediaDevicePicker
+                }
                 NowPlayingView(nowPlaying: nowPlaying, mediaControlManager: mediaControlManager)
             }
 
@@ -37,8 +41,6 @@ struct MenuBarView: View {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
-
-            mirrorScreenRow
 
             Button("Do Not Disturb Sync Setup…") {
                 let window = DNDSetupWindow()
@@ -67,8 +69,11 @@ struct MenuBarView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            if device.deviceType != .mac {
+                                mirrorButton(for: device)
+                            }
                             Button("Forget") {
-                                trustedDevicesStore.revoke(deviceId: device.deviceId)
+                                rosterGossipManager.revoke(deviceId: device.deviceId)
                             }
                             .buttonStyle(.borderless)
                         }
@@ -87,55 +92,68 @@ struct MenuBarView: View {
         .frame(width: 280)
     }
 
-    /// "Mirror Screen" — sends `screen.start` over the transport purely for
-    /// Android-side UI-state signaling (best-effort; ignored if not
-    /// connected), then kicks off the ADB-mediated mirroring pipeline, which
-    /// does NOT depend on the transport being connected — only on `adb
-    /// devices` showing the phone.
+    /// Per-device "Mirror"/"Stop Mirroring" button shown next to "Forget" in the
+    /// Trusted Devices list, so the user picks *which* Android device to mirror now
+    /// that more than one can be trusted at once — `ScreenMirrorController` only ever
+    /// runs one `scrcpy` session at a time, so every other row's button is disabled
+    /// while one is active.
     @ViewBuilder
-    private var mirrorScreenRow: some View {
-        switch screenMirrorController.state {
-        case .idle:
-            Button("Mirror Screen…") { startMirroring() }
-        case .starting:
-            HStack {
-                ProgressView().controlSize(.small)
-                Text("Starting mirroring…")
-            }
-        case .mirroring:
+    private func mirrorButton(for device: TrustedDevice) -> some View {
+        let isThisDevice = screenMirrorController.mirroringDeviceId == device.deviceId
+        switch (screenMirrorController.state, isThisDevice) {
+        case (.idle, _):
+            Button("Mirror") { startMirroring(for: device) }
+                .buttonStyle(.borderless)
+        case (.starting, true):
+            ProgressView().controlSize(.small)
+        case (.mirroring, true):
             Button("Stop Mirroring") { stopMirroring() }
+                .buttonStyle(.borderless)
+        case (.starting, false), (.mirroring, false):
+            Button("Mirror") {}
+                .buttonStyle(.borderless)
+                .disabled(true)
         }
     }
 
     /// Before launching the mirroring pipeline, makes sure `adb` already sees an
-    /// authorized device (typically already connected via USB or a previous wireless
-    /// pairing); if not, opens the QR wireless-pairing flow first and only starts
-    /// mirroring once it reaches `.connected`. Either way, mirroring itself is just
-    /// `scrcpy` launched as a subprocess — it opens and owns its own window, Connect
-    /// doesn't render anything itself. See `ScreenMirrorController`.
-    private func startMirroring() {
-        sendScreenSignal(type: "screen.start")
+    /// authorized device matching *this specific* trusted device (preferring one
+    /// whose `ip:port` adb serial matches this device's known Connect transport IP,
+    /// so picking "Mirror" on the tablet doesn't accidentally mirror the phone);
+    /// if not, opens the QR wireless-pairing flow first and only starts mirroring
+    /// once it reaches `.connected`. Either way, mirroring itself is just `scrcpy`
+    /// launched as a subprocess — it opens and owns its own window, Connect doesn't
+    /// render anything itself. See `ScreenMirrorController`.
+    private func startMirroring(for device: TrustedDevice) {
+        sendScreenSignal(type: "screen.start", to: device.deviceId)
         guard let adbPath = ADBClient.resolveADBPath() else {
-            screenMirrorController.start() // surfaces the "adb/scrcpy not found" failure state
+            screenMirrorController.start(deviceId: device.deviceId) // surfaces the "adb/scrcpy not found" failure state
             return
         }
 
+        let targetIP = transportManager.ipAddress(for: device.deviceId)
         DispatchQueue.global(qos: .userInitiated).async {
             let output = (try? ADBClient.run(["devices", "-l"])).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            let existingSerial = ADBWirelessPairing.firstAuthorizedSerial(output)
+            // If we know this device's IP, only match a serial for that exact IP —
+            // never fall back to "whichever device adb happens to see first" once
+            // there's a specific device to target. Only fall back to that (matching
+            // today's pre-mesh behavior) when we have no IP to go on at all, e.g. this
+            // device isn't currently connected over the Connect transport.
+            let existingSerial = targetIP.map { ADBWirelessPairing.firstAuthorizedSerial(output, matchingIP: $0) }
+                ?? ADBWirelessPairing.firstAuthorizedSerial(output)
             DispatchQueue.main.async {
                 if let existingSerial {
-                    screenMirrorController.start(serial: existingSerial)
+                    screenMirrorController.start(serial: existingSerial, deviceId: device.deviceId)
                 } else {
-                    beginADBPairing(adbPath: adbPath)
+                    beginADBPairing(adbPath: adbPath, device: device, trustedPeerIP: targetIP)
                 }
             }
         }
     }
 
-    private func beginADBPairing(adbPath: String) {
+    private func beginADBPairing(adbPath: String, device: TrustedDevice, trustedPeerIP: String?) {
         let pairing = ADBWirelessPairing(adbPath: adbPath)
-        pairing.trustedPeerIP = transportManager.connectedPeerIPAddress
+        pairing.trustedPeerIP = trustedPeerIP
         let window = ADBPairingWindow(pairing: pairing)
         adbPairingWindow = window
 
@@ -144,7 +162,7 @@ struct MenuBarView: View {
                 adbPairingCancellable = nil
                 window.close()
                 adbPairingWindow = nil
-                screenMirrorController.start(serial: serial)
+                screenMirrorController.start(serial: serial, deviceId: device.deviceId)
             }
         }
 
@@ -153,12 +171,13 @@ struct MenuBarView: View {
     }
 
     private func stopMirroring() {
-        sendScreenSignal(type: "screen.stop")
+        if let deviceId = screenMirrorController.mirroringDeviceId {
+            sendScreenSignal(type: "screen.stop", to: deviceId)
+        }
         screenMirrorController.stop()
     }
 
-    private func sendScreenSignal(type: String) {
-        guard case .connected(let deviceId) = transportManager.connectionState else { return }
+    private func sendScreenSignal(type: String, to deviceId: String) {
         let envelope = Envelope(
             type: type,
             senderId: IdentityKeyStore.shared.deviceId,
@@ -182,6 +201,23 @@ struct MenuBarView: View {
                 }
             }
         }
+    }
+
+    /// Shown only when more than one device is currently reporting a media session —
+    /// lets the user pick which one the now-playing card and playback controls target,
+    /// rather than always defaulting to whichever reported most recently.
+    private var mediaDevicePicker: some View {
+        Picker("Now playing on", selection: Binding(
+            get: { mediaControlManager.selectedDeviceId ?? mediaControlManager.nowPlayingByDevice.keys.first ?? "" },
+            set: { mediaControlManager.selectedDeviceId = $0 }
+        )) {
+            ForEach(Array(mediaControlManager.nowPlayingByDevice.keys), id: \.self) { deviceId in
+                Text(trustedDevicesStore.device(for: deviceId)?.deviceName ?? deviceId)
+                    .tag(deviceId)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
     }
 
     @ViewBuilder

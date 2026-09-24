@@ -39,7 +39,7 @@ final class PairingViewModel: ObservableObject {
                 self.state = .confirmingTrust(deviceName: peer.deviceName)
             }
         }
-        transportManager?.onTrustedConnected = { [weak self] peer in
+        transportManager?.addOnTrustedConnected { [weak self] peer in
             DispatchQueue.main.async {
                 self?.state = .paired(deviceName: peer.deviceName)
             }
