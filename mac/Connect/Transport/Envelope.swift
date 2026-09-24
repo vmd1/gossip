@@ -24,6 +24,13 @@ struct Envelope: Codable, Equatable {
     /// forwarding an envelope it did not originate), dropped (not forwarded further)
     /// once it reaches 0. See `docs/wire-protocol.md`'s "Multi-hop relay" section.
     let ttl: Int
+    /// When `true`, this envelope's metadata is immediately followed on the wire by a
+    /// second, raw (non-envelope) Noise-encrypted frame — the "large binary payload"
+    /// convention in `docs/wire-protocol.md` (e.g. clipboard image sync). Relayed
+    /// hop-by-hop atomically alongside the envelope itself: a relaying device always
+    /// forwards the metadata and its raw frame together, never the metadata alone. See
+    /// `TransportManager.handleReceivedEnvelope`.
+    let hasRawFollowup: Bool
     /// Milliseconds since Unix epoch.
     let ts: Int64
     /// Arbitrary, type-specific payload.
@@ -40,6 +47,7 @@ struct Envelope: Codable, Equatable {
         recipientId: String? = nil,
         broadcast: Bool = false,
         ttl: Int = Envelope.defaultTTL,
+        hasRawFollowup: Bool = false,
         ts: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
         payload: JSONValue = .object([:])
     ) {
@@ -50,6 +58,7 @@ struct Envelope: Codable, Equatable {
         self.recipientId = recipientId
         self.broadcast = broadcast
         self.ttl = ttl
+        self.hasRawFollowup = hasRawFollowup
         self.ts = ts
         self.payload = payload
     }
@@ -65,7 +74,10 @@ struct Envelope: Codable, Equatable {
     /// A copy of this envelope with `ttl` replaced — used when forwarding/relaying
     /// (never when originating; originators use `Envelope.defaultTTL` via `init`).
     func withTTL(_ newTTL: Int) -> Envelope {
-        Envelope(id: id, type: type, senderId: senderId, recipientId: recipientId, broadcast: broadcast, ttl: newTTL, ts: ts, payload: payload)
+        Envelope(
+            id: id, type: type, senderId: senderId, recipientId: recipientId,
+            broadcast: broadcast, ttl: newTTL, hasRawFollowup: hasRawFollowup, ts: ts, payload: payload
+        )
     }
 
     /// Namespace portion of `type`, e.g. "presence" for "presence.online".

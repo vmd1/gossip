@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Backs the FileProvider used by ClipboardSyncManager to expose a received
+     clipboard image as a content:// Uri (Android clipboard image items must be
+     Uri-backed, not raw bytes) — see AndroidManifest.xml's <provider> entry. -->
+<paths>
+    <cache-path name="clipboard_images" path="clipboard/" />
+</paths>

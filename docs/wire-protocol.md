@@ -60,11 +60,39 @@ A locally-originated send (from a feature manager, not a relay of something just
 
 This mechanism is also what makes `trust.roster_update`'s broadcast propagate transitively through the whole mesh for free — see that row in `schema/message-types.md`.
 
-## Large binary payloads (no current message type uses this)
+## Large binary payloads
 
-No message type currently carries large binary data (file transfer, the one feature that did, was removed — see below). If a future feature needs to, the convention this codebase previously used is worth keeping:
+Used today by `clipboard.update`'s image variant (see `schema/message-types.md`) — a file-transfer feature used this convention previously, was removed, and any future large-binary feature should reuse the same mechanism:
 
-- The binary bytes are sent as their **own raw frame** (length-prefixed exactly like any other frame, still Noise-encrypted), sent **immediately following** a JSON metadata frame (a normal envelope) that describes what the binary frame contains (e.g. byte length, chunk index, content type, checksum).
+- The binary bytes are sent as their **own raw frame** (length-prefixed exactly like any other frame, still Noise-encrypted), sent **immediately following** a JSON metadata frame (a normal envelope with `hasRawFollowup: true`) that describes what the binary frame contains (e.g. byte length, content type).
 - Binary data must **never** be base64-embedded inside a JSON `payload`. Base64 in JSON costs ~33% size overhead and forces full buffering/parsing of large blobs as text; a raw follow-up frame avoids both.
 
-This requires a `sendRawFrame`/one-shot raw-frame-handler primitive alongside the normal envelope `send` — both `TransportManager`s had one (added for file transfer's `file.chunk`), removed along with the feature. Re-add it the same way if needed: a `pendingRawFrameHandler`/equivalent armed synchronously from the metadata envelope's handler, consumed by the very next frame the receive loop reads.
+### Interaction with mesh relay
+
+Because a raw frame carries no addressing of its own, it can't be relayed the way a plain envelope is (a relaying device would try to `Envelope.decode` it as JSON and fail). Instead, `hasRawFollowup` envelopes get a variant of the mesh-relay algorithm above, applied identically on both platforms:
+
+```
+if envelope.id was already seen: still arm a "drain and discard" raw-frame handler for the peer
+   it arrived from (the raw frame is physically coming next on that connection regardless of
+   whether we act on it — dropping the duplicate must not desync the frame boundary), stop
+
+isForMe = (envelope.recipientId == myDeviceId) or envelope.broadcast
+targets = (same target-resolution as the plain-envelope algorithm above, using envelope.ttl)
+
+# Unlike a plain envelope, delivery AND forwarding are both deferred — armed as a single
+# one-shot handler for the peer this envelope arrived from — until the raw frame itself
+# actually arrives:
+arm a handler for this peer that, once the raw frame arrives with its bytes:
+    if isForMe: deliver the envelope + bytes together to the feature manager
+    for each target in targets: forward (envelope with ttl-1) + the same bytes,
+        atomically as a pair, re-encrypted under that target's own Noise session
+```
+
+The "deliver and forward only once the raw frame arrives, and always as an atomic metadata+raw pair" rule is the key difference from a plain envelope (which delivers/forwards its metadata immediately). Forwarding the metadata alone as soon as it arrived — before the raw frame showed up — would risk some other message (a heartbeat, an unrelated broadcast) getting interleaved on the wire between the forwarded metadata and the (later) forwarded raw frame at the next hop, breaking that hop's "the very next frame is the raw payload" assumption. Sending both together, atomically, under the same per-peer send lock at every hop is what keeps this safe end-to-end across an arbitrary number of relays.
+
+This requires a `send(envelope, rawFollowup)` primitive alongside the normal envelope `send`, and a one-shot raw-frame-handler (`pendingRawFrameHandlers`, keyed by peer) armed by the routing logic above — consumed by the very next frame the receive loop reads from that peer, before it's ever attempted as JSON. See `TransportManager.handleReceivedEnvelope` (Mac) / the receive loop in `launchConnectionLoop` (Android).
+
+### Scope limits (deliberate, for now)
+
+- No chunking: the whole binary payload is one frame. Fine for a clipboard-sized image; a much larger payload (e.g. a real file-transfer feature) would need to reintroduce a chunking scheme (sequence numbers, reassembly) on top of this.
+- No integrity check beyond what Noise/TCP already provide (no separate checksum field) — acceptable for the same reason.

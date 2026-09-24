@@ -30,6 +30,13 @@ data class Envelope(
      *  an envelope it did not originate), dropped (not forwarded further) once it
      *  reaches 0. See `docs/wire-protocol.md`'s "Multi-hop relay" section. */
     val ttl: Int = DEFAULT_TTL,
+    /** When `true`, this envelope's metadata is immediately followed on the wire by a
+     *  second, raw (non-envelope) Noise-encrypted frame — the "large binary payload"
+     *  convention in `docs/wire-protocol.md` (e.g. clipboard image sync). Relayed
+     *  hop-by-hop atomically alongside the envelope itself: a relaying device always
+     *  forwards the metadata and its raw frame together, never the metadata alone. See
+     *  [TransportManager]'s receive loop. */
+    val hasRawFollowup: Boolean = false,
     val ts: Long = System.currentTimeMillis(),
     val payload: JsonObject = JsonObject(emptyMap())
 ) {
