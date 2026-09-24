@@ -6,8 +6,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.connect.crypto.TrustedDevice
 import com.connect.crypto.TrustedDevicesStore
+import com.connect.features.trust.RosterGossipManager
 import com.connect.protocol.DeviceType
-import com.connect.transport.ConnectionState
 import com.connect.transport.DiscoveredPeer
 import com.connect.transport.DiscoveryEvent
 import com.connect.transport.TransportManager
@@ -20,13 +20,19 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-/** The payload encoded in the QR code the Mac app renders during pairing. */
+/** The payload encoded in the QR code shown by whichever device is the pairing
+ *  responder — originally always the Mac, but since mesh support either platform can
+ *  show one (see [com.connect.pairing.ShowQrViewModel]) — generic field names rather
+ *  than `mac*`; not part of the wire envelope (`schema/message-types.md`), both
+ *  platforms' generator/scanner just need to agree on this shape. */
 @Serializable
 data class PairingQrPayload(
-    val macDeviceId: String,
+    val responderDeviceId: String,
     /** Base64 X25519 static public key — required to run Noise_IK as the initiator. */
-    val macPublicKey: String,
-    val macPublicKeyFingerprint: String,
+    val responderPublicKey: String,
+    val responderPublicKeyFingerprint: String,
+    val responderDeviceName: String,
+    val responderDeviceType: String,
     val pairingToken: String
 )
 
@@ -47,13 +53,12 @@ sealed class PairingUiState {
  */
 class PairingViewModel(
     private val transportManager: TransportManager,
-    private val trustedDevicesStore: TrustedDevicesStore
+    private val trustedDevicesStore: TrustedDevicesStore,
+    private val rosterGossipManager: RosterGossipManager? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<PairingUiState>(PairingUiState.Idle)
     val uiState: StateFlow<PairingUiState> = _uiState.asStateFlow()
-
-    private var pendingDeviceName: String = "Mac"
 
     fun onQrScanned(rawValue: String) {
         val payload = try {
@@ -66,36 +71,42 @@ class PairingViewModel(
         viewModelScope.launch {
             _uiState.value = PairingUiState.Discovering
             val peer = withTimeoutOrNull(DISCOVERY_TIMEOUT_MS) {
-                findPeer(payload.macDeviceId)
+                findPeer(payload.responderDeviceId)
             }
             if (peer == null || peer.host == null) {
-                _uiState.value = PairingUiState.Failed("Could not find ${payload.macDeviceId} on the local network")
+                _uiState.value = PairingUiState.Failed("Could not find ${payload.responderDeviceId} on the local network")
                 return@launch
             }
 
             _uiState.value = PairingUiState.Handshaking
-            val remoteStaticKey = Base64.decode(payload.macPublicKey, Base64.NO_WRAP)
-            transportManager.connect(peer.host, peer.port, remoteStaticKey)
+            val remoteStaticKey = Base64.decode(payload.responderPublicKey, Base64.NO_WRAP)
+            transportManager.connect(peer.host, peer.port, remoteStaticKey, deviceId = payload.responderDeviceId)
 
-            val finalState = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
-                waitForConnectedOrDisconnected()
-            }
+            // Wait for *this specific* device to show up as connected, not just "connected
+            // to anything" — with a mesh, this device may already be connected to some
+            // other trusted device, which would otherwise make a plain CONNECTED check
+            // resolve immediately without actually waiting for this handshake to finish.
+            val connected = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
+                waitForDeviceConnected(payload.responderDeviceId)
+            } ?: false
 
-            when (finalState) {
-                ConnectionState.CONNECTED -> {
-                    val deviceId = transportManager.currentRemoteDeviceId() ?: payload.macDeviceId
-                    trustedDevicesStore.addDevice(
-                        TrustedDevice(
-                            deviceId = deviceId,
-                            publicKey = remoteStaticKey,
-                            deviceName = pendingDeviceName,
-                            deviceType = DeviceType.MAC,
-                            addedAt = System.currentTimeMillis()
-                        )
+            if (connected) {
+                trustedDevicesStore.addDevice(
+                    TrustedDevice(
+                        deviceId = payload.responderDeviceId,
+                        publicKey = remoteStaticKey,
+                        deviceName = payload.responderDeviceName,
+                        deviceType = DeviceType.fromWire(payload.responderDeviceType),
+                        addedAt = System.currentTimeMillis()
                     )
-                    _uiState.value = PairingUiState.Success(deviceId, pendingDeviceName)
-                }
-                else -> _uiState.value = PairingUiState.Failed("Handshake did not complete")
+                )
+                // Brand-new pairing (not a reconnect to an already-trusted device) —
+                // broadcast the updated roster so the rest of the mesh learns about
+                // this new device without waiting for the periodic resync.
+                rosterGossipManager?.announceNewDevice()
+                _uiState.value = PairingUiState.Success(payload.responderDeviceId, payload.responderDeviceName)
+            } else {
+                _uiState.value = PairingUiState.Failed("Handshake did not complete")
             }
         }
     }
@@ -104,11 +115,11 @@ class PairingViewModel(
         _uiState.value = PairingUiState.Idle
     }
 
-    private suspend fun findPeer(macDeviceId: String): DiscoveredPeer? {
+    private suspend fun findPeer(responderDeviceId: String): DiscoveredPeer? {
         var found: DiscoveredPeer? = null
         transportManager.discovery.discover().let { flow ->
             flow.first { event ->
-                if (event is DiscoveryEvent.Found && event.peer.deviceId == macDeviceId) {
+                if (event is DiscoveryEvent.Found && event.peer.deviceId == responderDeviceId) {
                     found = event.peer
                     true
                 } else {
@@ -119,8 +130,8 @@ class PairingViewModel(
         return found
     }
 
-    private suspend fun waitForConnectedOrDisconnected(): ConnectionState =
-        transportManager.connectionState.first { it == ConnectionState.CONNECTED }
+    private suspend fun waitForDeviceConnected(deviceId: String): Boolean =
+        transportManager.connectedDeviceIds.first { it.contains(deviceId) }.let { true }
 
     companion object {
         private const val DISCOVERY_TIMEOUT_MS = 15_000L
@@ -130,11 +141,12 @@ class PairingViewModel(
 
 class PairingViewModelFactory(
     private val transportManager: TransportManager,
-    private val trustedDevicesStore: TrustedDevicesStore
+    private val trustedDevicesStore: TrustedDevicesStore,
+    private val rosterGossipManager: RosterGossipManager? = null
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(PairingViewModel::class.java))
-        return PairingViewModel(transportManager, trustedDevicesStore) as T
+        return PairingViewModel(transportManager, trustedDevicesStore, rosterGossipManager) as T
     }
 }

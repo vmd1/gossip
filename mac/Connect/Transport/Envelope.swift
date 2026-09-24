@@ -19,10 +19,19 @@ struct Envelope: Codable, Equatable {
     let recipientId: String?
     /// True when this message should be treated as a broadcast to all trusted devices.
     let broadcast: Bool
+    /// Hop budget for flood-forwarding across the mesh: set to `Envelope.defaultTTL`
+    /// by the originating sender, decremented by 1 at every relaying hop (a device
+    /// forwarding an envelope it did not originate), dropped (not forwarded further)
+    /// once it reaches 0. See `docs/wire-protocol.md`'s "Multi-hop relay" section.
+    let ttl: Int
     /// Milliseconds since Unix epoch.
     let ts: Int64
     /// Arbitrary, type-specific payload.
     let payload: JSONValue
+
+    /// Default hop budget for an originating send — generous relative to any
+    /// realistically-sized mesh of a handful of devices.
+    static let defaultTTL = 8
 
     init(
         id: String = UUID().uuidString,
@@ -30,6 +39,7 @@ struct Envelope: Codable, Equatable {
         senderId: String,
         recipientId: String? = nil,
         broadcast: Bool = false,
+        ttl: Int = Envelope.defaultTTL,
         ts: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
         payload: JSONValue = .object([:])
     ) {
@@ -39,6 +49,7 @@ struct Envelope: Codable, Equatable {
         self.senderId = senderId
         self.recipientId = recipientId
         self.broadcast = broadcast
+        self.ttl = ttl
         self.ts = ts
         self.payload = payload
     }
@@ -49,6 +60,12 @@ struct Envelope: Codable, Equatable {
 
     static func decode(_ data: Data) throws -> Envelope {
         try JSONDecoder().decode(Envelope.self, from: data)
+    }
+
+    /// A copy of this envelope with `ttl` replaced — used when forwarding/relaying
+    /// (never when originating; originators use `Envelope.defaultTTL` via `init`).
+    func withTTL(_ newTTL: Int) -> Envelope {
+        Envelope(id: id, type: type, senderId: senderId, recipientId: recipientId, broadcast: broadcast, ttl: newTTL, ts: ts, payload: payload)
     }
 
     /// Namespace portion of `type`, e.g. "presence" for "presence.online".

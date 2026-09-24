@@ -27,3 +27,5 @@ This is true even though Wave 1's actual behavior is degenerate: there are only 
 - Every message handler on both sides must check `recipientId`/`broadcast` against its own device identity even in v1, which is trivial work now (always true) but means the check is already in place when it stops being trivial.
 - The `TrustedDevices` table (device UUID → public key → metadata) is a table, not a single "paired device" field, from the first implementation — see `docs/architecture.md`.
 - Multi-device support, when it ships, is expected to be primarily a roster-gossip protocol (`trust.roster_update` becoming real) plus config/UI work, not a wire-format migration.
+
+**Superseded by:** `docs/adr/0004-mesh-roster-gossip-and-relay.md`, which implements the roster-gossip logic and multi-hop relay this ADR deferred. This ADR's own decisions (envelope addressing, the `TrustedDevices` table shape) remain in effect unchanged.

@@ -20,11 +20,11 @@ class NotificationPayloadsTest {
             timestamp = 1_732_300_000_000
         )
 
-        val envelope = payload.toEnvelope(senderId = "device-android", recipientId = "device-mac")
+        val envelope = payload.toEnvelope(senderId = "device-android")
 
         assertEquals(MessageType.NOTIFICATION_POSTED, envelope.type)
         assertEquals("device-android", envelope.senderId)
-        assertEquals("device-mac", envelope.recipientId)
+        assertTrue(envelope.broadcast)
         assertEquals("notif-1", envelope.payload["id"]?.toString()?.trim('"'))
         assertEquals("true", envelope.payload["hasReplyAction"].toString())
     }
@@ -41,19 +41,21 @@ class NotificationPayloadsTest {
             hasReplyAction = false,
             timestamp = 42
         )
-        val envelope = payload.toEnvelope(senderId = "device-android", recipientId = null)
+        val envelope = payload.toEnvelope(senderId = "device-android")
 
         val decoded = com.connect.protocol.Envelope.decode(envelope.encode())
 
         assertEquals("notification.posted", decoded.type)
         assertNull(decoded.recipientId)
+        assertTrue(decoded.broadcast)
         assertTrue(decoded.payload.toString().contains("notif-2"))
     }
 
     @Test
     fun `notification removed envelope carries id and correct type`() {
-        val envelope = NotificationRemovedPayload(id = "notif-3").toEnvelope(senderId = "device-android", recipientId = "device-mac")
+        val envelope = NotificationRemovedPayload(id = "notif-3").toEnvelope(senderId = "device-android")
         assertEquals(MessageType.NOTIFICATION_REMOVED, envelope.type)
+        assertTrue(envelope.broadcast)
         assertEquals("notif-3", envelope.payload["id"]?.toString()?.trim('"'))
     }
 
@@ -68,7 +70,7 @@ class NotificationPayloadsTest {
             iconBase64 = null,
             hasReplyAction = true,
             timestamp = 1
-        ).toEnvelope(senderId = "device-mac", recipientId = "device-android")
+        ).toEnvelope(senderId = "device-mac")
 
         // Build a notification.reply payload the way the Mac side would, then parse it
         // back the way NotificationListenerImpl.handleReply does.

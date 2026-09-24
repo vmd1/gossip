@@ -15,6 +15,7 @@ struct ConnectApp: App {
     @StateObject private var notificationMirrorManager: NotificationMirrorManager
     private let dndSyncManager: DNDSyncManager
     @StateObject private var clipboardSyncManager: ClipboardSyncManager
+    private let rosterGossipManager: RosterGossipManager
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
     /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
@@ -25,6 +26,7 @@ struct ConnectApp: App {
     private let subscriptions = SubscriptionBox()
     private let dndResyncSubscriptions = SubscriptionBox()
     private let fallbackDialSubscriptions = SubscriptionBox()
+    private let rosterResyncSubscriptions = SubscriptionBox()
 
     init() {
         let transport = TransportManager()
@@ -36,6 +38,7 @@ struct ConnectApp: App {
         UNUserNotificationCenter.current().delegate = notificationMirror
         dndSyncManager = DNDSyncManager(transportManager: transport)
         _clipboardSyncManager = StateObject(wrappedValue: ClipboardSyncManager(transportManager: transport))
+        rosterGossipManager = RosterGossipManager(transportManager: transport)
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
@@ -101,22 +104,34 @@ struct ConnectApp: App {
         // trusted device (Trusted Devices list in the menu), periodically dial it directly on
         // the fixed port, bypassing discovery. See `TrustedDevice.fallbackHost` and
         // `docs/wire-protocol.md`.
+        // Dials *every* trusted device with a configured fallback host that
+        // isn't already connected — not just the first one found while fully
+        // idle. With a mesh, this Mac may already be connected to some
+        // trusted devices while still needing to fallback-dial others.
         let trustedDevices = trustedDevicesStore
         fallbackDialSubscriptions.cancellable = Timer.publish(every: 15, on: .main, in: .common)
             .autoconnect()
             .sink { [transport, trustedDevices] _ in
-                switch transport.connectionState {
-                case .connected, .handshaking:
-                    return
-                case .disconnected, .discovering:
-                    break
+                for target in trustedDevices.allDevices() {
+                    guard let host = target.fallbackHost, !host.isEmpty else { continue }
+                    guard !transport.connectedDeviceIds.contains(target.deviceId) else { continue }
+                    guard let keyData = Data(base64Encoded: target.publicKeyBase64),
+                          let staticKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: keyData)
+                    else { continue }
+                    transport.connect(toFallbackHost: host, remoteStaticKey: staticKey, deviceId: target.deviceId)
                 }
-                guard let target = trustedDevices.allDevices().first(where: { ($0.fallbackHost?.isEmpty == false) }),
-                      let host = target.fallbackHost,
-                      let keyData = Data(base64Encoded: target.publicKeyBase64),
-                      let staticKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: keyData)
-                else { return }
-                transport.connect(toFallbackHost: host, remoteStaticKey: staticKey)
+            }
+
+        // Self-healing backstop for roster gossip, on top of the event-driven paths
+        // (a fresh connection, or a brand-new pairing): periodically re-broadcasts the
+        // full local roster to every connected peer. Mirrors the DND resync loop above
+        // — safe to call repeatedly, since re-adding an already-trusted device is a
+        // no-op (see `RosterGossipManager.handleRosterUpdate`).
+        let roster = rosterGossipManager
+        rosterResyncSubscriptions.cancellable = Timer.publish(every: 300, on: .main, in: .common)
+            .autoconnect()
+            .sink { _ in
+                roster.periodicResync()
             }
     }
 
@@ -128,7 +143,8 @@ struct ConnectApp: App {
                 trustedDevicesStore: trustedDevicesStore,
                 screenMirrorController: screenMirrorController,
                 mediaControlManager: mediaControlManager,
-                notificationMirrorManager: notificationMirrorManager
+                notificationMirrorManager: notificationMirrorManager,
+                rosterGossipManager: rosterGossipManager
             )
         }
         .menuBarExtraStyle(.window)

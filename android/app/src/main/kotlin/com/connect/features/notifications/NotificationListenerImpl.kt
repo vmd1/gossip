@@ -102,6 +102,10 @@ class NotificationListenerImpl : NotificationListenerService() {
         // posts (e.g. a manual "Send Test Notification" button), so that button is
         // actually useful for testing the mirroring pipeline end to end.
         if (sbn.packageName == packageName && sbn.id == SyncForegroundService.NOTIFICATION_ID) return
+        // Never re-mirror a notification this app itself posted to mirror some OTHER
+        // device's notification — see EXTRA_IS_MIRROR's doc for why this must be a
+        // content-based check, not a package/id exclusion like the one above.
+        if (sbn.notification.extras.getBoolean(EXTRA_IS_MIRROR, false)) return
         if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
         // Media playback notifications (Spotify, YouTube Music, etc.) are already covered
         // end to end by the dedicated media.nowplaying/media.command pipeline
@@ -137,14 +141,14 @@ class NotificationListenerImpl : NotificationListenerService() {
             hasReplyAction = replyAction != null,
             timestamp = sbn.postTime
         )
-        send(payload.toEnvelope(senderId = deviceId(), recipientId = remoteDeviceId()))
+        send(payload.toEnvelope(senderId = deviceId()))
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         super.onNotificationRemoved(sbn)
         replyTargets.remove(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
-        send(payload.toEnvelope(senderId = deviceId(), recipientId = remoteDeviceId()))
+        send(payload.toEnvelope(senderId = deviceId()))
     }
 
     // MARK: - notification.dismiss (mac -> android)
@@ -246,6 +250,4 @@ class NotificationListenerImpl : NotificationListenerService() {
     }
 
     private fun deviceId(): String = TransportManagerHolder.instance?.identityKeyStore?.deviceId.orEmpty()
-
-    private fun remoteDeviceId(): String? = TransportManagerHolder.instance?.currentRemoteDeviceId()
 }

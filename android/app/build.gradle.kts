@@ -78,6 +78,10 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // Pure-Java QR *encoding* (no Android dependency, unlike the scanning stack above) —
+    // used to render this device's own pairing QR when it's the one being scanned rather
+    // than scanning. See features/pairing/... QR generation.
+    implementation("com.google.zxing:core:3.5.3")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

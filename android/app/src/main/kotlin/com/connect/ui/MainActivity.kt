@@ -36,6 +36,7 @@ import com.connect.crypto.TrustedDevice
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.dnd.DndSyncManager
 import com.connect.pairing.QRScanActivity
+import com.connect.pairing.ShowQrActivity
 import com.connect.service.SyncForegroundService
 import com.connect.transport.ConnectionState
 
@@ -100,6 +101,9 @@ class MainActivity : ComponentActivity() {
                         onPairNewDevice = {
                             startActivity(Intent(this@MainActivity, QRScanActivity::class.java))
                         },
+                        onShowQrToPair = {
+                            startActivity(Intent(this@MainActivity, ShowQrActivity::class.java))
+                        },
                         isNotificationAccessGranted = { isNotificationListenerEnabled(this@MainActivity) },
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -108,7 +112,8 @@ class MainActivity : ComponentActivity() {
                         dndSyncManagerProvider = { boundService?.dndSyncManager() },
                         onRequestDndAccess = { dndSyncManager ->
                             startActivity(dndSyncManager.requestPolicyAccessIntent())
-                        }
+                        },
+                        rosterGossipManagerProvider = { boundService?.rosterGossipManager() }
                     )
                 }
             }
@@ -163,11 +168,13 @@ fun ConnectHomeScreen(
     connectionStateProvider: () -> kotlinx.coroutines.flow.StateFlow<ConnectionState>?,
     trustedDevicesStore: TrustedDevicesStore,
     onPairNewDevice: () -> Unit,
+    onShowQrToPair: () -> Unit = {},
     isNotificationAccessGranted: () -> Boolean = { true },
     onEnableNotificationAccess: () -> Unit = {},
     onSendTestNotification: () -> Unit = {},
     dndSyncManagerProvider: () -> DndSyncManager? = { null },
-    onRequestDndAccess: (DndSyncManager) -> Unit = {}
+    onRequestDndAccess: (DndSyncManager) -> Unit = {},
+    rosterGossipManagerProvider: () -> com.connect.features.trust.RosterGossipManager? = { null }
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
@@ -211,6 +218,10 @@ fun ConnectHomeScreen(
                 Text("Pair New Device")
             }
 
+            Button(onClick = onShowQrToPair) {
+                Text("Show QR to Pair")
+            }
+
             if (!notificationAccessGranted) {
                 Text(
                     "Grant notification access so your Android notifications can be mirrored to your Mac.",
@@ -250,7 +261,15 @@ fun ConnectHomeScreen(
             PairedDevicesScreen(
                 devices = devices,
                 onForget = { deviceId ->
-                    trustedDevicesStore.revoke(deviceId)
+                    // Prefer the roster-gossip path (revokes locally *and* broadcasts
+                    // `trust.revoke` so the rest of the mesh drops trust too) — falls
+                    // back to a local-only revoke if the service isn't bound yet.
+                    val roster = rosterGossipManagerProvider()
+                    if (roster != null) {
+                        roster.revoke(deviceId)
+                    } else {
+                        trustedDevicesStore.revoke(deviceId)
+                    }
                     devices = trustedDevicesStore.allDevices()
                 },
                 onSetFallbackHost = { deviceId, fallbackHost ->

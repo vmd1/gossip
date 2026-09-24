@@ -3,16 +3,24 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import AppKit
 
-/// The JSON payload encoded into the pairing QR code. The phone scans this to
-/// learn the Mac's identity + static public key out-of-band, which is what
-/// lets the subsequent Noise_IK handshake use IK (rather than the more
-/// expensive XX pattern) even on the very first connection.
+/// The JSON payload encoded into the pairing QR code. The scanning device reads this to
+/// learn the displaying device's identity + static public key out-of-band, which is what
+/// lets the subsequent Noise_IK handshake use IK (rather than the more expensive XX
+/// pattern) even on the very first connection. Either platform can be the responder
+/// showing this QR — Mac (as originally built) or, since mesh support, an Android
+/// device pairing directly with another Android device — hence generic field names
+/// rather than `mac*`; this is not part of the wire envelope (`schema/message-types.md`)
+/// and both platforms' QR generator/scanner just need to agree on this shape.
 struct PairingQRPayload: Codable {
-    let macDeviceId: String
-    let macPublicKeyFingerprint: String
-    /// Base64-encoded raw X25519 static public key, so the phone can dial in as the Noise_IK initiator.
-    let macPublicKey: String
-    /// Random nonce identifying this specific pairing attempt; the phone should
+    let responderDeviceId: String
+    let responderPublicKeyFingerprint: String
+    /// Base64-encoded raw X25519 static public key, so the scanning device can dial in as the Noise_IK initiator.
+    let responderPublicKey: String
+    /// So the scanning device can record the right name/type in its own `TrustedDevices`
+    /// row without hardcoding an assumption about which platform is displaying the QR.
+    let responderDeviceName: String
+    let responderDeviceType: String
+    /// Random nonce identifying this specific pairing attempt; the scanning device should
     /// echo it back (out of band, e.g. in its own confirmation UI) so the user
     /// can visually confirm they scanned the right code.
     let pairingToken: String
@@ -22,9 +30,11 @@ enum QRCodeGenerator {
     /// Builds the pairing QR payload for this Mac.
     static func makePairingPayload(identity: IdentityKeyStore = .shared) -> PairingQRPayload {
         PairingQRPayload(
-            macDeviceId: identity.deviceId,
-            macPublicKeyFingerprint: identity.publicKeyFingerprint,
-            macPublicKey: identity.agreementKey.publicKey.rawRepresentation.base64EncodedString(),
+            responderDeviceId: identity.deviceId,
+            responderPublicKeyFingerprint: identity.publicKeyFingerprint,
+            responderPublicKey: identity.agreementKey.publicKey.rawRepresentation.base64EncodedString(),
+            responderDeviceName: Host.current().localizedName ?? "Mac",
+            responderDeviceType: DeviceType.mac.rawValue,
             pairingToken: UUID().uuidString
         )
     }

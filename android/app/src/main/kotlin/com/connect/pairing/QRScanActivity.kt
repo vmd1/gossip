@@ -50,7 +50,11 @@ class QRScanActivity : ComponentActivity() {
 
     private val viewModel: PairingViewModel by viewModels {
         val service = boundService ?: error("Service not bound yet")
-        PairingViewModelFactory(service.transportManager(), TrustedDevicesStore.getInstance(applicationContext))
+        PairingViewModelFactory(
+            service.transportManager(),
+            TrustedDevicesStore.getInstance(applicationContext),
+            service.rosterGossipManager()
+        )
     }
 
     private val requestCameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->

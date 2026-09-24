@@ -169,6 +169,12 @@ class DndSyncManager(
         val envelope = Envelope(
             type = MessageType.DND_UPDATE,
             senderId = identityKeyStore.deviceId,
+            // Unlike Mac's DNDSyncManager, this never set `broadcast`/`recipientId` —
+            // harmless under the old single-peer send() (which ignored both and just
+            // used whatever the one connection was), but silently dropped under the
+            // mesh-aware send() (nothing to resolve a target from). Must reach every
+            // trusted device in the mesh, not just one, so it's a broadcast.
+            broadcast = true,
             payload = DndUpdatePayload(
                 sourceDeviceId = identityKeyStore.deviceId,
                 enabled = enabled,

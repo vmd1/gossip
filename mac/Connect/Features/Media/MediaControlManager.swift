@@ -27,11 +27,23 @@ struct NowPlayingState: Equatable {
     var packageName: String
 }
 
-/// Registers a `MessageRouter` handler for `media.nowplaying` envelopes from the phone
-/// and exposes the latest state to SwiftUI via `@Published`; sends `media.command`
-/// envelopes back over `TransportManager` to control playback on the phone.
+/// Registers a `MessageRouter` handler for `media.nowplaying` envelopes — broadcast by
+/// every Android device in the mesh, not just a single tracked phone — and exposes each
+/// sender's latest state to SwiftUI via `@Published`, keyed by `deviceId`; sends
+/// `media.command` envelopes back over `TransportManager`, targeted at whichever
+/// device's session is currently selected/shown, to control playback there specifically
+/// (broadcasting a command would otherwise hit every phone's session at once).
 final class MediaControlManager: ObservableObject {
-    @Published private(set) var nowPlaying: NowPlayingState?
+    @Published private(set) var nowPlayingByDevice: [String: NowPlayingState] = [:]
+
+    /// The user's explicit device selection, when more than one device is reporting a
+    /// session. `nil` (the common single-phone case, and the default before any
+    /// explicit pick) falls back to whichever device most recently reported.
+    @Published var selectedDeviceId: String?
+
+    /// Device ID of whichever entry in `nowPlayingByDevice` was most recently updated —
+    /// the default when `selectedDeviceId` is unset or no longer present.
+    private var mostRecentDeviceId: String?
 
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
@@ -41,8 +53,24 @@ final class MediaControlManager: ObservableObject {
         self.identity = identity
         transportManager.router.register(prefix: MediaMessageType.nowPlaying) { [weak self] envelope in
             guard let state = Self.parseNowPlaying(envelope.payload) else { return }
-            DispatchQueue.main.async { self?.nowPlaying = state }
+            DispatchQueue.main.async {
+                self?.nowPlayingByDevice[envelope.senderId] = state
+                self?.mostRecentDeviceId = envelope.senderId
+            }
         }
+    }
+
+    /// The now-playing state currently shown/controlled by the menu bar UI.
+    var nowPlaying: NowPlayingState? {
+        guard let deviceId = effectiveSelectedDeviceId else { return nil }
+        return nowPlayingByDevice[deviceId]
+    }
+
+    private var effectiveSelectedDeviceId: String? {
+        if let selectedDeviceId, nowPlayingByDevice[selectedDeviceId] != nil {
+            return selectedDeviceId
+        }
+        return mostRecentDeviceId
     }
 
     // MARK: - Parsing (pure, unit-testable without a live transport)
@@ -90,11 +118,11 @@ final class MediaControlManager: ObservableObject {
     // MARK: - Sending commands
 
     func sendCommand(_ action: MediaCommandAction, seekMs: Int? = nil) {
-        guard let transportManager else { return }
+        guard let transportManager, let deviceId = effectiveSelectedDeviceId else { return }
         let envelope = Envelope(
             type: MediaMessageType.command,
             senderId: identity.deviceId,
-            broadcast: true,
+            recipientId: deviceId,
             payload: Self.commandPayload(action: action, seekMs: seekMs)
         )
         try? transportManager.send(envelope: envelope)

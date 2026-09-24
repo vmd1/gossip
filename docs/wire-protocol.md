@@ -27,6 +27,39 @@ Once a transport frame's ciphertext is decrypted via the established Noise sessi
 - `type` selects the message's meaning and payload shape. See `schema/message-types.md` — the authoritative registry both codebases hand-sync against — for the full list of valid types and their payload fields.
 - One decrypted frame carries exactly one envelope (no batching of multiple envelopes into a single frame in Wave 1).
 
+## Multi-hop relay
+
+A device may be trusted-but-not-directly-connected to another device — different LANs, no fallback host configured, or simply not yet discovered — while both have a live connection to some third device. Every device therefore makes a deliver-vs-forward decision on every envelope it receives, using the envelope's own `recipientId`/`broadcast`/`ttl` fields (see `schema/envelope.schema.json`) — a deliberately simple flood-forward with a hop budget and de-duplication, not a shortest-path routing table, since a real Connect mesh is expected to stay small (a handful of devices).
+
+Algorithm, run on every successfully decrypted inbound envelope, before it's handed to the local `MessageRouter`:
+
+```
+if envelope.id was already seen (bounded recently-seen cache): drop silently, stop
+record envelope.id as seen
+
+isForMe = (envelope.recipientId == myDeviceId) or envelope.broadcast
+if isForMe: deliver locally (route to registered handlers)
+
+if envelope.ttl <= 0: stop — no further forwarding, delivered or not
+
+targets =
+  if envelope.broadcast: every other directly-connected peer except whichever one this arrived from
+  elif recipientId is set and != me:
+      if recipientId is directly connected: [that one peer]
+      else: every other directly-connected peer except whichever one this arrived from (flood toward it)
+  else: none
+
+for each target: send a copy of the envelope with ttl decremented by 1, re-encrypted under that peer's own Noise session
+```
+
+A locally-originated send (from a feature manager, not a relay of something just received) goes through the same target-resolution logic with nothing excluded and `ttl` reset to its default (8), and records its own freshly-minted `id` as seen immediately, so a message that somehow finds its way back around the mesh to its own originator is dropped rather than re-delivered.
+
+**Forwarding is never a raw-ciphertext relay.** Each hop's Noise session is pairwise (A↔B and B↔C are independent `NoiseSession`s with independent keys and nonce counters) — a frame arriving encrypted under the sender's session is fully decrypted, then re-encrypted from scratch under the *next* hop's own session before being sent on. There is no way to relay the ciphertext bytes directly.
+
+**De-duplication** guards against both re-delivering the same broadcast twice (if the mesh has more than one path between two devices) and infinite forwarding loops. Each device keeps a small in-memory cache of recently-seen envelope `id`s (bounded to a few hundred entries, oldest evicted first) — this is a size-bounded cache, not a persisted or time-windowed one, since the mesh's expected chat volume (clipboard/DND/media/roster-gossip updates) is low.
+
+This mechanism is also what makes `trust.roster_update`'s broadcast propagate transitively through the whole mesh for free — see that row in `schema/message-types.md`.
+
 ## Large binary payloads (no current message type uses this)
 
 No message type currently carries large binary data (file transfer, the one feature that did, was removed — see below). If a future feature needs to, the convention this codebase previously used is worth keeping:

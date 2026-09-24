@@ -19,15 +19,24 @@ final class ScreenMirrorController: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
+    /// Which trusted device (by Connect `deviceId`, not adb serial) the current/last
+    /// mirroring session targets — lets `MenuBarView` show "Stop Mirroring" on the
+    /// right row in the Trusted Devices list now that more than one Android device can
+    /// be trusted at once, since only one `scrcpy` session ever runs concurrently.
+    @Published private(set) var mirroringDeviceId: String?
+
     private var process: Process?
 
     /// - Parameter serial: When known (e.g. resolved by `ADBWirelessPairing`
     ///   or an existing `adb devices -l` check in `MenuBarView`), every `adb`
     ///   command is targeted at this exact device via `-s <serial>` instead
     ///   of relying on `adb`'s single-device auto-detection.
-    func start(serial: String? = nil) {
+    /// - Parameter deviceId: The Connect `deviceId` this session is mirroring, purely
+    ///   for `mirroringDeviceId` UI bookkeeping — not passed to `adb`/`scrcpy` at all.
+    func start(serial: String? = nil, deviceId: String? = nil) {
         guard case .idle = state else { return }
         state = .starting
+        mirroringDeviceId = deviceId
 
         guard let scrcpyPath = Self.resolveScrcpyPath() else {
             NSLog("Connect: scrcpy not found")
@@ -93,6 +102,7 @@ final class ScreenMirrorController: ObservableObject {
                     NSLog("Connect: scrcpy exited with status \(terminatedProcess.terminationStatus): \(message ?? "")")
                 }
                 self.state = .idle
+                self.mirroringDeviceId = nil
             }
         }
 
@@ -111,11 +121,13 @@ final class ScreenMirrorController: ObservableObject {
         } catch {
             NSLog("Connect: failed to launch scrcpy: \(error)")
             state = .idle
+            mirroringDeviceId = nil
         }
     }
 
     func stop() {
         state = .idle
+        mirroringDeviceId = nil
         process?.terminationHandler = nil
         process?.terminate()
         process = nil
