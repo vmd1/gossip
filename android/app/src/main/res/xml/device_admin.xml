@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares the one device-admin policy Connect actually uses: force-lock, for
+     DevicePolicyManager.lockNow() in Lock-on-Leave (tablet side — see
+     features/proximity/LockOnLeaveManager.kt and docs/ble-proximity-protocol.md).
+     No other policy (wipe, password rules, etc.) is requested. -->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+    </uses-policies>
+</device-admin>

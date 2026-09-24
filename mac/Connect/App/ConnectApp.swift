@@ -16,6 +16,8 @@ struct ConnectApp: App {
     private let dndSyncManager: DNDSyncManager
     @StateObject private var clipboardSyncManager: ClipboardSyncManager
     private let rosterGossipManager: RosterGossipManager
+    @StateObject private var bleProximityMonitor: BLEProximityMonitor
+    private let lockOnLeaveManager: LockOnLeaveManager
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
     /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
@@ -39,6 +41,13 @@ struct ConnectApp: App {
         dndSyncManager = DNDSyncManager(transportManager: transport)
         _clipboardSyncManager = StateObject(wrappedValue: ClipboardSyncManager(transportManager: transport))
         rosterGossipManager = RosterGossipManager(transportManager: transport)
+        let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
+        _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
+        lockOnLeaveManager = LockOnLeaveManager(
+            transportManager: transport,
+            trustedDevicesStore: TrustedDevicesStore.shared,
+            bleProximityMonitor: bleMonitor
+        )
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
@@ -144,7 +153,8 @@ struct ConnectApp: App {
                 screenMirrorController: screenMirrorController,
                 mediaControlManager: mediaControlManager,
                 notificationMirrorManager: notificationMirrorManager,
-                rosterGossipManager: rosterGossipManager
+                rosterGossipManager: rosterGossipManager,
+                bleProximityMonitor: bleProximityMonitor
             )
         }
         .menuBarExtraStyle(.window)

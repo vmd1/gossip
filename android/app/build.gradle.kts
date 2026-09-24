@@ -3,11 +3,16 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("dev.rikka.tools.refine")
 }
 
 android {
     namespace = "com.connect"
-    compileSdk = 34
+    // 36 (Android 16), not 34: needed at compile time only, for `@RefineAs(TetheringManager
+    // .class)` in the vendored features/hotspot stub — that class isn't in the public SDK
+    // jar until API 36. minSdk/targetSdk are unchanged; this doesn't affect runtime
+    // behavior on older devices, only what's resolvable while compiling.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.connect"
@@ -64,6 +69,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
@@ -82,6 +88,23 @@ dependencies {
     // used to render this device's own pairing QR when it's the one being scanned rather
     // than scanning. See features/pairing/... QR generation.
     implementation("com.google.zxing:core:3.5.3")
+
+    // Shizuku (Instant Hotspot, background clipboard reads): obtains a shell-UID Binder to
+    // hidden system services — see features/hotspot/{TetherHelper,ShizukuManager}.kt and
+    // features/clipboard/ShizukuClipboardReader.kt.
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+    // Lifts Android's non-SDK-interface reflection restriction for the one raw hidden call
+    // ShizukuClipboardReader makes (android.content.IClipboard) — a plain reflection-based
+    // call, unlike the tethering path above which needs the heavier Refine/module-split
+    // machinery because IClipboard doesn't need to be *statically* linked, only reflected
+    // into once at read time.
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
+    // Hidden-API stubs (ITetheringConnector/TetheringManagerHidden/etc) — compileOnly so
+    // none of this module's own classes are packaged into the app's dex output; the
+    // `dev.rikka.tools.refine` plugin above rewrites calls against them to the real
+    // framework classes at compile time. See system-api-stubs/build.gradle.kts.
+    compileOnly(project(":system-api-stubs"))
 
     // Testing
     testImplementation("junit:junit:4.13.2")

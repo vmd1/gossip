@@ -5,7 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
+import android.util.Log
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.connect.R
@@ -15,6 +17,8 @@ import com.connect.features.clipboard.ClipboardSyncManager
 import com.connect.features.dnd.DndSyncManager
 import com.connect.features.media.MediaControlBridge
 import com.connect.features.notifications.NotificationMirrorReceiver
+import com.connect.features.proximity.BLEProximityMonitor
+import com.connect.features.proximity.LockOnLeaveManager
 import com.connect.features.screenmirror.ScreenMirrorState
 import com.connect.features.trust.RosterGossipManager
 import com.connect.protocol.detectDeviceType
@@ -46,6 +50,9 @@ class SyncForegroundService : Service() {
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
     private lateinit var rosterGossipManager: RosterGossipManager
+    private lateinit var bleProximityMonitor: BLEProximityMonitor
+    private lateinit var lockOnLeaveManager: LockOnLeaveManager
+    private var shizukuManager: com.connect.features.hotspot.ShizukuManager? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -70,12 +77,14 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity
         )
         TransportManagerHolder.instance = transportManager
+        shizukuManager = com.connect.features.hotspot.ShizukuManager(applicationContext).also { it.start() }
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
             transportManager = transportManager,
             messageRouter = messageRouter,
             deviceId = identity.deviceId,
-            scope = serviceScope
+            scope = serviceScope,
+            shizukuManager = shizukuManager
         )
         dndSyncManager = DndSyncManager(
             context = applicationContext,
@@ -100,6 +109,86 @@ class SyncForegroundService : Service() {
             scope = serviceScope,
             deviceName = Build.MODEL ?: "Android device",
             deviceType = deviceType
+        )
+        bleProximityMonitor = BLEProximityMonitor(
+            context = applicationContext,
+            identityKeyStore = identity,
+            trustedDevicesStore = trustedDevices,
+            deviceType = deviceType
+        )
+        if (bleProximityMonitor.hasRequiredPermissions()) {
+            bleProximityMonitor.start()
+        }
+        lockOnLeaveManager = LockOnLeaveManager(
+            context = applicationContext,
+            trustedDevicesStore = trustedDevices,
+            bleProximityMonitor = bleProximityMonitor,
+            messageRouter = messageRouter,
+            transportManager = transportManager,
+            identityKeyStore = identity,
+            localDeviceType = deviceType,
+            scope = serviceScope
+        )
+        lockOnLeaveManager.start()
+
+        // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
+        // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    val enable = intent.getBooleanExtra("enable", true)
+                    serviceScope.launch {
+                        val result = com.connect.features.hotspot.TetherHelper.setHotspotEnabled(
+                            applicationContext, enable, shizukuManager
+                        )
+                        Log.i("HotspotDebug", "setHotspotEnabled(enable=$enable) -> $result")
+                    }
+                }
+            },
+            IntentFilter("com.connect.DEBUG_TOGGLE_HOTSPOT"),
+            android.content.Context.RECEIVER_EXPORTED
+        )
+
+        // TEMPORARY debug hook to trigger the one-time Shizuku permission dialog before
+        // there's a real onboarding UI for it — remove once that UI lands.
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    Log.i("HotspotDebug", "Shizuku state before request: ${shizukuManager?.state?.value}")
+                    shizukuManager?.requestPermission()
+                }
+            },
+            IntentFilter("com.connect.DEBUG_REQUEST_SHIZUKU"),
+            android.content.Context.RECEIVER_EXPORTED
+        )
+
+        // TEMPORARY debug hooks to verify ShizukuClipboardReader's background read works —
+        // remove once this has real test coverage.
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    val text = intent.getStringExtra("text") ?: return
+                    (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                        .setPrimaryClip(android.content.ClipData.newPlainText("debug", text))
+                    Log.i("ClipboardDebug", "Set clipboard to: $text")
+                }
+            },
+            IntentFilter("com.connect.DEBUG_SET_CLIPBOARD"),
+            android.content.Context.RECEIVER_EXPORTED
+        )
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    val focusedRead = runCatching {
+                        (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                            .primaryClip?.getItemAt(0)?.coerceToText(applicationContext)?.toString()
+                    }.getOrNull()
+                    val shizukuRead = com.connect.features.clipboard.ShizukuClipboardReader.readText()
+                    Log.i("ClipboardDebug", "Focus-gated read: $focusedRead | Shizuku read: $shizukuRead")
+                }
+            },
+            IntentFilter("com.connect.DEBUG_READ_CLIPBOARD"),
+            android.content.Context.RECEIVER_EXPORTED
         )
 
         // Start/stop clipboard sync in lockstep with the transport connection, same as
@@ -201,6 +290,8 @@ class SyncForegroundService : Service() {
         mediaControlBridge.stop()
         dndSyncManager.stop()
         clipboardSyncManager.stop()
+        bleProximityMonitor.stop()
+        lockOnLeaveManager.stop()
         transportManager.shutdown()
         if (TransportManagerHolder.instance === transportManager) {
             TransportManagerHolder.instance = null
@@ -217,6 +308,8 @@ class SyncForegroundService : Service() {
     fun dndSyncManager(): DndSyncManager = dndSyncManager
 
     fun rosterGossipManager(): RosterGossipManager = rosterGossipManager
+
+    fun bleProximityMonitor(): BLEProximityMonitor = bleProximityMonitor
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService

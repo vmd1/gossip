@@ -141,4 +141,9 @@ indirect enum JSONValue: Codable, Equatable {
         if case .number(let n) = self { return n }
         return nil
     }
+
+    var boolValue: Bool? {
+        if case .bool(let b) = self { return b }
+        return nil
+    }
 }

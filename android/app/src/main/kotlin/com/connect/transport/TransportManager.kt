@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -156,6 +157,10 @@ class TransportManager(
 
     private var serverSocket: ServerSocket? = null
 
+    /** Tracks the continuous NSD discovery collection started by [listen], so
+     *  [stopListening] can cancel it. See [handleDiscoveryEvent]. */
+    private var discoveryJob: Job? = null
+
     /** Bounded, size-capped cache of recently-seen envelope IDs, used to avoid
      *  re-forwarding/re-delivering the same broadcast or relayed message twice when the
      *  mesh has more than one path between two devices. */
@@ -176,6 +181,9 @@ class TransportManager(
      *  itself within milliseconds. */
     fun listen(port: Int = DEFAULT_PORT) {
         stopListening()
+        discoveryJob = scope.launch {
+            discovery.discover().collect { event -> handleDiscoveryEvent(event) }
+        }
         scope.launch {
             val server = bindServerSocket(port) ?: return@launch
             serverSocket = server
@@ -206,10 +214,34 @@ class TransportManager(
     }
 
     fun stopListening() {
+        discoveryJob?.cancel()
+        discoveryJob = null
         discovery.stopAdvertising()
         runCatching { serverSocket?.close() }
         serverSocket = null
         recomputeConnectionState()
+    }
+
+    /** Auto-dials any discovered peer that's already trusted and not already
+     *  connected/connecting — the Android counterpart to Mac's
+     *  `TransportManager.handleDiscoveredPeers`. Before this, Android only ever
+     *  discovered peers during the one-time pairing flow ([PairingViewModel]); two
+     *  Android devices that had already paired had no path back to each other once
+     *  their original socket closed (app restart, Wi-Fi drop, etc.) short of a
+     *  manually-configured [TrustedDevice.fallbackHost] — only Mac↔Android worked
+     *  automatically, since Mac continuously browses Bonjour. This makes on-LAN
+     *  rediscovery symmetric for Android↔Android too. [DiscoveryEvent.Lost] needs no
+     *  handling here: a dead connection is detected independently by
+     *  [heartbeatLoop]/a closed socket, not by NSD losing the peer's advertisement. */
+    private fun handleDiscoveryEvent(event: DiscoveryEvent) {
+        if (event !is DiscoveryEvent.Found) return
+        val peer = event.peer
+        val deviceId = peer.deviceId ?: return
+        val host = peer.host ?: return
+        if (!trustedDevicesStore.isTrusted(deviceId)) return
+        if (peers.containsKey(deviceId) || dialingDeviceIds.contains(deviceId)) return
+        val trusted = trustedDevicesStore.getDevice(deviceId) ?: return
+        connect(host = host, port = peer.port, remoteStaticPublicKey = trusted.publicKey, deviceId = deviceId)
     }
 
     /**

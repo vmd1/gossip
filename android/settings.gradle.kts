@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "connect"
 include(":app")
+include(":system-api-stubs")

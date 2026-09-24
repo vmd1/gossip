@@ -20,7 +20,14 @@ data class TrustedDevice(
      *  on-LAN discovery can't reach this peer — see `TransportManager`'s fallback-dial
      *  loop, driven from `SyncForegroundService`. Manual because there is no discovery
      *  mechanism that works off-LAN; `null`/blank means "not configured." */
-    val fallbackHost: String? = null
+    val fallbackHost: String? = null,
+    /** For a row where [deviceType] is [DeviceType.MAC]: whether this device should tell
+     *  that Mac to lock its screen when this device leaves BLE range (`lock_on_leave.config`
+     *  in `schema/message-types.md`). Meaningless for a phone/tablet row — only Macs are
+     *  ever locked. Local-only bookkeeping so the UI toggle reflects saved state across
+     *  restarts; the Mac is the one that actually acts on it, via its own BLE proximity
+     *  observation, not a message this device sends it repeatedly. */
+    val lockOnLeaveEnabled: Boolean = false
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -30,7 +37,8 @@ data class TrustedDevice(
             deviceName == other.deviceName &&
             deviceType == other.deviceType &&
             addedAt == other.addedAt &&
-            fallbackHost == other.fallbackHost
+            fallbackHost == other.fallbackHost &&
+            lockOnLeaveEnabled == other.lockOnLeaveEnabled
     }
 
     override fun hashCode(): Int = deviceId.hashCode()
@@ -43,7 +51,8 @@ private data class TrustedDeviceRow(
     val deviceName: String,
     val deviceType: String,
     val addedAt: Long,
-    val fallbackHost: String? = null
+    val fallbackHost: String? = null,
+    val lockOnLeaveEnabled: Boolean = false
 )
 
 /**
@@ -67,7 +76,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             deviceName = device.deviceName,
             deviceType = device.deviceType.wireValue,
             addedAt = device.addedAt,
-            fallbackHost = device.fallbackHost
+            fallbackHost = device.fallbackHost,
+            lockOnLeaveEnabled = device.lockOnLeaveEnabled
         )
         prefs.edit().putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row)).apply()
     }
@@ -78,6 +88,14 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     fun setFallbackHost(deviceId: String, fallbackHost: String?) {
         val existing = getDevice(deviceId) ?: return
         addDevice(existing.copy(fallbackHost = fallbackHost?.trim()?.takeIf { it.isNotEmpty() }))
+    }
+
+    /** Updates just the Lock-on-Leave flag for an already-trusted Mac (see
+     *  [TrustedDevice.lockOnLeaveEnabled]). No-ops if [deviceId] isn't trusted. */
+    @Synchronized
+    fun setLockOnLeaveEnabled(deviceId: String, enabled: Boolean) {
+        val existing = getDevice(deviceId) ?: return
+        addDevice(existing.copy(lockOnLeaveEnabled = enabled))
     }
 
     @Synchronized
@@ -107,7 +125,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             deviceName = row.deviceName,
             deviceType = DeviceType.fromWire(row.deviceType),
             addedAt = row.addedAt,
-            fallbackHost = row.fallbackHost
+            fallbackHost = row.fallbackHost,
+            lockOnLeaveEnabled = row.lockOnLeaveEnabled
         )
     }
 
