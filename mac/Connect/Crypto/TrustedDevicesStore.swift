@@ -4,6 +4,15 @@ enum DeviceType: String, Codable {
     case mac
     case androidPhone = "android-phone"
     case androidTablet = "android-tablet"
+
+    /// SF Symbol shown in place of the old plain-text device-type subtitle in `MenuBarView`.
+    var symbolName: String {
+        switch self {
+        case .mac: return "laptopcomputer"
+        case .androidPhone: return "iphone"
+        case .androidTablet: return "ipad"
+        }
+    }
 }
 
 /// A single row of the `TrustedDevices` table: deviceId -> publicKey -> metadata.
@@ -25,6 +34,45 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
     /// on-LAN discovery can't reach this peer — see `TransportManager.connect(toFallbackHost:remoteStaticKey:)`.
     /// `nil`/blank means "not configured." Mirrors Android's `TrustedDevice.fallbackHost`.
     var fallbackHost: String? = nil
+    /// Whether this Mac should lock its screen when *this* device (set from the Android
+    /// side — see `lock_on_leave.config` in `schema/message-types.md`) leaves confirmed
+    /// BLE range. Meaningless for a row where `deviceType == .mac`, since only phones
+    /// advertise/are tracked by `BLEProximityMonitor`. Defaults to `false` and must decode
+    /// safely when absent from an older persisted file — see the custom `init(from:)`
+    /// below; a non-optional `Bool` with only a default *property* initializer (no custom
+    /// decode) would make `JSONDecoder` throw on any pre-existing `trusted-devices.json`
+    /// missing this key, and `TrustedDevicesStore.load()`'s `try?` would then silently
+    /// wipe every already-paired device instead of just defaulting this one field.
+    var lockOnLeaveEnabled: Bool = false
+
+    init(
+        deviceId: String,
+        publicKeyBase64: String,
+        deviceName: String,
+        deviceType: DeviceType,
+        addedAt: Date,
+        fallbackHost: String? = nil,
+        lockOnLeaveEnabled: Bool = false
+    ) {
+        self.deviceId = deviceId
+        self.publicKeyBase64 = publicKeyBase64
+        self.deviceName = deviceName
+        self.deviceType = deviceType
+        self.addedAt = addedAt
+        self.fallbackHost = fallbackHost
+        self.lockOnLeaveEnabled = lockOnLeaveEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        publicKeyBase64 = try container.decode(String.self, forKey: .publicKeyBase64)
+        deviceName = try container.decode(String.self, forKey: .deviceName)
+        deviceType = try container.decode(DeviceType.self, forKey: .deviceType)
+        addedAt = try container.decode(Date.self, forKey: .addedAt)
+        fallbackHost = try container.decodeIfPresent(String.self, forKey: .fallbackHost)
+        lockOnLeaveEnabled = try container.decodeIfPresent(Bool.self, forKey: .lockOnLeaveEnabled) ?? false
+    }
 }
 
 /// Persists the `TrustedDevices` table to a JSON file in
@@ -94,6 +142,17 @@ final class TrustedDevicesStore: ObservableObject {
         queue.sync {
             guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
             devices[index].fallbackHost = (trimmed?.isEmpty == false) ? trimmed : nil
+        }
+        persist()
+        publishOnMain()
+    }
+
+    /// Applies an incoming `lock_on_leave.config` from `deviceId` (see `schema/message-types.md`).
+    /// No-ops if `deviceId` isn't trusted (e.g. a stale/racing message from a just-revoked device).
+    func setLockOnLeaveEnabled(deviceId: String, enabled: Bool) {
+        queue.sync {
+            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
+            devices[index].lockOnLeaveEnabled = enabled
         }
         persist()
         publishOnMain()

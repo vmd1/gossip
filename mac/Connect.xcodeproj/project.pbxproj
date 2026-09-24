@@ -11,10 +11,12 @@
 		0669DA7AF025F240466DDEC1 /* QRCodeGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DBF52E1EE1D559096C0A5A6 /* QRCodeGenerator.swift */; };
 		0C7FD68E83645C005D9E7004 /* DNDSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4093CDC914E922389BA863F /* DNDSyncManager.swift */; };
 		0CDACE652D8F1DAD4C4B4B80 /* MediaControlManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E859A56216280E295802D2 /* MediaControlManager.swift */; };
+		14D605EECECC95D161250D07 /* FallbackHostWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09A9C79602C0CE60F7CA01B4 /* FallbackHostWindow.swift */; };
 		17D859B6D13662D1905B772B /* ClipboardSyncManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */; };
 		19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E959965E940BAC0A25F41520 /* ClipboardSyncManager.swift */; };
 		315142A2EBF675A60EFC4D88 /* RosterGossipManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D901C8DA5F1F4ED991BB21F /* RosterGossipManager.swift */; };
 		3322151AC534059AB917F954 /* ADBPairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BF45EE121447A0E9D788FE9 /* ADBPairingWindow.swift */; };
+		458F8D43C1A1DD0686CC65AA /* LockOnLeaveManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5A9A61D5D4715E581FA4FC0 /* LockOnLeaveManager.swift */; };
 		45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22D902BF5E5FB455B8C961A /* Envelope.swift */; };
 		49BFE6F763D27F1888455DBD /* LocalDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA24BBEFDE5080C1825AF716 /* LocalDiscovery.swift */; };
 		52332A22563F82FBA8216957 /* MediaControlManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 565A241795B3AC9BF0A5D38F /* MediaControlManagerTests.swift */; };
@@ -36,6 +38,7 @@
 		C3C17D1865BACEB48E906168 /* TrustedDevicesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 845DD794B62D4498D167B007 /* TrustedDevicesStoreTests.swift */; };
 		C44CABF376342CC8EA6CCF7D /* ScreenMirrorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3019A1BAA5AC068B9EE4BB7A /* ScreenMirrorController.swift */; };
 		D060D4B2A524E6D48DF50DEF /* TransportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CD0FFF8D292E7F374435FD7 /* TransportManager.swift */; };
+		D1A0F7AB96295233F4A826C3 /* BLEProximityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFC27A75535638122ECF2AD /* BLEProximityMonitor.swift */; };
 		D8E32986179C76DBF251708B /* PairingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C430A1871D8467997697CD /* PairingViewModel.swift */; };
 		E7F881AC3A49D1FF24341D8F /* NotificationMirrorManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53DBE8A0704E8BAD1F3D8895 /* NotificationMirrorManagerTests.swift */; };
 		FAFAD009A051E2A5C2F08DD0 /* bin in Resources */ = {isa = PBXBuildFile; fileRef = 9A784B4A72BC93CA1974E821 /* bin */; };
@@ -54,6 +57,7 @@
 
 /* Begin PBXFileReference section */
 		08221D1B5D04DB2E5101DD1B /* EnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnvelopeTests.swift; sourceTree = "<group>"; };
+		09A9C79602C0CE60F7CA01B4 /* FallbackHostWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FallbackHostWindow.swift; sourceTree = "<group>"; };
 		0EE53984833490A922AB8171 /* ConnectApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectApp.swift; sourceTree = "<group>"; };
 		23E18F33C89E6BD8B27B75C5 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		2A542AA44C01C66849C16AC8 /* DNDSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSetupView.swift; sourceTree = "<group>"; };
@@ -80,8 +84,10 @@
 		B1BB9D5B177644A469733731 /* DNDSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSyncManagerTests.swift; sourceTree = "<group>"; };
 		B264DC12C12F5189146EDE45 /* ADBWirelessPairing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBWirelessPairing.swift; sourceTree = "<group>"; };
 		B4EF7E4742D8A6A53D3FB018 /* NoiseSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoiseSession.swift; sourceTree = "<group>"; };
+		B5A9A61D5D4715E581FA4FC0 /* LockOnLeaveManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LockOnLeaveManager.swift; sourceTree = "<group>"; };
 		B84974883106FDF002DC55CB /* DNDSetupWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSetupWindow.swift; sourceTree = "<group>"; };
 		BDE9F4317B5B8E0B8EB6C016 /* ConnectTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ConnectTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BEFC27A75535638122ECF2AD /* BLEProximityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEProximityMonitor.swift; sourceTree = "<group>"; };
 		C3E859A56216280E295802D2 /* MediaControlManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaControlManager.swift; sourceTree = "<group>"; };
 		CA24BBEFDE5080C1825AF716 /* LocalDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDiscovery.swift; sourceTree = "<group>"; };
 		D22D902BF5E5FB455B8C961A /* Envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Envelope.swift; sourceTree = "<group>"; };
@@ -98,6 +104,7 @@
 				9D46AAFC6A05F75199B47C3D /* DND */,
 				94298BBA3632B908D6627D0B /* Media */,
 				7865739129420417C5F6AC14 /* Notifications */,
+				82EBE71E7A99A002794F78AB /* Proximity */,
 				EF3F937F06DF4AAEAAA71ED9 /* ScreenMirror */,
 				FD40D8067040AEE6C0FA96B2 /* Trust */,
 			);
@@ -118,6 +125,7 @@
 			children = (
 				2A542AA44C01C66849C16AC8 /* DNDSetupView.swift */,
 				B84974883106FDF002DC55CB /* DNDSetupWindow.swift */,
+				09A9C79602C0CE60F7CA01B4 /* FallbackHostWindow.swift */,
 				23E18F33C89E6BD8B27B75C5 /* MenuBarView.swift */,
 			);
 			path = UI;
@@ -154,6 +162,15 @@
 				E4E7C9A392B7B4699F987CDE /* NotificationMirrorManager.swift */,
 			);
 			path = Notifications;
+			sourceTree = "<group>";
+		};
+		82EBE71E7A99A002794F78AB /* Proximity */ = {
+			isa = PBXGroup;
+			children = (
+				BEFC27A75535638122ECF2AD /* BLEProximityMonitor.swift */,
+				B5A9A61D5D4715E581FA4FC0 /* LockOnLeaveManager.swift */,
+			);
+			path = Proximity;
 			sourceTree = "<group>";
 		};
 		94298BBA3632B908D6627D0B /* Media */ = {
@@ -390,14 +407,17 @@
 				3322151AC534059AB917F954 /* ADBPairingWindow.swift in Sources */,
 				72BCE33379D5D47F9AC39ACA /* ADBWirelessPairing.swift in Sources */,
 				541AA90A2F842CF97F315523 /* AppDelegate.swift in Sources */,
+				D1A0F7AB96295233F4A826C3 /* BLEProximityMonitor.swift in Sources */,
 				19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */,
 				5AFC1213C710656A12BBE5E3 /* ConnectApp.swift in Sources */,
 				81387C3CB83D22A4DAFCE1E4 /* DNDSetupView.swift in Sources */,
 				BCE87BC3131F8D205BC094AB /* DNDSetupWindow.swift in Sources */,
 				0C7FD68E83645C005D9E7004 /* DNDSyncManager.swift in Sources */,
 				45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */,
+				14D605EECECC95D161250D07 /* FallbackHostWindow.swift in Sources */,
 				A0385F502900E8B41F032C71 /* IdentityKeyStore.swift in Sources */,
 				49BFE6F763D27F1888455DBD /* LocalDiscovery.swift in Sources */,
+				458F8D43C1A1DD0686CC65AA /* LockOnLeaveManager.swift in Sources */,
 				0CDACE652D8F1DAD4C4B4B80 /* MediaControlManager.swift in Sources */,
 				68E8DFED9A220842A369F816 /* MenuBarView.swift in Sources */,
 				8325214E4D17742932C45E80 /* MessageRouter.swift in Sources */,

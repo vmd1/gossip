@@ -10,11 +10,13 @@ struct MenuBarView: View {
     @ObservedObject var mediaControlManager: MediaControlManager
     @ObservedObject var notificationMirrorManager: NotificationMirrorManager
     let rosterGossipManager: RosterGossipManager
+    @ObservedObject var bleProximityMonitor: BLEProximityMonitor
 
     @State private var pairingWindow: PairingWindow?
     @State private var dndSetupWindow: DNDSetupWindow?
     @State private var adbPairingWindow: ADBPairingWindow?
     @State private var adbPairingCancellable: AnyCancellable?
+    @State private var fallbackHostWindow: FallbackHostWindow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -60,24 +62,21 @@ struct MenuBarView: View {
                     .font(.callout)
             } else {
                 ForEach(trustedDevicesStore.devices) { device in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(device.deviceName)
-                                Text(device.deviceType.rawValue)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if device.deviceType != .mac {
-                                mirrorButton(for: device)
-                            }
-                            Button("Forget") {
-                                rosterGossipManager.revoke(deviceId: device.deviceId)
-                            }
-                            .buttonStyle(.borderless)
+                    HStack {
+                        Image(systemName: device.deviceType.symbolName)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18)
+                        Text(device.deviceName)
+                        if bleProximityMonitor.nearbyDeviceIds.contains(device.deviceId) {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .foregroundStyle(.blue)
+                                .help("Nearby over Bluetooth")
                         }
-                        FallbackHostField(device: device, trustedDevicesStore: trustedDevicesStore)
+                        Spacer()
+                        if device.deviceType != .mac {
+                            mirrorButton(for: device)
+                        }
+                        deviceSettingsMenu(for: device)
                     }
                 }
             }
@@ -114,6 +113,37 @@ struct MenuBarView: View {
                 .buttonStyle(.borderless)
                 .disabled(true)
         }
+    }
+
+    /// Overflow menu for settings that apply to one specific trusted device but
+    /// don't need to be visible on the home row: revoking trust and the fallback-
+    /// host override today; per-pair BLE-driven settings (Lock-on-Leave, auto-hotspot)
+    /// land here too once built. Kept separate from `mirrorButton`, which stays a
+    /// direct row action since it's used often enough to want one click, not two.
+    ///
+    /// "Edit Fallback Host…" opens a plain `NSWindow` rather than embedding the
+    /// field directly in this `Menu` — a `TextField` inside a `Menu` shown from
+    /// this app's `MenuBarExtra(.window)` panel never gets a chance to take
+    /// keyboard focus, because the panel resigns key and dismisses itself the
+    /// instant the field is clicked. See `FallbackHostWindow`.
+    @ViewBuilder
+    private func deviceSettingsMenu(for device: TrustedDevice) -> some View {
+        Menu {
+            Button("Edit Fallback Host…") {
+                let window = FallbackHostWindow(device: device, trustedDevicesStore: trustedDevicesStore)
+                fallbackHostWindow = window
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Divider()
+            Button("Forget", role: .destructive) {
+                rosterGossipManager.revoke(deviceId: device.deviceId)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     /// Before launching the mirroring pipeline, makes sure `adb` already sees an

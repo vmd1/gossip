@@ -1,6 +1,7 @@
 package com.connect.ui
 
 import android.Manifest
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -32,13 +33,23 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.connect.crypto.IdentityKeyStore
 import com.connect.crypto.TrustedDevice
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.dnd.DndSyncManager
+import com.connect.features.proximity.LockOnLeaveManager
 import com.connect.pairing.QRScanActivity
 import com.connect.pairing.ShowQrActivity
+import com.connect.protocol.DeviceType
+import com.connect.protocol.Envelope
+import com.connect.protocol.MessageType
+import com.connect.protocol.detectDeviceType
 import com.connect.service.SyncForegroundService
 import com.connect.transport.ConnectionState
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /**
  * Minimal launcher UI: connection status, a "Pair New Device" button, and the list of
@@ -62,6 +73,26 @@ class MainActivity : ComponentActivity() {
     private val requestNotificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op either way */ }
 
+    private val requestBluetoothPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            if (results.values.all { it }) {
+                boundService?.bleProximityMonitor()?.let { monitor ->
+                    monitor.rebuildFingerprintMap()
+                    monitor.start()
+                }
+            }
+            bluetoothPermissionGranted = results.values.all { it }
+        }
+
+    private var bluetoothPermissionGranted by androidx.compose.runtime.mutableStateOf(false)
+
+    private var deviceAdminActive by androidx.compose.runtime.mutableStateOf(false)
+
+    private val requestDeviceAdmin =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            deviceAdminActive = isDeviceAdminActive(this)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -78,6 +109,27 @@ class MainActivity : ComponentActivity() {
             requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        // BLE proximity (see docs/ble-proximity-protocol.md) needs BLUETOOTH_SCAN or
+        // BLUETOOTH_ADVERTISE depending on this device's role, both runtime-dangerous
+        // permissions on API 31+. Request both regardless of role — harmless to hold
+        // the one this device's role doesn't use, and simpler than branching here.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val bluetoothPermissions = arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+            bluetoothPermissionGranted = bluetoothPermissions.all {
+                ContextCompat.checkSelfPermission(this, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
+            if (!bluetoothPermissionGranted) {
+                requestBluetoothPermissions.launch(bluetoothPermissions)
+            }
+        } else {
+            bluetoothPermissionGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 boundService = (binder as? SyncForegroundService.LocalBinder)?.service()
@@ -91,6 +143,8 @@ class MainActivity : ComponentActivity() {
         bindService(serviceIntent, connection, Context.BIND_AUTO_CREATE)
 
         val trustedDevicesStore = TrustedDevicesStore.getInstance(applicationContext)
+        val myDeviceType = detectDeviceType(applicationContext)
+        deviceAdminActive = isDeviceAdminActive(this)
 
         setContent {
             MaterialTheme {
@@ -113,7 +167,48 @@ class MainActivity : ComponentActivity() {
                         onRequestDndAccess = { dndSyncManager ->
                             startActivity(dndSyncManager.requestPolicyAccessIntent())
                         },
-                        rosterGossipManagerProvider = { boundService?.rosterGossipManager() }
+                        rosterGossipManagerProvider = { boundService?.rosterGossipManager() },
+                        bluetoothPermissionGranted = { bluetoothPermissionGranted },
+                        onRequestBluetoothPermission = {
+                            val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                arrayOf(
+                                    Manifest.permission.BLUETOOTH_SCAN,
+                                    Manifest.permission.BLUETOOTH_ADVERTISE,
+                                    Manifest.permission.BLUETOOTH_CONNECT
+                                )
+                            } else {
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                            }
+                            requestBluetoothPermissions.launch(perms)
+                        },
+                        nearbyDeviceIdsProvider = { boundService?.bleProximityMonitor()?.nearbyDeviceIds },
+                        myDeviceType = myDeviceType,
+                        deviceAdminActive = { deviceAdminActive },
+                        onRequestDeviceAdmin = {
+                            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, LockOnLeaveManager.adminComponentName(this@MainActivity))
+                                putExtra(
+                                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                    "Needed for Lock-on-Leave: lets Connect lock this device's screen when a paired phone leaves Bluetooth range."
+                                )
+                            }
+                            requestDeviceAdmin.launch(intent)
+                        },
+                        onSetLockOnLeave = { deviceId, enabled ->
+                            trustedDevicesStore.setLockOnLeaveEnabled(deviceId, enabled)
+                            val transport = boundService?.transportManager()
+                            if (transport != null) {
+                                val envelope = Envelope(
+                                    type = MessageType.LOCK_ON_LEAVE_CONFIG,
+                                    senderId = IdentityKeyStore.getInstance(applicationContext).deviceId,
+                                    recipientId = deviceId,
+                                    payload = buildJsonObject { put("enabled", JsonPrimitive(enabled)) }
+                                )
+                                lifecycleScope.launch {
+                                    runCatching { transport.send(envelope) }
+                                }
+                            }
+                        }
                     )
                 }
             }
@@ -163,6 +258,14 @@ class MainActivity : ComponentActivity() {
 fun isNotificationListenerEnabled(context: Context): Boolean =
     NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
 
+/** Whether this app is an active device admin, required for [DevicePolicyManager.lockNow]
+ *  in Lock-on-Leave (tablet side — see [LockOnLeaveManager]). Also has no runtime-dialog
+ *  equivalent — only the dedicated `ACTION_ADD_DEVICE_ADMIN` system screen grants it. */
+fun isDeviceAdminActive(context: Context): Boolean {
+    val dpm = context.getSystemService(DevicePolicyManager::class.java)
+    return dpm?.isAdminActive(LockOnLeaveManager.adminComponentName(context)) == true
+}
+
 @Composable
 fun ConnectHomeScreen(
     connectionStateProvider: () -> kotlinx.coroutines.flow.StateFlow<ConnectionState>?,
@@ -174,7 +277,14 @@ fun ConnectHomeScreen(
     onSendTestNotification: () -> Unit = {},
     dndSyncManagerProvider: () -> DndSyncManager? = { null },
     onRequestDndAccess: (DndSyncManager) -> Unit = {},
-    rosterGossipManagerProvider: () -> com.connect.features.trust.RosterGossipManager? = { null }
+    rosterGossipManagerProvider: () -> com.connect.features.trust.RosterGossipManager? = { null },
+    bluetoothPermissionGranted: () -> Boolean = { true },
+    onRequestBluetoothPermission: () -> Unit = {},
+    nearbyDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    myDeviceType: DeviceType = DeviceType.ANDROID_PHONE,
+    deviceAdminActive: () -> Boolean = { true },
+    onRequestDeviceAdmin: () -> Unit = {},
+    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> }
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
@@ -258,8 +368,36 @@ fun ConnectHomeScreen(
                 }
             }
 
+            if (!bluetoothPermissionGranted()) {
+                Text(
+                    "To detect nearby trusted devices over Bluetooth (for features like " +
+                        "locking your Mac when your phone leaves range), Connect needs " +
+                        "Bluetooth permission.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(onClick = onRequestBluetoothPermission) {
+                    Text("Grant Bluetooth Permission")
+                }
+            }
+
+            if (myDeviceType != DeviceType.ANDROID_PHONE && !deviceAdminActive()) {
+                Text(
+                    "To let a paired phone lock this device when it leaves Bluetooth range " +
+                        "(Lock-on-Leave), Connect needs device admin access.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Button(onClick = onRequestDeviceAdmin) {
+                    Text("Grant Device Admin")
+                }
+            }
+
+            val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+
             PairedDevicesScreen(
                 devices = devices,
+                nearbyDeviceIds = nearbyDeviceIds,
+                myDeviceType = myDeviceType,
+                onSetLockOnLeave = onSetLockOnLeave,
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls

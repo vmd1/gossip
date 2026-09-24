@@ -1,7 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- BLE proximity primitive (see docs/ble-proximity-protocol.md). Pre-Android-12 needs
+         the old BLUETOOTH/BLUETOOTH_ADMIN pair plus location (BLE scan results were treated
+         as derivable location data); Android 12+ replaces that with BLUETOOTH_SCAN/CONNECT/
+         ADVERTISE, and neverForLocation is safe here since this feature only ever needs
+         proximity, never a derived location fix. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Instant Hotspot (see docs/ble-hotspot-protocol.md): gates the reflection-based
+         ConnectivityManager/TetheringManager.startTethering call in TetherHelper.kt.
+         Cannot be granted via a normal runtime dialog — only via
+         `adb shell pm grant <pkg> android.permission.WRITE_SECURE_SETTINGS`, a well-
+         established pattern for automation apps (Tasker, MacroDroid, etc.), not root. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- The actual gate SimpleWear's reference TetherHelper checks before calling
+         TetheringManager.startTethering is Settings.System.canWrite() (WRITE_SETTINGS,
+         "Modify system settings"), not WRITE_SECURE_SETTINGS — confirmed by reading its
+         real source after WRITE_SECURE_SETTINGS alone failed live. Grantable either via
+         Settings.ACTION_MANAGE_WRITE_SETTINGS (normal special-access screen) or
+         `adb shell appops set <pkg> android:write_settings allow` once declared here. -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -9,6 +39,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Instant Hotspot: baseline gate the reference TetherHelper checks before even
+         attempting startTethering. Missing entirely was likely why the reflection call
+         kept returning error 14 despite WRITE_SECURE_SETTINGS/WRITE_SETTINGS being granted. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Special-access grant (not a runtime dialog) required to read/set Do Not Disturb
          state via NotificationManager; see features/dnd/DndSyncManager.kt. Requested by
@@ -18,6 +52,13 @@
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
+
+    <!-- Instant Hotspot on Android 16+ (see features/hotspot/TetherHelper.kt/ShizukuManager.kt):
+         needed so PackageManager.getApplicationInfo can see the Shizuku app for install-state
+         checks, per Android 11+ package-visibility rules. -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
 
     <application
         android:name=".ConnectApplication"
@@ -52,6 +93,21 @@
             android:name=".service.SyncForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Lock-on-Leave (tablet side): grants DevicePolicyManager.lockNow() capability
+             once the user completes the one-time device-admin onboarding flow. See
+             features/proximity/ConnectDeviceAdminReceiver.kt and res/xml/device_admin.xml. -->
+        <receiver
+            android:name=".features.proximity.ConnectDeviceAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".features.notifications.NotificationListenerImpl"
@@ -105,6 +161,18 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/clipboard_file_paths" />
         </provider>
+
+        <!-- Instant Hotspot on Android 16+ (see features/hotspot/ShizukuManager.kt):
+             Shizuku's own permission-request flow talks to this app through this provider.
+             Explicit here (not just relying on the library AAR's own manifest) because
+             android:exported is mandatory to declare explicitly from API 31+. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
     </application>
 
