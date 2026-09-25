@@ -2,7 +2,9 @@ name: Mac
 
 on:
   push:
-    branches: [main]
+    # Every branch, not just main — see CLAUDE.md/the CI handoff: build+test must run on
+    # every push, with an additional release step gated separately (release.yml) on main
+    # specifically.
     paths:
       - "mac/**"
       - "schema/**"
