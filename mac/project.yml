@@ -1,6 +1,6 @@
-name: Connect
+name: Gossip
 options:
-  bundleIdPrefix: com.connect.app
+  bundleIdPrefix: dev.vmd1.gossip
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -12,16 +12,16 @@ settings:
     ENABLE_HARDENED_RUNTIME: YES
 
 targets:
-  Connect:
+  Gossip:
     type: application
     platform: macOS
     sources:
-      - path: Connect
+      - path: Gossip
         excludes:
           - "Resources/Info.plist"
-          - "Resources/Connect.entitlements"
+          - "Resources/Gossip.entitlements"
           - "Resources/bin/**"
-      - path: Connect/Resources/bin
+      - path: Gossip/Resources/bin
         type: folder
         buildPhase: resources
     postBuildScripts:
@@ -35,10 +35,10 @@ targets:
           fi
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.connect.app.Connect
-        PRODUCT_NAME: Connect
-        INFOPLIST_FILE: Connect/Resources/Info.plist
-        CODE_SIGN_ENTITLEMENTS: Connect/Resources/Connect.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vmd1.gossip.Gossip
+        PRODUCT_NAME: Gossip
+        INFOPLIST_FILE: Gossip/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Gossip/Resources/Gossip.entitlements
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_PREVIEWS: YES
@@ -46,29 +46,29 @@ targets:
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
 
-  ConnectTests:
+  GossipTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - path: ConnectTests
+      - path: GossipTests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.connect.app.ConnectTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vmd1.gossip.GossipTests
         GENERATE_INFOPLIST_FILE: YES
     dependencies:
-      - target: Connect
+      - target: Gossip
 
 schemes:
-  Connect:
+  Gossip:
     build:
       targets:
-        Connect: all
-        ConnectTests: [test]
+        Gossip: all
+        GossipTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - ConnectTests
+        - GossipTests
     archive:
       config: Release

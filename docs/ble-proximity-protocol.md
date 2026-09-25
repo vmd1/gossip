@@ -1,7 +1,7 @@
 # BLE proximity protocol
 
-Wire-level contract for `BLEProximityMonitor` (Mac: `mac/Connect/Features/Proximity/BLEProximityMonitor.swift`;
-Android: `android/app/src/main/kotlin/com/connect/features/proximity/BLEProximityMonitor.kt`). This is
+Wire-level contract for `BLEProximityMonitor` (Mac: `mac/Gossip/Features/Proximity/BLEProximityMonitor.swift`;
+Android: `android/app/src/main/kotlin/dev/vmd1/gossip/features/proximity/BLEProximityMonitor.kt`). This is
 **not** an `Envelope`-shaped message — see `docs/adr/0002-device-group-addressing.md` — because it
 happens entirely at the BLE advertisement/scan level, with no connection and no Noise session. It's
 documented here rather than in `schema/message-types.md` for that reason, per this repo's `CLAUDE.md`

@@ -4,7 +4,7 @@ Established during the onboarding/polish handoff's Phase 6
 (`HANDOFF_ONBOARDING_AND_POLISH.md`) — this repo had no design-system doc before this, and every
 screen picked colors/spacing ad hoc (in practice: neither app set anything, so Android rendered
 Material3's default un-seeded purple scheme and Mac rendered whatever the user's system accent
-color happened to be). This doc is intentionally small: Connect is a personal-use background
+color happened to be). This doc is intentionally small: Gossip is a personal-use background
 utility, not a flagship consumer app, so the goal is *consistency and native feel*, not a custom
 visual identity competing with the OS.
 
@@ -12,7 +12,7 @@ visual identity competing with the OS.
 
 **Accent**: system blue (`#0A84FF`, Apple's system blue — chosen as the shared reference point
 since it's also SwiftUI's default accent color on macOS). Used as the Compose Material3 seed
-color on Android (`ConnectTheme`, `android/app/src/main/kotlin/com/connect/ui/theme/Theme.kt`) so
+color on Android (`ConnectTheme`, `android/app/src/main/kotlin/dev/vmd1/gossip/ui/theme/Theme.kt`) so
 both platforms present the same default accent hue instead of Android showing Material3's
 unrelated default purple.
 
@@ -63,7 +63,7 @@ of settings screens, not a place that benefits from flourish:
 ## Iconography
 
 SF Symbols on Mac (already the convention — see `DeviceType.symbolName` in
-`mac/Connect/Crypto/TrustedDevicesStore.swift`), Material Symbols (`androidx.compose.material.icons`)
+`mac/Gossip/Crypto/TrustedDevicesStore.swift`), Material Symbols (`androidx.compose.material.icons`)
 on Android — no custom icon assets. This was already the de facto convention; recorded here so a
 future screen doesn't introduce a one-off custom asset instead.
 
