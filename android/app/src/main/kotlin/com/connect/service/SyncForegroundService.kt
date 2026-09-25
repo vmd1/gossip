@@ -53,6 +53,8 @@ class SyncForegroundService : Service() {
     private lateinit var bleProximityMonitor: BLEProximityMonitor
     private lateinit var lockOnLeaveManager: LockOnLeaveManager
     private var shizukuManager: com.connect.features.hotspot.ShizukuManager? = null
+    private var hotspotGattServer: com.connect.features.hotspot.HotspotGattServer? = null
+    private lateinit var hotspotStateManager: com.connect.features.hotspot.HotspotStateManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -116,9 +118,48 @@ class SyncForegroundService : Service() {
             trustedDevicesStore = trustedDevices,
             deviceType = deviceType
         )
+        // Seed the "hotspot available" capability bit from the persisted toggle before
+        // the first advertise — the toggle's own UI callback only fires on a live
+        // change, so a phone that already had this enabled from a previous session
+        // needs this to advertise the bit correctly from service startup, not just
+        // after the user re-touches the switch.
+        bleProximityMonitor.setHotspotAvailable(com.connect.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled)
+        // Same reasoning, for the "hotspot currently on" bit: HotspotStateManager's own
+        // WIFI_AP_STATE_CHANGED_ACTION receiver only fires on a live change, so a phone
+        // whose hotspot was already on before this service (re)started needs this seed
+        // to advertise the bit correctly from the start.
+        bleProximityMonitor.setHotspotOn(com.connect.features.hotspot.TetherHelper.isHotspotEnabled(applicationContext))
         if (bleProximityMonitor.hasRequiredPermissions()) {
             bleProximityMonitor.start()
         }
+        // GATT server (provider/peripheral role) — phone-only, per
+        // docs/ble-hotspot-protocol.md's "GATT roles": a tablet/Mac only ever requests,
+        // never provides. Started unconditionally on a phone (not gated on the "Provide
+        // Instant Hotspot" toggle) — the toggle instead gates the advertisement's
+        // capability bit (above) and every individual request inside the server itself
+        // (defense in depth), matching that doc's "not advertise at all, not just refuse
+        // requests after the fact" requirement without needing to restart this server
+        // every time the toggle flips.
+        if (deviceType == com.connect.protocol.DeviceType.ANDROID_PHONE) {
+            hotspotGattServer = com.connect.features.hotspot.HotspotGattServer(
+                context = applicationContext,
+                identityKeyStore = identity,
+                trustedDevicesStore = trustedDevices,
+                scope = serviceScope,
+                shizukuManager = shizukuManager
+            ).also { it.start() }
+        }
+        hotspotStateManager = com.connect.features.hotspot.HotspotStateManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            transportManager = transportManager,
+            messageRouter = messageRouter,
+            scope = serviceScope,
+            deviceType = deviceType,
+            shizukuManager = shizukuManager,
+            bleProximityMonitor = bleProximityMonitor
+        )
+        hotspotStateManager.start()
         lockOnLeaveManager = LockOnLeaveManager(
             context = applicationContext,
             trustedDevicesStore = trustedDevices,
@@ -148,6 +189,37 @@ class SyncForegroundService : Service() {
                 }
             },
             IntentFilter("com.connect.DEBUG_TOGGLE_HOTSPOT"),
+            android.content.Context.RECEIVER_EXPORTED
+        )
+
+        // TEMPORARY debug hook to flip "Provide Instant Hotspot" without touching the
+        // real UI, for live end-to-end GATT testing — remove once the toggle's real UI
+        // is exercised directly instead.
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    val enable = intent.getBooleanExtra("enable", true)
+                    com.connect.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled = enable
+                    bleProximityMonitor.setHotspotAvailable(enable)
+                    Log.i("HotspotDebug", "provideHotspotEnabled -> $enable")
+                }
+            },
+            IntentFilter("com.connect.DEBUG_SET_PROVIDE_HOTSPOT"),
+            android.content.Context.RECEIVER_EXPORTED
+        )
+
+        // TEMPORARY debug hook to verify HotspotCredentialReader's reflection-based
+        // getSoftApConfiguration() call against a real device before the real GATT
+        // response path exists — remove once Instant Hotspot's credential-delivery path
+        // is live-tested end-to-end via GATT instead.
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    val credentials = com.connect.features.hotspot.HotspotCredentialReader.readCredentials(applicationContext, shizukuManager)
+                    Log.i("HotspotDebug", "readCredentials() -> $credentials")
+                }
+            },
+            IntentFilter("com.connect.DEBUG_READ_HOTSPOT_CREDENTIALS"),
             android.content.Context.RECEIVER_EXPORTED
         )
 
@@ -213,6 +285,11 @@ class SyncForegroundService : Service() {
                     // time or never — mediaControlBridge.start() only ever published
                     // once, at service startup, with no reconnect-triggered resend.
                     mediaControlBridge.resyncNowPlaying()
+                    // Same reasoning as dndSyncManager.reportInitialSyncState above: a
+                    // peer that reconnects (or missed the original event-driven report
+                    // to any race) shouldn't have to wait for this phone's *next*
+                    // hotspot toggle to learn its current state.
+                    hotspotStateManager.periodicResync()
                 } else {
                     clipboardSyncManager.stop()
                 }
@@ -223,6 +300,24 @@ class SyncForegroundService : Service() {
         runDndResyncLoop()
         runRosterResyncLoop()
         runMediaResyncLoop()
+        runHotspotStateResyncLoop()
+    }
+
+    /** Self-healing backstop for `hotspot.state_update`, on top of the event-driven
+     *  publish (a local `WIFI_AP_STATE_CHANGED_ACTION`) and the on-connect resend above:
+     *  periodically re-sends this phone's current hotspot state while connected. Mirrors
+     *  [runDndResyncLoop]/[runMediaResyncLoop] — a no-op on a tablet/Mac (never
+     *  originates this) and cheap on a phone regardless of whether the state has
+     *  actually changed recently. */
+    private fun runHotspotStateResyncLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(DND_RESYNC_INTERVAL_MS)
+                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
+                    hotspotStateManager.periodicResync()
+                }
+            }
+        }
     }
 
     /** Self-healing backstop for roster gossip, on top of the event-driven paths (a fresh
@@ -318,6 +413,7 @@ class SyncForegroundService : Service() {
         dndSyncManager.stop()
         clipboardSyncManager.stop()
         bleProximityMonitor.stop()
+        hotspotStateManager.stop()
         lockOnLeaveManager.stop()
         transportManager.shutdown()
         if (TransportManagerHolder.instance === transportManager) {
@@ -337,6 +433,8 @@ class SyncForegroundService : Service() {
     fun rosterGossipManager(): RosterGossipManager = rosterGossipManager
 
     fun bleProximityMonitor(): BLEProximityMonitor = bleProximityMonitor
+
+    fun hotspotStateManager(): com.connect.features.hotspot.HotspotStateManager = hotspotStateManager
 
     /** Exposed so the home screen can show a "your screen is being mirrored" indicator —
      *  see [com.connect.features.screenmirror.ScreenMirrorState]'s own doc comment, which

@@ -7,6 +7,7 @@ import android.net.wifi.WifiManager
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -62,6 +63,20 @@ object TetherHelper {
         return state == WIFI_AP_STATE_ENABLED || state == WIFI_AP_STATE_ENABLING
     }
 
+    /** Polls [isHotspotEnabled] briefly (a real state transition — especially tearing
+     *  down — isn't necessarily instantaneous the moment a toggle call returns) rather
+     *  than checking once immediately, since a single too-early check could itself
+     *  produce a false negative on an otherwise-genuine success. Bounded to ~2s total,
+     *  generous relative to how quickly `WIFI_AP_STATE` actually settles in practice
+     *  (confirmed live: a real teardown reflects within one or two 400ms polls). */
+    private suspend fun verifyState(context: Context, expectedEnabled: Boolean): Boolean {
+        repeat(5) {
+            if (isHotspotEnabled(context) == expectedEnabled) return true
+            delay(400)
+        }
+        return isHotspotEnabled(context) == expectedEnabled
+    }
+
     private fun getWifiApState(context: Context): Int = runCatching {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_WIFI_STATE) !=
             PackageManager.PERMISSION_GRANTED
@@ -110,7 +125,21 @@ object TetherHelper {
                 continue
             }
             val result = withTimeoutOrNull(timeoutMs) { mechanism.trySetEnabled(context, shizukuManager, enable) }
-            if (result == true) return ToggleResult.SUCCESS
+            if (result == true) {
+                // A mechanism reporting success isn't itself trustworthy — confirmed
+                // live: `ShizukuHotspotMechanism`'s stop path returned
+                // `TETHER_ERROR_NO_ERROR` twice in a row while `dumpsys wifi` showed
+                // the exact same `SoftApManager` instance still alive the whole time
+                // (a hidden-AIDL overload/attribution-tag mismatch on that specific
+                // device build — see that mechanism's doc comment). Poll the real
+                // `WIFI_AP_STATE` briefly rather than trusting the callback alone;
+                // a mechanism that can't actually be verified is treated as failed so
+                // the next mechanism in [ordered] gets a real chance, instead of
+                // silently reporting a toggle that didn't happen.
+                if (verifyState(context, expectedEnabled = enable)) return ToggleResult.SUCCESS
+                Log.w(TAG, "${mechanism.id} reported success but real hotspot state didn't confirm it; trying next mechanism if any")
+                continue
+            }
             Log.w(TAG, "${mechanism.id} failed or timed out; trying next mechanism if any")
         }
         return if (sawShizukuNotReady) ToggleResult.SHIZUKU_NOT_READY else ToggleResult.FAILURE

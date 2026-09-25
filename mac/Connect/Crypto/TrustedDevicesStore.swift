@@ -44,6 +44,13 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
     /// missing this key, and `TrustedDevicesStore.load()`'s `try?` would then silently
     /// wipe every already-paired device instead of just defaulting this one field.
     var lockOnLeaveEnabled: Bool = false
+    /// This device's base64-encoded Ed25519 *signing* public key (distinct from
+    /// `publicKeyBase64`, the X25519 key-agreement key used for Noise_IK) — used to
+    /// verify signed GATT requests (e.g. Instant Hotspot's `hotspot.toggle_request`).
+    /// `nil` for a row paired before this field existed; see
+    /// `TrustedDevicesStore.backfillSigningPublicKey`. Decodes safely when absent from
+    /// an older persisted file, same reasoning as `lockOnLeaveEnabled` above.
+    var signingPublicKeyBase64: String? = nil
 
     init(
         deviceId: String,
@@ -52,7 +59,8 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         deviceType: DeviceType,
         addedAt: Date,
         fallbackHost: String? = nil,
-        lockOnLeaveEnabled: Bool = false
+        lockOnLeaveEnabled: Bool = false,
+        signingPublicKeyBase64: String? = nil
     ) {
         self.deviceId = deviceId
         self.publicKeyBase64 = publicKeyBase64
@@ -61,6 +69,7 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         self.addedAt = addedAt
         self.fallbackHost = fallbackHost
         self.lockOnLeaveEnabled = lockOnLeaveEnabled
+        self.signingPublicKeyBase64 = signingPublicKeyBase64
     }
 
     init(from decoder: Decoder) throws {
@@ -72,6 +81,7 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         addedAt = try container.decode(Date.self, forKey: .addedAt)
         fallbackHost = try container.decodeIfPresent(String.self, forKey: .fallbackHost)
         lockOnLeaveEnabled = try container.decodeIfPresent(Bool.self, forKey: .lockOnLeaveEnabled) ?? false
+        signingPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .signingPublicKeyBase64)
     }
 }
 
@@ -112,13 +122,20 @@ final class TrustedDevicesStore: ObservableObject {
     }
 
     @discardableResult
-    func addDevice(deviceId: String, publicKeyBase64: String, deviceName: String, deviceType: DeviceType) -> TrustedDevice {
+    func addDevice(
+        deviceId: String,
+        publicKeyBase64: String,
+        deviceName: String,
+        deviceType: DeviceType,
+        signingPublicKeyBase64: String? = nil
+    ) -> TrustedDevice {
         let device = TrustedDevice(
             deviceId: deviceId,
             publicKeyBase64: publicKeyBase64,
             deviceName: deviceName,
             deviceType: deviceType,
-            addedAt: Date()
+            addedAt: Date(),
+            signingPublicKeyBase64: signingPublicKeyBase64
         )
         queue.sync {
             devices.removeAll { $0.deviceId == deviceId }
@@ -127,6 +144,22 @@ final class TrustedDevicesStore: ObservableObject {
         persist()
         publishOnMain()
         return device
+    }
+
+    /// Fills in `TrustedDevice.signingPublicKeyBase64` for a row paired before that
+    /// field existed, learned later via `trust.roster_update` gossip. No-ops if
+    /// `deviceId` isn't trusted or already has a signing key on file — never
+    /// overwrites an already-known key with a gossiped one, same "never clobber" rule
+    /// `RosterGossipManager` applies to every other field on an already-trusted row.
+    /// Idempotent: re-applying the same key is a no-op after the first call.
+    func backfillSigningPublicKey(deviceId: String, signingPublicKeyBase64: String) {
+        queue.sync {
+            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }),
+                  devices[index].signingPublicKeyBase64 == nil else { return }
+            devices[index].signingPublicKeyBase64 = signingPublicKeyBase64
+        }
+        persist()
+        publishOnMain()
     }
 
     func revoke(deviceId: String) {

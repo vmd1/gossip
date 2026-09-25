@@ -18,6 +18,7 @@ struct ConnectApp: App {
     @StateObject private var clipboardSyncManager: ClipboardSyncManager
     private let rosterGossipManager: RosterGossipManager
     @StateObject private var bleProximityMonitor: BLEProximityMonitor
+    @StateObject private var hotspotStateManager: HotspotStateManager
     private let lockOnLeaveManager: LockOnLeaveManager
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
@@ -27,6 +28,11 @@ struct ConnectApp: App {
     /// hit twice in this codebase. A `State` class box because `ConnectApp` itself is a struct.
     private final class SubscriptionBox { var cancellable: AnyCancellable? }
     private let subscriptions = SubscriptionBox()
+    // TEMPORARY: retains the in-flight debug-hotspot-request client so it isn't
+    // deallocated before its async GATT exchange completes — remove alongside the
+    // debug URL hook itself once real UI testing supersedes it.
+    private final class HotspotClientBox { var client: HotspotGattClient? }
+    private let debugHotspotClientBox = HotspotClientBox()
     private let dndResyncSubscriptions = SubscriptionBox()
     private let fallbackDialSubscriptions = SubscriptionBox()
     private let rosterResyncSubscriptions = SubscriptionBox()
@@ -56,6 +62,7 @@ struct ConnectApp: App {
         rosterGossipManager = RosterGossipManager(transportManager: transport)
         let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
         _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
+        _hotspotStateManager = StateObject(wrappedValue: HotspotStateManager(transportManager: transport))
         lockOnLeaveManager = LockOnLeaveManager(
             transportManager: transport,
             trustedDevicesStore: TrustedDevicesStore.shared,
@@ -112,9 +119,30 @@ struct ConnectApp: App {
         // silently dropped by `AppDelegate.application(_:open:)`'s `onOpenURLs?(urls)`
         // no-op on `nil` until the user opened the menu bar tray at least once after
         // launch.
-        appDelegate.onOpenURLs = { [dndSyncManager] urls in
+        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox] urls in
             for url in urls {
-                dndSyncManager.handleIncomingURL(url)
+                if url.host == "debug-hotspot-request" {
+                    // TEMPORARY debug hook to live-test HotspotGattClient end to end
+                    // before there's a scriptable UI path — remove once this is
+                    // exercised through the real "Request Hotspot" menu bar button
+                    // instead.
+                    let phones = TrustedDevicesStore.shared.devices.filter { $0.deviceType == .androidPhone }
+                    BLEProximityMonitor.debugLog("debug-hotspot-request: trusted phones=\(phones.map { $0.deviceId }) peripheralIds=\(bleMonitor.peripheralIdentifierByDeviceId) nearby=\(bleMonitor.nearbyDeviceIds)")
+                    guard let deviceId = phones.first?.deviceId,
+                          let peripheralId = bleMonitor.peripheralIdentifierByDeviceId[deviceId] else {
+                        BLEProximityMonitor.debugLog("debug-hotspot-request: no nearby trusted phone found")
+                        continue
+                    }
+                    BLEProximityMonitor.debugLog("debug-hotspot-request: requesting from \(deviceId)")
+                    let client = HotspotGattClient()
+                    debugHotspotClientBox.client = client
+                    client.requestToggle(providerId: deviceId, peripheralIdentifier: peripheralId, enable: true) { result in
+                        BLEProximityMonitor.debugLog("debug-hotspot-request result: \(result)")
+                        debugHotspotClientBox.client = nil
+                    }
+                } else {
+                    dndSyncManager.handleIncomingURL(url)
+                }
             }
         }
 
@@ -201,7 +229,8 @@ struct ConnectApp: App {
                 mediaControlManager: mediaControlManager,
                 notificationMirrorManager: notificationMirrorManager,
                 rosterGossipManager: rosterGossipManager,
-                bleProximityMonitor: bleProximityMonitor
+                bleProximityMonitor: bleProximityMonitor,
+                hotspotStateManager: hotspotStateManager
             )
         }
         .menuBarExtraStyle(.window)

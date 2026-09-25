@@ -97,18 +97,23 @@ final class RosterGossipManager {
     /// send) needs to learn about the sender too, not just the sender's other peers.
     private func rosterPayload() -> JSONValue {
         var entries = trustedDevices.allDevices().map { device -> JSONValue in
-            .object([
+            var fields: [String: JSONValue] = [
                 "deviceId": .string(device.deviceId),
                 "publicKey": .string(device.publicKeyBase64),
                 "deviceName": .string(device.deviceName),
                 "deviceType": .string(device.deviceType.rawValue)
-            ])
+            ]
+            if let signingPublicKeyBase64 = device.signingPublicKeyBase64 {
+                fields["signingPublicKey"] = .string(signingPublicKeyBase64)
+            }
+            return .object(fields)
         }
         entries.append(.object([
             "deviceId": .string(identity.deviceId),
             "publicKey": .string(identity.agreementKey.publicKey.rawRepresentation.base64EncodedString()),
             "deviceName": .string(Host.current().localizedName ?? "Mac"),
-            "deviceType": .string(DeviceType.mac.rawValue)
+            "deviceType": .string(DeviceType.mac.rawValue),
+            "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
         ]))
         return .object(["devices": .array(entries)])
     }
@@ -118,13 +123,21 @@ final class RosterGossipManager {
     private func handleRosterUpdate(_ envelope: Envelope) {
         guard case .array(let entries) = envelope.payload["devices"] else { return }
         for entry in entries {
-            guard let deviceId = entry["deviceId"]?.stringValue,
-                  deviceId != identity.deviceId,
-                  // Never clobber an already-trusted device's own row (e.g. one paired
-                  // directly, or already gossiped) with a remote-reported copy — this
-                  // would otherwise re-stamp `addedAt` on every periodic resync.
-                  !trustedDevices.isTrusted(deviceId: deviceId),
-                  let publicKey = entry["publicKey"]?.stringValue,
+            guard let deviceId = entry["deviceId"]?.stringValue, deviceId != identity.deviceId else { continue }
+            let signingPublicKey = entry["signingPublicKey"]?.stringValue
+            // Never clobber an already-trusted device's own row (e.g. one paired
+            // directly, or already gossiped) with a remote-reported copy — this
+            // would otherwise re-stamp `addedAt` on every periodic resync. Narrow
+            // exception: backfill a missing signing key (a row paired before that
+            // field existed), since gossip is otherwise the only way that row would
+            // ever learn it.
+            if trustedDevices.isTrusted(deviceId: deviceId) {
+                if let signingPublicKey {
+                    trustedDevices.backfillSigningPublicKey(deviceId: deviceId, signingPublicKeyBase64: signingPublicKey)
+                }
+                continue
+            }
+            guard let publicKey = entry["publicKey"]?.stringValue,
                   let deviceName = entry["deviceName"]?.stringValue,
                   let deviceTypeRaw = entry["deviceType"]?.stringValue,
                   let deviceType = DeviceType(rawValue: deviceTypeRaw)
@@ -133,7 +146,8 @@ final class RosterGossipManager {
                 deviceId: deviceId,
                 publicKeyBase64: publicKey,
                 deviceName: deviceName,
-                deviceType: deviceType
+                deviceType: deviceType,
+                signingPublicKeyBase64: signingPublicKey
             )
         }
     }

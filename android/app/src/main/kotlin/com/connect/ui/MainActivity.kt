@@ -247,7 +247,15 @@ class MainActivity : ComponentActivity() {
                                     runCatching { transport.send(envelope) }
                                 }
                             }
-                        }
+                        },
+                        provideHotspotEnabledProvider = { OnboardingPreferences(applicationContext).provideHotspotEnabled },
+                        onSetProvideHotspotEnabled = { enabled ->
+                            OnboardingPreferences(applicationContext).provideHotspotEnabled = enabled
+                            boundService?.bleProximityMonitor()?.setHotspotAvailable(enabled)
+                        },
+                        hotspotStatesProvider = { boundService?.hotspotStateManager()?.hotspotStateBySenderId },
+                        bleHotspotOnStatesProvider = { boundService?.bleProximityMonitor()?.hotspotOnByDeviceId },
+                        onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) }
                     )
                 }
             }
@@ -256,7 +264,69 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         serviceConnection?.let { runCatching { unbindService(it) } }
+        activeHotspotConnection?.let { com.connect.features.hotspot.HotspotAutoConnect.disconnect(this, it) }
         super.onDestroy()
+    }
+
+    /** Network callback for a Wi-Fi connection this device joined via
+     *  [com.connect.features.hotspot.HotspotAutoConnect] — kept so it can be released
+     *  ([com.connect.features.hotspot.HotspotAutoConnect.disconnect]) once this device
+     *  no longer needs it, rather than holding the connection open forever. Only one at
+     *  a time, matching [requestHotspot] only ever having one request in flight. */
+    private var activeHotspotConnection: android.net.ConnectivityManager.NetworkCallback? = null
+
+    /** Sends a signed `hotspot.toggle_request` to [deviceId] over BLE GATT, and on a
+     *  successful response carrying credentials, joins that network automatically. See
+     *  `docs/ble-hotspot-protocol.md`. Feedback is a plain `Toast` — this is the
+     *  feature's first cut of UI, not a polished flow (no persistent "connecting..."
+     *  indicator, no retry). */
+    private fun requestHotspot(deviceId: String, enable: Boolean) {
+        val bluetoothDevice = boundService?.bleProximityMonitor()?.bluetoothDevice(deviceId)
+        if (bluetoothDevice == null) {
+            android.widget.Toast.makeText(this, "Device is no longer nearby", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val identity = IdentityKeyStore.getInstance(applicationContext)
+        val trustedDevicesStore = TrustedDevicesStore.getInstance(applicationContext)
+        val client = com.connect.features.hotspot.HotspotGattClient(applicationContext, identity, trustedDevicesStore)
+        android.widget.Toast.makeText(
+            this,
+            if (enable) "Requesting hotspot…" else "Requesting hotspot off…",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
+        lifecycleScope.launch {
+            when (val result = client.requestToggle(bluetoothDevice, deviceId, enable = enable)) {
+                is com.connect.features.hotspot.HotspotGattClient.Result.Failed -> {
+                    android.widget.Toast.makeText(this@MainActivity, "Hotspot request failed: ${result.reason}", android.widget.Toast.LENGTH_LONG).show()
+                }
+                is com.connect.features.hotspot.HotspotGattClient.Result.Success -> {
+                    if (!enable) {
+                        val message = if (!result.enabled) "Hotspot turned off" else "That device kept its hotspot on"
+                        android.widget.Toast.makeText(this@MainActivity, message, android.widget.Toast.LENGTH_SHORT).show()
+                        return@launch
+                    }
+                    if (!result.enabled) {
+                        android.widget.Toast.makeText(this@MainActivity, "That device declined the hotspot request", android.widget.Toast.LENGTH_LONG).show()
+                        return@launch
+                    }
+                    val ssid = result.ssid
+                    val passphrase = result.passphrase
+                    if (ssid == null || passphrase == null) {
+                        android.widget.Toast.makeText(
+                            this@MainActivity,
+                            "Hotspot is on — connect manually (credentials weren't available to auto-connect)",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        return@launch
+                    }
+                    activeHotspotConnection?.let { com.connect.features.hotspot.HotspotAutoConnect.disconnect(this@MainActivity, it) }
+                    activeHotspotConnection = com.connect.features.hotspot.HotspotAutoConnect.connect(applicationContext, ssid, passphrase) { connected ->
+                        val message = if (connected) "Connected to $ssid" else "Could not auto-connect to $ssid — connect manually"
+                        android.widget.Toast.makeText(this@MainActivity, message, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
     }
 
     /** Posts a plain local notification (own dedicated channel — distinct from
@@ -326,7 +396,12 @@ fun ConnectHomeScreen(
     myDeviceType: DeviceType = DeviceType.ANDROID_PHONE,
     deviceAdminActive: () -> Boolean = { true },
     onRequestDeviceAdmin: () -> Unit = {},
-    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> }
+    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    provideHotspotEnabledProvider: () -> Boolean = { false },
+    onSetProvideHotspotEnabled: (Boolean) -> Unit = {},
+    hotspotStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, com.connect.features.hotspot.HotspotState>>? = { null },
+    bleHotspotOnStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>>? = { null },
+    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
@@ -463,13 +538,43 @@ fun ConnectHomeScreen(
                 }
             }
 
+            if (myDeviceType == DeviceType.ANDROID_PHONE) {
+                var provideHotspotEnabled by remember { mutableStateOf(provideHotspotEnabledProvider()) }
+                androidx.compose.foundation.layout.Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Provide Instant Hotspot", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Let nearby trusted devices with no internet request a hotspot from " +
+                                "this phone. Off by default — uses cellular data and battery.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = provideHotspotEnabled,
+                        onCheckedChange = {
+                            provideHotspotEnabled = it
+                            onSetProvideHotspotEnabled(it)
+                        }
+                    )
+                }
+            }
+
             val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, com.connect.features.hotspot.HotspotState>()) })
+            val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
 
             PairedDevicesScreen(
                 devices = devices,
                 nearbyDeviceIds = nearbyDeviceIds,
                 myDeviceType = myDeviceType,
                 onSetLockOnLeave = onSetLockOnLeave,
+                hotspotStates = hotspotStates,
+                bleHotspotOnStates = bleHotspotOnStates,
+                onRequestHotspot = onRequestHotspot,
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls

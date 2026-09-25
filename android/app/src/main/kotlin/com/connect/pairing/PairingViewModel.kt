@@ -33,7 +33,13 @@ data class PairingQrPayload(
     val responderPublicKeyFingerprint: String,
     val responderDeviceName: String,
     val responderDeviceType: String,
-    val pairingToken: String
+    val pairingToken: String,
+    /** Base64 Ed25519 signing public key — see `HandshakePayload.signingPublicKey`.
+     *  Carried here too (not just over the handshake) because the *initiator* (the
+     *  device scanning this QR) never receives a `HandshakePeerInfo` back from
+     *  [com.connect.transport.TransportManager.connect]; it only learns the
+     *  responder's identity from this payload. */
+    val responderSigningPublicKey: String
 )
 
 sealed class PairingUiState {
@@ -97,7 +103,8 @@ class PairingViewModel(
                         publicKey = remoteStaticKey,
                         deviceName = payload.responderDeviceName,
                         deviceType = DeviceType.fromWire(payload.responderDeviceType),
-                        addedAt = System.currentTimeMillis()
+                        addedAt = System.currentTimeMillis(),
+                        signingPublicKey = Base64.decode(payload.responderSigningPublicKey, Base64.NO_WRAP)
                     )
                 )
                 // Brand-new pairing (not a reconnect to an already-trusted device) —

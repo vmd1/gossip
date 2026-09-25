@@ -158,6 +158,9 @@ class RosterGossipManager(
                             put("publicKey", JsonPrimitive(Base64.encodeToString(device.publicKey, Base64.NO_WRAP)))
                             put("deviceName", JsonPrimitive(device.deviceName))
                             put("deviceType", JsonPrimitive(device.deviceType.wireValue))
+                            device.signingPublicKey?.let {
+                                put("signingPublicKey", JsonPrimitive(Base64.encodeToString(it, Base64.NO_WRAP)))
+                            }
                         }
                     )
                 }
@@ -167,6 +170,7 @@ class RosterGossipManager(
                         put("publicKey", JsonPrimitive(Base64.encodeToString(identityKeyStore.x25519KeyPair.publicKey, Base64.NO_WRAP)))
                         put("deviceName", JsonPrimitive(deviceName))
                         put("deviceType", JsonPrimitive(deviceType.wireValue))
+                        put("signingPublicKey", JsonPrimitive(Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)))
                     }
                 )
             }
@@ -181,10 +185,18 @@ class RosterGossipManager(
             val obj = entry as? JsonObject ?: continue
             val deviceId = obj["deviceId"]?.jsonPrimitive?.contentOrNull ?: continue
             if (deviceId == identityKeyStore.deviceId) continue
+            val signingPublicKeyBase64 = obj["signingPublicKey"]?.jsonPrimitive?.contentOrNull
             // Never clobber an already-trusted device's own row (e.g. one paired
             // directly, or already gossiped) with a remote-reported copy — this would
-            // otherwise re-stamp `addedAt` on every periodic resync.
-            if (trustedDevicesStore.isTrusted(deviceId)) continue
+            // otherwise re-stamp `addedAt` on every periodic resync. Narrow exception:
+            // backfill a missing signing key (a row paired before that field existed),
+            // since gossip is otherwise the only way that row would ever learn it.
+            if (trustedDevicesStore.isTrusted(deviceId)) {
+                signingPublicKeyBase64?.let {
+                    trustedDevicesStore.backfillSigningPublicKey(deviceId, Base64.decode(it, Base64.NO_WRAP))
+                }
+                continue
+            }
             val publicKeyBase64 = obj["publicKey"]?.jsonPrimitive?.contentOrNull ?: continue
             val deviceNameEntry = obj["deviceName"]?.jsonPrimitive?.contentOrNull ?: continue
             val deviceTypeRaw = obj["deviceType"]?.jsonPrimitive?.contentOrNull ?: continue
@@ -194,7 +206,8 @@ class RosterGossipManager(
                     publicKey = Base64.decode(publicKeyBase64, Base64.NO_WRAP),
                     deviceName = deviceNameEntry,
                     deviceType = DeviceType.fromWire(deviceTypeRaw),
-                    addedAt = System.currentTimeMillis()
+                    addedAt = System.currentTimeMillis(),
+                    signingPublicKey = signingPublicKeyBase64?.let { Base64.decode(it, Base64.NO_WRAP) }
                 )
             )
         }

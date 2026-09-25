@@ -24,6 +24,12 @@ struct PairingQRPayload: Codable {
     /// echo it back (out of band, e.g. in its own confirmation UI) so the user
     /// can visually confirm they scanned the right code.
     let pairingToken: String
+    /// Base64 Ed25519 signing public key — see `HandshakePayload`'s `signingPublicKey`
+    /// field on Android / the `signingPublicKey` envelope field here. Carried here too
+    /// (not just over the handshake) because the *initiator* (the device scanning this
+    /// QR) never receives a `HandshakePeerInfo` back from a fire-and-forget connect
+    /// call; it only learns the responder's identity from this payload.
+    let responderSigningPublicKey: String
 }
 
 enum QRCodeGenerator {
@@ -35,7 +41,8 @@ enum QRCodeGenerator {
             responderPublicKey: identity.agreementKey.publicKey.rawRepresentation.base64EncodedString(),
             responderDeviceName: Host.current().localizedName ?? "Mac",
             responderDeviceType: DeviceType.mac.rawValue,
-            pairingToken: UUID().uuidString
+            pairingToken: UUID().uuidString,
+            responderSigningPublicKey: identity.signingKey.publicKey.rawRepresentation.base64EncodedString()
         )
     }
 

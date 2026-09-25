@@ -43,6 +43,12 @@
          attempting startTethering. Missing entirely was likely why the reflection call
          kept returning error 14 despite WRITE_SECURE_SETTINGS/WRITE_SETTINGS being granted. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Instant Hotspot credential auto-connect (requesting side): HotspotAutoConnect.kt's
+         ConnectivityManager.requestNetwork(WifiNetworkSpecifier) call requires this — confirmed
+         live as a real crash (SecurityException at requestNetwork) without it, since it's a
+         normal permission that must still be explicitly declared, not implicitly covered by
+         WRITE_SETTINGS despite the exception message listing both as alternatives. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Special-access grant (not a runtime dialog) required to read/set Do Not Disturb
          state via NotificationManager; see features/dnd/DndSyncManager.kt. Requested by

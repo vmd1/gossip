@@ -27,7 +27,12 @@ data class TrustedDevice(
      *  ever locked. Local-only bookkeeping so the UI toggle reflects saved state across
      *  restarts; the Mac is the one that actually acts on it, via its own BLE proximity
      *  observation, not a message this device sends it repeatedly. */
-    val lockOnLeaveEnabled: Boolean = false
+    val lockOnLeaveEnabled: Boolean = false,
+    /** This device's Ed25519 *signing* public key (distinct from [publicKey], the X25519
+     *  key-agreement key used for Noise_IK) — used to verify signed GATT requests (e.g.
+     *  Instant Hotspot's `hotspot.toggle_request`). `null` for a row paired before this
+     *  field existed; see [TrustedDevicesStore.backfillSigningPublicKey]. */
+    val signingPublicKey: ByteArray? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -38,7 +43,12 @@ data class TrustedDevice(
             deviceType == other.deviceType &&
             addedAt == other.addedAt &&
             fallbackHost == other.fallbackHost &&
-            lockOnLeaveEnabled == other.lockOnLeaveEnabled
+            lockOnLeaveEnabled == other.lockOnLeaveEnabled &&
+            when {
+                signingPublicKey == null && other.signingPublicKey == null -> true
+                signingPublicKey == null || other.signingPublicKey == null -> false
+                else -> signingPublicKey.contentEquals(other.signingPublicKey)
+            }
     }
 
     override fun hashCode(): Int = deviceId.hashCode()
@@ -52,7 +62,8 @@ private data class TrustedDeviceRow(
     val deviceType: String,
     val addedAt: Long,
     val fallbackHost: String? = null,
-    val lockOnLeaveEnabled: Boolean = false
+    val lockOnLeaveEnabled: Boolean = false,
+    val signingPublicKeyBase64: String? = null
 )
 
 /**
@@ -77,7 +88,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             deviceType = device.deviceType.wireValue,
             addedAt = device.addedAt,
             fallbackHost = device.fallbackHost,
-            lockOnLeaveEnabled = device.lockOnLeaveEnabled
+            lockOnLeaveEnabled = device.lockOnLeaveEnabled,
+            signingPublicKeyBase64 = device.signingPublicKey?.let { Base64.getEncoder().encodeToString(it) }
         )
         prefs.edit().putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row)).apply()
     }
@@ -88,6 +100,19 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     fun setFallbackHost(deviceId: String, fallbackHost: String?) {
         val existing = getDevice(deviceId) ?: return
         addDevice(existing.copy(fallbackHost = fallbackHost?.trim()?.takeIf { it.isNotEmpty() }))
+    }
+
+    /** Fills in [TrustedDevice.signingPublicKey] for a row paired before that field
+     *  existed, learned later via `trust.roster_update` gossip. No-ops if [deviceId]
+     *  isn't trusted or already has a signing key on file — never overwrites an
+     *  already-known key with a gossiped one, same "never clobber" rule
+     *  [RosterGossipManager] applies to every other field on an already-trusted row.
+     *  Idempotent: re-applying the same key is a no-op after the first call. */
+    @Synchronized
+    fun backfillSigningPublicKey(deviceId: String, signingPublicKey: ByteArray) {
+        val existing = getDevice(deviceId) ?: return
+        if (existing.signingPublicKey != null) return
+        addDevice(existing.copy(signingPublicKey = signingPublicKey))
     }
 
     /** Updates just the Lock-on-Leave flag for an already-trusted Mac (see
@@ -126,7 +151,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             deviceType = DeviceType.fromWire(row.deviceType),
             addedAt = row.addedAt,
             fallbackHost = row.fallbackHost,
-            lockOnLeaveEnabled = row.lockOnLeaveEnabled
+            lockOnLeaveEnabled = row.lockOnLeaveEnabled,
+            signingPublicKey = row.signingPublicKeyBase64?.let { Base64.getDecoder().decode(it) }
         )
     }
 

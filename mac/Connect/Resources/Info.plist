@@ -30,6 +30,10 @@
 	<string>Connect uses your local network to discover and communicate with your paired Android phone.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connect uses Bluetooth to detect when your paired phone is physically nearby, for features like locking your Mac when it leaves range.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Connect needs Location Services to join a nearby phone's Instant Hotspot automatically — this is a macOS requirement for any app that joins Wi-Fi networks programmatically, not something Connect uses your location for.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Connect needs Location Services to join a nearby phone's Instant Hotspot automatically — this is a macOS requirement for any app that joins Wi-Fi networks programmatically, not something Connect uses your location for.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_connect._tcp</string>

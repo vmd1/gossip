@@ -8,6 +8,8 @@ struct HandshakePeerInfo {
     let deviceId: String
     let deviceName: String
     let deviceType: DeviceType
+    /// The peer's raw Ed25519 signing public key — see `TrustedDevice.signingPublicKeyBase64`.
+    let signingPublicKey: Data
 }
 
 /// Owns the connection lifecycle to every trusted peer device simultaneously
@@ -329,7 +331,8 @@ final class TransportManager: ObservableObject {
             payload: .object([
                 "noise": .string(message.base64EncodedString()),
                 "deviceName": .string(currentDeviceName()),
-                "deviceType": .string(DeviceType.mac.rawValue)
+                "deviceType": .string(DeviceType.mac.rawValue),
+                "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
             ])
         )
         guard let framed = try? envelope.encoded() else { return }
@@ -476,7 +479,8 @@ final class TransportManager: ObservableObject {
             let deviceName = helloEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
             let deviceTypeRaw = helloEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
             let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
-            pending.pendingPeer = HandshakePeerInfo(deviceId: helloEnvelope.senderId, deviceName: deviceName, deviceType: deviceType)
+            let signingPublicKey = helloEnvelope.payload["signingPublicKey"]?.stringValue.flatMap { Data(base64Encoded: $0) } ?? Data()
+            pending.pendingPeer = HandshakePeerInfo(deviceId: helloEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
 
             let message2 = try pending.noiseSession.createMessage2(payload: Data())
             let ackEnvelope = Envelope(
@@ -486,7 +490,8 @@ final class TransportManager: ObservableObject {
                 payload: .object([
                     "noise": .string(message2.base64EncodedString()),
                     "deviceName": .string(currentDeviceName()),
-                    "deviceType": .string(DeviceType.mac.rawValue)
+                    "deviceType": .string(DeviceType.mac.rawValue),
+                    "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
                 ])
             )
             let framed = try ackEnvelope.encoded()
@@ -514,7 +519,8 @@ final class TransportManager: ObservableObject {
             let deviceName = ackEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
             let deviceTypeRaw = ackEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
             let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
-            pending.pendingPeer = HandshakePeerInfo(deviceId: ackEnvelope.senderId, deviceName: deviceName, deviceType: deviceType)
+            let signingPublicKey = ackEnvelope.payload["signingPublicKey"]?.stringValue.flatMap { Data(base64Encoded: $0) } ?? Data()
+            pending.pendingPeer = HandshakePeerInfo(deviceId: ackEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
             finalizeHandshake(pending: pending)
         } catch {
             NSLog("Connect: handshake message 2 failed: \(error)")
@@ -538,7 +544,8 @@ final class TransportManager: ObservableObject {
                         deviceId: peer.deviceId,
                         publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
                         deviceName: peer.deviceName,
-                        deviceType: peer.deviceType
+                        deviceType: peer.deviceType,
+                        signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
                     )
                     self.promote(pending, peer: peer)
                     // Freshly-confirmed pairing reaches the same "connected" outcome

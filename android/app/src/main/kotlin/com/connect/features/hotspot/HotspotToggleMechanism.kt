@@ -208,13 +208,80 @@ object ShizukuHotspotMechanism : HotspotToggleMechanism {
                         .setExemptFromEntitlementCheck(true)
                         .setShouldShowEntitlementUi(false)
                         .build()
-                    tetheringConnector.startTethering(request.parcel, ADB_PACKAGE_NAME, "", listener)
+                    startTetheringWithFallback(tetheringConnector, request, listener)
                 } else {
-                    tetheringConnector.stopTethering(TETHERING_WIFI, ADB_PACKAGE_NAME, "", listener)
+                    stopTetheringWithFallback(tetheringConnector, listener)
                 }
             }.onFailure {
                 Log.w(TAG, "Shizuku tethering call failed", it)
                 if (continuation.isActive) continuation.resume(false)
+            }
+        }
+    }
+
+    /** Tries each `startTethering` overload our vendored `ITetheringConnector` stub
+     *  declares, oldest-signature-last, falling through on `NoSuchMethodException` —
+     *  same call shapes, same order, same `null` (not `""`) attribution tag as the
+     *  real, currently-maintained reference this technique is based on
+     *  (`github.com/supershadoe/delta`'s `SoftApController.startSoftAp`), since a live
+     *  device's actual platform build may only implement one specific overload of this
+     *  hidden AIDL method — calling the wrong one throws `NoSuchMethodException`
+     *  (the `dev.rikka.tools.refine` bytecode-rewriting this whole mechanism depends on
+     *  swaps this stub's calls for the real on-device `ITetheringConnector` class at
+     *  runtime; if that real class doesn't have a matching overload, the call fails
+     *  this way rather than silently). Unlike the stop path below, every overload here
+     *  still accepts our own [IIntResultListener], so the real result is always
+     *  reported back through [listener] regardless of which overload actually worked. */
+    private fun startTetheringWithFallback(
+        tetheringConnector: ITetheringConnector,
+        request: TetheringManagerHidden.TetheringRequest,
+        listener: IIntResultListener
+    ) {
+        try {
+            tetheringConnector.startTethering(request.parcel, ADB_PACKAGE_NAME, null, listener)
+        } catch (_: NoSuchMethodException) {
+            try {
+                tetheringConnector.startTethering(request.parcel, ADB_PACKAGE_NAME, listener)
+            } catch (_: NoSuchMethodException) {
+                // The two oldest overloads take a `ResultReceiver`, not an
+                // `IIntResultListener` — different callback ABI entirely, from before
+                // this AIDL interface had the newer listener-based shape. Bridge it
+                // back to our own listener so the caller still gets a real result.
+                val resultReceiver = object : android.os.ResultReceiver(Handler(Looper.getMainLooper())) {
+                    override fun onReceiveResult(resultCode: Int, resultData: android.os.Bundle?) {
+                        listener.onResult(resultCode)
+                    }
+                }
+                try {
+                    tetheringConnector.startTethering(TETHERING_WIFI, resultReceiver, false, ADB_PACKAGE_NAME)
+                } catch (_: NoSuchMethodException) {
+                    tetheringConnector.startTethering(TETHERING_WIFI, resultReceiver, false)
+                }
+            }
+        }
+    }
+
+    /** Same fallback strategy as [startTetheringWithFallback], for `stopTethering` —
+     *  see that method's doc comment. This is the path that was live-confirmed
+     *  *not* actually stopping the AP despite reporting `TETHER_ERROR_NO_ERROR` when
+     *  called with the newer 4-arg overload and an empty-string (not `null`)
+     *  attribution tag; switching to `null` and adding the same overload fallback
+     *  Delta already ships and has verified across real devices is the fix. */
+    private fun stopTetheringWithFallback(tetheringConnector: ITetheringConnector, listener: IIntResultListener) {
+        try {
+            tetheringConnector.stopTethering(TETHERING_WIFI, ADB_PACKAGE_NAME, null, listener)
+        } catch (_: NoSuchMethodException) {
+            try {
+                tetheringConnector.stopTethering(TETHERING_WIFI, ADB_PACKAGE_NAME, listener)
+            } catch (_: NoSuchMethodException) {
+                // No callback parameter at all on this oldest overload — report success
+                // optimistically (this is Delta's own behavior too: `stopSoftAp`
+                // returns `true` immediately after this call with no result
+                // confirmation available). `TetherHelper`'s caller-side state
+                // verification (see its doc comment) is what actually catches a
+                // silent no-op here, not this return value.
+                tetheringConnector.stopTethering(TETHERING_WIFI)
+                listener.onResult(TETHER_ERROR_NO_ERROR)
             }
         }
     }

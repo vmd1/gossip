@@ -13,6 +13,8 @@ import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.TabletMac
+import androidx.compose.material.icons.filled.WifiTethering
+import androidx.compose.material.icons.filled.WifiTetheringOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +41,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import com.connect.crypto.TrustedDevice
+import com.connect.features.hotspot.HotspotState
 import com.connect.protocol.DeviceType
 
 /** Icon shown in place of the old plain-text device-type subtitle. */
@@ -61,7 +64,10 @@ fun PairedDevicesScreen(
     onSetFallbackHost: (deviceId: String, fallbackHost: String?) -> Unit = { _, _ -> },
     nearbyDeviceIds: Set<String> = emptySet(),
     myDeviceType: DeviceType = DeviceType.ANDROID_PHONE,
-    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> }
+    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    hotspotStates: Map<String, HotspotState> = emptyMap(),
+    bleHotspotOnStates: Map<String, Boolean> = emptyMap(),
+    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
 ) {
     Column {
         Text("Paired devices", style = MaterialTheme.typography.titleMedium)
@@ -91,13 +97,49 @@ fun PairedDevicesScreen(
                             )
                         }
                     }
-                    DeviceSettingsButton(
-                        device = device,
-                        onForget = onForget,
-                        onSetFallbackHost = onSetFallbackHost,
-                        showLockOnLeaveToggle = myDeviceType == DeviceType.ANDROID_PHONE && device.deviceType != DeviceType.ANDROID_PHONE,
-                        onSetLockOnLeave = onSetLockOnLeave
-                    )
+                    // Grouped in their own Row (not two more top-level children of the
+                    // outer SpaceBetween Row) — real layout bug, confirmed live: with
+                    // three top-level children, SpaceBetween spaced the hotspot icon
+                    // in the middle of the row instead of keeping it against the right
+                    // edge next to the settings button.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (device.deviceType == DeviceType.ANDROID_PHONE) {
+                            // Prefer the BLE-observed on/off bit when nearby — it stays
+                            // live even with no mesh connection to this device at all,
+                            // unlike hotspotStates (mesh-only, can go stale the moment
+                            // the mesh connection drops). Falls back to the
+                            // mesh-reported state (which also carries the SSID for the
+                            // tooltip) when not BLE-nearby, or merges the fresher
+                            // `enabled` bit in when both sources exist.
+                            val bleOn = if (device.deviceId in nearbyDeviceIds) bleHotspotOnStates[device.deviceId] else null
+                            val meshState = hotspotStates[device.deviceId]
+                            val state = when {
+                                bleOn != null && meshState != null -> meshState.copy(enabled = bleOn)
+                                bleOn != null -> HotspotState(enabled = bleOn)
+                                else -> meshState
+                            }
+                            state?.let { s ->
+                                IconButton(onClick = { onRequestHotspot(device.deviceId, !s.enabled) }) {
+                                    Icon(
+                                        imageVector = if (s.enabled) Icons.Default.WifiTethering else Icons.Default.WifiTetheringOff,
+                                        contentDescription = if (s.enabled) {
+                                            "Instant Hotspot is on" + (s.ssid?.let { ssid -> " ($ssid)" } ?: "") + " — tap to turn off"
+                                        } else {
+                                            "Instant Hotspot is off — tap to request"
+                                        },
+                                        tint = if (s.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                        DeviceSettingsButton(
+                            device = device,
+                            onForget = onForget,
+                            onSetFallbackHost = onSetFallbackHost,
+                            showLockOnLeaveToggle = myDeviceType == DeviceType.ANDROID_PHONE && device.deviceType != DeviceType.ANDROID_PHONE,
+                            onSetLockOnLeave = onSetLockOnLeave
+                        )
+                    }
                 }
             }
         }
