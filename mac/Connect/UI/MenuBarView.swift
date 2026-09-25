@@ -22,6 +22,7 @@ struct MenuBarView: View {
     @State private var hotspotGattClients: [String: HotspotGattClient] = [:]
     @State private var hotspotStatusMessages: [String: String] = [:]
     @State private var activeHotspotAutoConnect: HotspotAutoConnect?
+    @State private var autoRequestHotspotEnabled: Bool = OnboardingPreferences.autoRequestHotspotEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -88,6 +89,20 @@ struct MenuBarView: View {
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
+
+            Divider()
+
+            Toggle(
+                "Auto-request Instant Hotspot",
+                isOn: Binding(
+                    get: { autoRequestHotspotEnabled },
+                    set: {
+                        autoRequestHotspotEnabled = $0
+                        OnboardingPreferences.autoRequestHotspotEnabled = $0
+                    }
+                )
+            )
+            .help("When this Mac has no internet for a minute, automatically request a hotspot from a nearby eligible phone (set per-phone in that phone's settings).")
 
             Divider()
 
@@ -412,9 +427,8 @@ struct MenuBarView: View {
         case .disconnected: return "Disconnected"
         case .discovering: return "Searching for devices…"
         case .handshaking: return "Connecting…"
-        case .connected(let deviceId):
-            let name = trustedDevicesStore.device(for: deviceId)?.deviceName ?? deviceId
-            return "Connected to \(name)"
+        case .connected:
+            return "Connected"
         }
     }
 

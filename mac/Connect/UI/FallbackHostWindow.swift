@@ -49,12 +49,39 @@ private struct DeviceSettingsContentView: View {
     var onDone: () -> Void
 
     @State private var showForgetConfirmation = false
+    @State private var autoHotspotRequestEligible: Bool
+
+    init(device: TrustedDevice, trustedDevicesStore: TrustedDevicesStore, onForget: @escaping () -> Void, onDone: @escaping () -> Void) {
+        self.device = device
+        self.trustedDevicesStore = trustedDevicesStore
+        self.onForget = onForget
+        self.onDone = onDone
+        _autoHotspotRequestEligible = State(initialValue: device.autoHotspotRequestEligible)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Fallback IP (e.g. Tailscale)")
                 .font(.headline)
             FallbackHostField(device: device, trustedDevicesStore: trustedDevicesStore)
+
+            // This Mac's per-phone eligibility for its own WAN-offline auto-request-hotspot
+            // trigger (docs/ble-hotspot-protocol.md) — the other half is the global switch
+            // in MenuBarView (OnboardingPreferences.autoRequestHotspotEnabled). Only
+            // meaningful for a phone row: only phones ever provide Instant Hotspot.
+            if device.deviceType == .androidPhone {
+                Divider()
+                Toggle(
+                    "Eligible for auto-request hotspot",
+                    isOn: Binding(
+                        get: { autoHotspotRequestEligible },
+                        set: {
+                            autoHotspotRequestEligible = $0
+                            trustedDevicesStore.setAutoHotspotRequestEligible(deviceId: device.deviceId, eligible: $0)
+                        }
+                    )
+                )
+            }
 
             Divider()
 

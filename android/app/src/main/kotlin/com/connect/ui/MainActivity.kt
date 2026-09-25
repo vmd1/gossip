@@ -253,6 +253,13 @@ class MainActivity : ComponentActivity() {
                             OnboardingPreferences(applicationContext).provideHotspotEnabled = enabled
                             boundService?.bleProximityMonitor()?.setHotspotAvailable(enabled)
                         },
+                        autoRequestHotspotEnabledProvider = { OnboardingPreferences(applicationContext).autoRequestHotspotEnabled },
+                        onSetAutoRequestHotspotEnabled = { enabled ->
+                            OnboardingPreferences(applicationContext).autoRequestHotspotEnabled = enabled
+                        },
+                        onSetAutoHotspotRequestEligible = { deviceId, eligible ->
+                            trustedDevicesStore.setAutoHotspotRequestEligible(deviceId, eligible)
+                        },
                         hotspotStatesProvider = { boundService?.hotspotStateManager()?.hotspotStateBySenderId },
                         bleHotspotOnStatesProvider = { boundService?.bleProximityMonitor()?.hotspotOnByDeviceId },
                         onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) }
@@ -399,6 +406,9 @@ fun ConnectHomeScreen(
     onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
     provideHotspotEnabledProvider: () -> Boolean = { false },
     onSetProvideHotspotEnabled: (Boolean) -> Unit = {},
+    autoRequestHotspotEnabledProvider: () -> Boolean = { false },
+    onSetAutoRequestHotspotEnabled: (Boolean) -> Unit = {},
+    onSetAutoHotspotRequestEligible: (deviceId: String, eligible: Boolean) -> Unit = { _, _ -> },
     hotspotStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, com.connect.features.hotspot.HotspotState>>? = { null },
     bleHotspotOnStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>>? = { null },
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
@@ -563,6 +573,31 @@ fun ConnectHomeScreen(
                 }
             }
 
+            run {
+                var autoRequestHotspotEnabled by remember { mutableStateOf(autoRequestHotspotEnabledProvider()) }
+                androidx.compose.foundation.layout.Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-request Instant Hotspot", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "When this device has no internet for a minute, automatically request a " +
+                                "hotspot from a nearby eligible phone (set per-phone in that phone's settings).",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = autoRequestHotspotEnabled,
+                        onCheckedChange = {
+                            autoRequestHotspotEnabled = it
+                            onSetAutoRequestHotspotEnabled(it)
+                        }
+                    )
+                }
+            }
+
             val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, com.connect.features.hotspot.HotspotState>()) })
             val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
@@ -572,6 +607,7 @@ fun ConnectHomeScreen(
                 nearbyDeviceIds = nearbyDeviceIds,
                 myDeviceType = myDeviceType,
                 onSetLockOnLeave = onSetLockOnLeave,
+                onSetAutoHotspotRequestEligible = onSetAutoHotspotRequestEligible,
                 hotspotStates = hotspotStates,
                 bleHotspotOnStates = bleHotspotOnStates,
                 onRequestHotspot = onRequestHotspot,
