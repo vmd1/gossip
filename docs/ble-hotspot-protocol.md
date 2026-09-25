@@ -131,7 +131,7 @@ being a live risk.
 **Done (was a TODO here)**: `TetherHelper` no longer picks a mechanism from `Build.VERSION.SDK_INT`
 alone. It was refactored (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 1) into an ordered
 `MECHANISMS: List<HotspotToggleMechanism>` (`WriteSecureSettingsMechanism`,
-`ShizukuHotspotMechanism` — `android/app/src/main/kotlin/com/connect/features/hotspot/
+`ShizukuHotspotMechanism` — `android/app/src/main/kotlin/dev/vmd1/gossip/features/hotspot/
 HotspotToggleMechanism.kt`), tried in order by `setHotspotEnabled` unless a
 `preferredMechanismId` is supplied. Onboarding's "test hotspot methods" step (Phase 2 —
 `OnboardingActivity.kt`'s `HotspotTestStep`) calls the new `TetherHelper.probeMechanisms()` once,

@@ -1,6 +1,6 @@
 # Architecture
 
-Connect is a pair of native applications that let a MacBook and an Android device share state and hand off activity between them, mirroring the feature set of Apple Continuity / Microsoft Phone Link.
+Gossip is a pair of native applications that let a MacBook and an Android device share state and hand off activity between them, mirroring the feature set of Apple Continuity / Microsoft Phone Link.
 
 ## Applications
 
@@ -24,7 +24,7 @@ All communication after discovery happens inside a Noise Protocol Framework sess
 
 ## Device-group trust model
 
-Every device participating in Connect — Mac or Android, phone or tablet — has:
+Every device participating in Gossip — Mac or Android, phone or tablet — has:
 
 - a stable, randomly generated **device UUID**, and
 - an **Ed25519/X25519 identity keypair** generated on first launch and never transmitted in the clear.
