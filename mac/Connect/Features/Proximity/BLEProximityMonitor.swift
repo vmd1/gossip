@@ -25,9 +25,48 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
     static let rssiThreshold = -75
     static let confirmHitCount = 2
     static let lossTimeout: TimeInterval = 6
+    static let capabilityHotspotAvailable: UInt8 = 0x01
+    static let capabilityHotspotOn: UInt8 = 0x02
 
     /// Trusted device IDs currently confirmed nearby over BLE.
     @Published private(set) var nearbyDeviceIds: Set<String> = []
+
+    /// Last-observed "hotspot available" capability bit (advertisement byte 12 — see
+    /// `docs/ble-proximity-protocol.md`) per scanned `deviceId`. Not proximity-debounced
+    /// like `nearbyDeviceIds` — a capability signal doesn't need the same debounce a
+    /// presence signal does — so combine with `nearbyDeviceIds` to answer "is this
+    /// specific *nearby* device offering hotspot right now." Cleared the moment a
+    /// device is no longer confirmed nearby, so a stale claim can't linger.
+    private(set) var hotspotCapabilityByDeviceId: [String: Bool] = [:]
+
+    /// Last-observed "hotspot currently on" capability bit — a BLE-only signal,
+    /// independent of `hotspot.state_update`'s mesh broadcast (`HotspotStateManager`),
+    /// so it stays accurate even with no mesh connection to that phone at all.
+    /// Live-confirmed real gap this fixes: the mesh-only signal went stale the moment
+    /// this Mac's mesh connection dropped, with nothing to correct it until
+    /// reconnected — pressing the hotspot button against a stale "on" belief then sent
+    /// the wrong request. Same proximity-scoping caveat as [hotspotCapabilityByDeviceId].
+    private(set) var hotspotOnByDeviceId: [String: Bool] = [:]
+
+    func isHotspotAvailable(deviceId: String) -> Bool {
+        hotspotCapabilityByDeviceId[deviceId] == true
+    }
+
+    func isHotspotOn(deviceId: String) -> Bool {
+        hotspotOnByDeviceId[deviceId] == true
+    }
+
+    /// The most recently observed `CBPeripheral.identifier` for `deviceId` — a
+    /// requester needs this to open an actual GATT connection (`HotspotGattClient`)
+    /// once it's decided, from `isHotspotAvailable`, that it wants to. Not the
+    /// `CBPeripheral` object itself: CoreBluetooth peripheral objects are scoped to the
+    /// `CBCentralManager` instance that discovered them, so `HotspotGattClient` (which
+    /// owns its own manager instance, kept separate from this class's continuous
+    /// proximity scan) re-resolves the peripheral from this identifier via its own
+    /// `retrievePeripherals(withIdentifiers:)` instead of reusing this instance's
+    /// object directly — the identifier itself is stable across manager instances on
+    /// the same system, that part is fine to share.
+    private(set) var peripheralIdentifierByDeviceId: [String: UUID] = [:]
 
     private var centralManager: CBCentralManager!
     private let trustedDevicesStore: TrustedDevicesStore
@@ -132,6 +171,13 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
             return
         }
         Self.debugLog("didDiscover: MATCH deviceId=\(deviceId) rssi=\(RSSI)")
+        // Byte 12 (optional — a peer on an older build simply won't have it, which
+        // isn't a malformed advertisement, just an absent capability signal).
+        if manufacturerData.count >= 13 {
+            hotspotCapabilityByDeviceId[deviceId] = (manufacturerData[12] & Self.capabilityHotspotAvailable) != 0
+            hotspotOnByDeviceId[deviceId] = (manufacturerData[12] & Self.capabilityHotspotOn) != 0
+        }
+        peripheralIdentifierByDeviceId[deviceId] = peripheral.identifier
         recordDetection(deviceId: deviceId, rssi: RSSI.intValue)
     }
 
@@ -166,6 +212,9 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
             states[deviceId]?.isInRange = false
             states[deviceId]?.consecutiveStrongHits = 0
             nearbyDeviceIds.remove(deviceId)
+            hotspotCapabilityByDeviceId.removeValue(forKey: deviceId)
+            hotspotOnByDeviceId.removeValue(forKey: deviceId)
+            peripheralIdentifierByDeviceId.removeValue(forKey: deviceId)
         }
     }
 }

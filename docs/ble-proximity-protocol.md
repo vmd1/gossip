@@ -9,13 +9,21 @@ convention that any wire-level contract between the two codebases needs one docu
 
 ## Roles
 
-- **Android phones**: BLE peripheral only — advertise, never scan.
-- **Mac, Android tablets**: BLE central only — scan, never advertise.
+- **Android phones**: BLE peripheral (always advertise), plus an on-demand, caller-owned-lifecycle
+  secondary central/scan role (`BLEProximityMonitor.startHotspotRequestScan`/`.stopHotspotRequestScan`
+  on Android) used only when this phone itself wants to request Instant Hotspot from a nearby
+  hotspot-providing phone (`docs/ble-hotspot-protocol.md`'s multi-device requirement) — never running
+  continuously like the primary roles below, and not needed on Mac/tablet (see next bullet).
+- **Mac, Android tablets**: BLE central only — scan continuously, never advertise. Already sufficient
+  for these to *request* hotspot too: their existing continuous scan plus the capability byte above
+  answers "which nearby trusted device offers hotspot" with no extra scan needed.
 
-This is deliberately not symmetric today (matching the ask: "hotspot from available android-phones...
-nearby, detected by Mac and android-tablet"), but `BLEProximityMonitor` is built generically over
-`DeviceType` on both platforms so a future device type (e.g. a WearOS watch) can take on either role
-without a redesign.
+The primary advertise-vs-scan split above is deliberately not symmetric (matching the original ask:
+"hotspot from available android-phones... nearby, detected by Mac and android-tablet"), but
+`BLEProximityMonitor` is built generically over `DeviceType` on both platforms so a future device type
+(e.g. a WearOS watch) can take on either role without a redesign — and, concretely, a phone already
+does take on both roles today via the on-demand scan above, precisely because Instant Hotspot needed a
+phone to be able to request from another phone, not just provide.
 
 ## Advertisement payload
 
@@ -33,9 +41,34 @@ alongside the mandatory 3-byte flags AD structure the platform adds automaticall
   the exact same fingerprint already computed by `IdentityKeyStore.publicKeyFingerprint` (Mac) /
   `IdentityKeyStore.publicKeyFingerprint()` (Android) for QR pairing and mDNS TXT records, just kept as
   raw bytes here instead of base64.
+- **Byte 10 (optional): capability flags**, added for Instant Hotspot (`docs/ble-hotspot-protocol.md`).
+  Bit 0 (`0x01`) = "this device currently offers itself as an Instant Hotspot source" — only ever set
+  by an Android **phone** with the "Provide Instant Hotspot" toggle on (`OnboardingPreferences.
+  provideHotspotEnabled`, off by default). Absent entirely on a peer running a build from before this
+  byte existed, or on a phone with the toggle off — a scanning device must treat a too-short
+  manufacturer-data payload (`data.size < 11` on Android; `manufacturerData.count < 13` on Mac, which
+  includes the 2-byte company ID CoreBluetooth doesn't strip) as "no capability signal," not as a
+  malformed advertisement; bytes 0–9 above remain the only required fields. Exists specifically so a
+  requester can learn "does this nearby phone offer hotspot" from the scan alone — deliberately not
+  gated behind opening a real GATT connection, which would defeat the point of a lightweight capability
+  check. See `BLEProximityMonitor.hotspotAvailable(deviceId)` (Android) /
+  `BLEProximityMonitor.isHotspotAvailable(deviceId:)` (Mac).
+  Bit 1 (`0x02`) = "this device's Instant Hotspot is *currently on*" — distinct from bit 0
+  ("willing to provide if asked"); updated live from `HotspotStateManager`'s own
+  `WIFI_AP_STATE_CHANGED_ACTION` observer (`BLEProximityMonitor.setHotspotOn`, Android). Added after a
+  real live-testing gap: `hotspot.state_update` (the richer mesh-broadcast signal, see
+  `schema/message-types.md`) is the only thing that carries the SSID and works at any range, but it goes
+  stale the instant the mesh connection between the two devices drops, with nothing to correct it until
+  reconnected — a Mac showing a stale "on" belief then sent the wrong request when tapped. This bit has
+  no such dependency, since BLE proximity never needed a Wi-Fi/mesh connection to begin with. UI merges
+  the two sources, preferring this bit's value whenever the peer is currently BLE-nearby (fresher by
+  construction) while keeping the mesh report's `ssid` — see `MainActivity.kt`'s/`PairedDevicesScreen.kt`'s
+  `bleHotspotOnProvider`/`mergedHotspotState` (Mac: `MenuBarView.swift`). See
+  `BLEProximityMonitor.isHotspotOn(deviceId)` (Android) / `BLEProximityMonitor.isHotspotOn(deviceId:)` (Mac).
 
-Total AD structure: 1 (length) + 1 (type 0xFF) + 2 (company ID) + 2 (magic) + 8 (fingerprint) = 14 bytes,
-comfortably under the legacy budget.
+Total AD structure: 1 (length) + 1 (type 0xFF) + 2 (company ID) + 2 (magic) + 8 (fingerprint) + 1
+(capability flags) = 15 bytes, still comfortably under the legacy budget alongside the mandatory 3-byte
+flags AD structure.
 
 A scanning device recomputes this same 8-byte fingerprint for each row in its own `TrustedDevices` table
 (hashing that row's already-stored `publicKeyBase64`/`publicKey`) and matches it against what it observes

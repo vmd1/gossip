@@ -87,6 +87,7 @@ object MessageType {
     const val TRUST_ROSTER_UPDATE = "trust.roster_update"
     const val TRUST_REVOKE = "trust.revoke"
     const val LOCK_ON_LEAVE_CONFIG = "lock_on_leave.config"
+    const val HOTSPOT_STATE_UPDATE = "hotspot.state_update"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */

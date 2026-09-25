@@ -11,6 +11,7 @@ struct MenuBarView: View {
     @ObservedObject var notificationMirrorManager: NotificationMirrorManager
     let rosterGossipManager: RosterGossipManager
     @ObservedObject var bleProximityMonitor: BLEProximityMonitor
+    @ObservedObject var hotspotStateManager: HotspotStateManager
 
     @State private var pairingWindow: PairingWindow?
     @State private var dndSetupWindow: DNDSetupWindow?
@@ -18,6 +19,9 @@ struct MenuBarView: View {
     @State private var adbPairingCancellable: AnyCancellable?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
     @State private var onboardingWindow: OnboardingWindow?
+    @State private var hotspotGattClients: [String: HotspotGattClient] = [:]
+    @State private var hotspotStatusMessages: [String: String] = [:]
+    @State private var activeHotspotAutoConnect: HotspotAutoConnect?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -96,21 +100,31 @@ struct MenuBarView: View {
                     .font(.callout)
             } else {
                 ForEach(trustedDevicesStore.devices) { device in
-                    HStack {
-                        Image(systemName: device.deviceType.symbolName)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 18)
-                        Text(device.deviceName)
-                        if bleProximityMonitor.nearbyDeviceIds.contains(device.deviceId) {
-                            Image(systemName: "dot.radiowaves.left.and.right")
-                                .foregroundStyle(.blue)
-                                .help("Nearby over Bluetooth")
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Image(systemName: device.deviceType.symbolName)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18)
+                            Text(device.deviceName)
+                            if bleProximityMonitor.nearbyDeviceIds.contains(device.deviceId) {
+                                Image(systemName: "dot.radiowaves.left.and.right")
+                                    .foregroundStyle(.blue)
+                                    .help("Nearby over Bluetooth")
+                            }
+                            Spacer()
+                            if device.deviceType != .mac {
+                                mirrorButton(for: device)
+                            }
+                            if device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
+                                hotspotButton(for: device, state: state)
+                            }
+                            deviceSettingsMenu(for: device)
                         }
-                        Spacer()
-                        if device.deviceType != .mac {
-                            mirrorButton(for: device)
+                        if let status = hotspotStatusMessages[device.deviceId] {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        deviceSettingsMenu(for: device)
                     }
                 }
             }
@@ -146,6 +160,96 @@ struct MenuBarView: View {
             Button("Mirror") {}
                 .buttonStyle(.borderless)
                 .disabled(true)
+        }
+    }
+
+    /// Merges the two hotspot-state sources: `hotspot.state_update`'s mesh report
+    /// (`HotspotStateManager`, richer — carries the SSID, works at any range) and the
+    /// BLE advertisement's own on/off bit (`BLEProximityMonitor.isHotspotOn`, live
+    /// even with no mesh connection at all). Live-confirmed real gap this fixes: with
+    /// mesh as the only source, this Mac's hotspot indicator went stale the moment its
+    /// mesh connection to the phone dropped, with nothing to correct it — pressing the
+    /// button against that stale belief then sent the wrong request. Prefers the BLE
+    /// bit's `enabled` value whenever the phone is currently BLE-nearby (fresher by
+    /// construction), keeping the mesh report's `ssid` either way; falls back to a
+    /// BLE-only or mesh-only state when just one source has data, and to `nil` when
+    /// neither does.
+    private func mergedHotspotState(for deviceId: String) -> HotspotState? {
+        let meshState = hotspotStateManager.hotspotStateBySenderId[deviceId]
+        guard bleProximityMonitor.nearbyDeviceIds.contains(deviceId) else { return meshState }
+        let bleOn = bleProximityMonitor.isHotspotOn(deviceId: deviceId)
+        if let meshState {
+            return HotspotState(enabled: bleOn, ssid: meshState.ssid)
+        }
+        return HotspotState(enabled: bleOn, ssid: nil)
+    }
+
+    /// Hotspot on/off icon for a trusted phone, driven by `hotspot.state_update` mesh
+    /// reports (`HotspotStateManager`) rather than BLE proximity — shown for every
+    /// trusted phone this Mac has a reported state for, whether or not it's currently
+    /// BLE-nearby (a request only actually works while nearby, per
+    /// `docs/ble-hotspot-protocol.md`, but the on/off indicator itself is a live mesh
+    /// signal, independent of that). Tapping requests the opposite of the currently
+    /// known state. First cut of this feature's UI: status is a plain caption line
+    /// under the row, not a polished progress/retry flow.
+    @ViewBuilder
+    private func hotspotButton(for device: TrustedDevice, state: HotspotState) -> some View {
+        let isInFlight = hotspotGattClients[device.deviceId] != nil
+        Button {
+            requestHotspot(for: device, enable: !state.enabled)
+        } label: {
+            // "personalhotspot.slash" isn't a real SF Symbol (confirmed: only
+            // "personalhotspot" itself exists) — off state is conveyed by tint alone,
+            // same symbol either way.
+            Image(systemName: "personalhotspot")
+        }
+        .buttonStyle(.borderless)
+        // Applied to the `Button` itself, not inside its `label` closure — confirmed
+        // live that a `.foregroundStyle` on the inner `Image` alone is overridden by
+        // `Button`'s own `.borderless` style tinting on macOS and never actually
+        // reflects a state change, even though the underlying data updates correctly.
+        // Explicit `.blue`, not `Color.accentColor` — the system accent color can
+        // itself be set to gray/graphite in System Settings, which would make an
+        // "on" state visually indistinguishable from the "off" `.secondary` state
+        // regardless of this fix.
+        .foregroundStyle(state.enabled ? Color.blue : Color.secondary)
+        .disabled(isInFlight)
+        .help(state.enabled ? "Instant Hotspot is on\(state.ssid.map { " (\($0))" } ?? "") — click to turn off" : "Instant Hotspot is off — click to request")
+    }
+
+    private func requestHotspot(for device: TrustedDevice, enable: Bool) {
+        guard let peripheralId = bleProximityMonitor.peripheralIdentifierByDeviceId[device.deviceId] else {
+            hotspotStatusMessages[device.deviceId] = "Device is no longer nearby"
+            return
+        }
+        hotspotStatusMessages[device.deviceId] = enable ? "Requesting…" : "Requesting off…"
+        let client = HotspotGattClient()
+        hotspotGattClients[device.deviceId] = client
+        client.requestToggle(providerId: device.deviceId, peripheralIdentifier: peripheralId, enable: enable) { result in
+            DispatchQueue.main.async {
+                hotspotGattClients[device.deviceId] = nil
+                switch result {
+                case .failed(let reason):
+                    hotspotStatusMessages[device.deviceId] = "Failed: \(reason)"
+                case .success(let enabled, let ssid, let passphrase):
+                    if !enable {
+                        hotspotStatusMessages[device.deviceId] = enabled ? "That device kept its hotspot on" : "Hotspot turned off"
+                    } else if !enabled {
+                        hotspotStatusMessages[device.deviceId] = "That device declined the request"
+                    } else if let ssid, let passphrase {
+                        hotspotStatusMessages[device.deviceId] = "Connecting to \(ssid)…"
+                        let autoConnect = HotspotAutoConnect()
+                        activeHotspotAutoConnect = autoConnect
+                        autoConnect.connect(ssid: ssid, passphrase: passphrase) { connected in
+                            DispatchQueue.main.async {
+                                hotspotStatusMessages[device.deviceId] = connected ? "Connected to \(ssid)" : "Hotspot on — could not auto-connect, join manually"
+                            }
+                        }
+                    } else {
+                        hotspotStatusMessages[device.deviceId] = "Hotspot on — connect manually"
+                    }
+                }
+            }
         }
     }
 

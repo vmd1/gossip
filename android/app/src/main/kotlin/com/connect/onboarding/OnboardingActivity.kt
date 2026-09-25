@@ -260,7 +260,18 @@ private fun OnboardingFlow(
                             myIsNonPhone = myDeviceType != DeviceType.ANDROID_PHONE,
                             shizukuState = shizukuStateProvider(),
                             onRequestShizuku = onRequestShizuku,
-                            onContinue = { step = OnboardingStep.HOTSPOT_TEST }
+                            // Only a phone can ever provide Instant Hotspot (see
+                            // docs/ble-hotspot-protocol.md's "GATT roles") — the
+                            // hotspot-mechanism probe step is meaningless for a
+                            // tablet/anything else, which never calls
+                            // TetherHelper.setHotspotEnabled as a provider.
+                            onContinue = {
+                                step = if (myDeviceType == DeviceType.ANDROID_PHONE) {
+                                    OnboardingStep.HOTSPOT_TEST
+                                } else {
+                                    OnboardingStep.DONE
+                                }
+                            }
                         )
                         OnboardingStep.HOTSPOT_TEST -> HotspotTestStep(
                             onProbe = onProbeHotspotMechanisms,

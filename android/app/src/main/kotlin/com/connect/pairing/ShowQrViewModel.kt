@@ -62,7 +62,8 @@ class ShowQrViewModel(
             responderPublicKeyFingerprint = identityKeyStore.publicKeyFingerprint(),
             responderDeviceName = deviceName,
             responderDeviceType = deviceType.wireValue,
-            pairingToken = UUID.randomUUID().toString()
+            pairingToken = UUID.randomUUID().toString(),
+            responderSigningPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)
         )
         _uiState.value = ShowQrUiState.ShowingQr(payload)
     }

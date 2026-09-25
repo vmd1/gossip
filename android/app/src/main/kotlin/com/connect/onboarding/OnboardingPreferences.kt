@@ -30,9 +30,23 @@ class OnboardingPreferences internal constructor(private val prefs: SharedPrefer
         get() = prefs.getString(KEY_PREFERRED_HOTSPOT_MECHANISM, null)
         set(value) = prefs.edit().putString(KEY_PREFERRED_HOTSPOT_MECHANISM, value).apply()
 
+    /** Whether this **phone** offers itself as an Instant Hotspot source to nearby
+     *  requesting devices (see `docs/ble-hotspot-protocol.md`) — a phone-only setting
+     *  (tablets/Mac never provide, only request), off by default since it flips on
+     *  cellular data and battery use for a phone that might not want to volunteer.
+     *  Gates both the BLE advertisement's "hotspot available" capability bit and the
+     *  GATT server's willingness to accept a `hotspot.toggle_request` — a phone with
+     *  this off should not advertise the capability at all, not just refuse requests
+     *  after the fact. Local device policy, never sent over the wire — same category
+     *  as [preferredHotspotMechanismId]. */
+    var provideHotspotEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PROVIDE_HOTSPOT, false)
+        set(value) = prefs.edit().putBoolean(KEY_PROVIDE_HOTSPOT, value).apply()
+
     private companion object {
         const val PREFS_NAME = "onboarding_prefs"
         const val KEY_COMPLETED = "completed"
         const val KEY_PREFERRED_HOTSPOT_MECHANISM = "preferred_hotspot_mechanism"
+        const val KEY_PROVIDE_HOTSPOT = "provide_hotspot_enabled"
     }
 }

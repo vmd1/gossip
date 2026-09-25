@@ -45,8 +45,14 @@ private const val TAG = "TransportManager"
 enum class ConnectionState { DISCONNECTED, DISCOVERING, HANDSHAKING, CONNECTED }
 
 /** Everything learned about a peer from its `handshake.hello`/`handshake.ack` envelope —
- *  mirrors Mac's `HandshakePeerInfo`. */
-data class HandshakePeerInfo(val deviceId: String, val deviceName: String, val deviceType: DeviceType)
+ *  mirrors Mac's `HandshakePeerInfo`. [signingPublicKey] is the peer's raw Ed25519
+ *  signing public key. */
+data class HandshakePeerInfo(
+    val deviceId: String,
+    val deviceName: String,
+    val deviceType: DeviceType,
+    val signingPublicKey: ByteArray
+)
 
 /**
  * Owns the connection lifecycle to every trusted peer device simultaneously (a mesh, not
@@ -441,7 +447,8 @@ class TransportManager(
                             publicKey = remotePublicKey,
                             deviceName = peerInfo.deviceName,
                             deviceType = peerInfo.deviceType,
-                            addedAt = System.currentTimeMillis()
+                            addedAt = System.currentTimeMillis(),
+                            signingPublicKey = peerInfo.signingPublicKey
                         )
                     )
                     onNewDevicePaired?.invoke(peerInfo)
@@ -632,7 +639,8 @@ class TransportManager(
             payload = HandshakePayload(
                 noise = Base64.encodeToString(message1, Base64.NO_WRAP),
                 deviceName = deviceName,
-                deviceType = deviceType.wireValue
+                deviceType = deviceType.wireValue,
+                signingPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)
             ).toJsonObject()
         )
         writeFrame(out, helloEnvelope.encode())
@@ -646,7 +654,8 @@ class TransportManager(
         return HandshakePeerInfo(
             deviceId = ackEnvelope.senderId,
             deviceName = ackPayload.deviceName,
-            deviceType = DeviceType.fromWire(ackPayload.deviceType)
+            deviceType = DeviceType.fromWire(ackPayload.deviceType),
+            signingPublicKey = Base64.decode(ackPayload.signingPublicKey, Base64.NO_WRAP)
         )
     }
 
@@ -666,14 +675,16 @@ class TransportManager(
             payload = HandshakePayload(
                 noise = Base64.encodeToString(message2, Base64.NO_WRAP),
                 deviceName = deviceName,
-                deviceType = deviceType.wireValue
+                deviceType = deviceType.wireValue,
+                signingPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)
             ).toJsonObject()
         )
         writeFrame(out, ackEnvelope.encode())
         return HandshakePeerInfo(
             deviceId = helloEnvelope.senderId,
             deviceName = helloPayload.deviceName,
-            deviceType = DeviceType.fromWire(helloPayload.deviceType)
+            deviceType = DeviceType.fromWire(helloPayload.deviceType),
+            signingPublicKey = Base64.decode(helloPayload.signingPublicKey, Base64.NO_WRAP)
         )
     }
 
