@@ -16,7 +16,8 @@ struct MenuBarView: View {
     @State private var dndSetupWindow: DNDSetupWindow?
     @State private var adbPairingWindow: ADBPairingWindow?
     @State private var adbPairingCancellable: AnyCancellable?
-    @State private var fallbackHostWindow: FallbackHostWindow?
+    @State private var deviceSettingsWindow: DeviceSettingsWindow?
+    @State private var onboardingWindow: OnboardingWindow?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -44,9 +45,42 @@ struct MenuBarView: View {
                 NSApp.activate(ignoringOtherApps: true)
             }
 
-            Button("Do Not Disturb Sync Setup…") {
-                let window = DNDSetupWindow()
-                dndSetupWindow = window
+            // Only shown before first-run onboarding completes — after that, DND setup is
+            // reachable via "Run Setup Again…"'s permissions step (which has its own
+            // "Set Up DND Sync…" button), so this standalone entry would just be a
+            // redundant second way to the same window cluttering the everyday menu.
+            if !OnboardingPreferences.isCompleted {
+                Button("Do Not Disturb Sync Setup…") {
+                    let window = DNDSetupWindow()
+                    dndSetupWindow = window
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+
+            Button("Run Setup Again…") {
+                let window = OnboardingWindow(
+                    onPairNewDevice: {
+                        pairingViewModel.startPairing()
+                        let pairing = PairingWindow(pairingViewModel: pairingViewModel)
+                        pairingWindow = pairing
+                        pairing.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                    },
+                    onOpenDNDSetup: {
+                        let dnd = DNDSetupWindow()
+                        dndSetupWindow = dnd
+                        dnd.makeKeyAndOrderFront(nil)
+                        NSApp.activate(ignoringOtherApps: true)
+                    },
+                    notificationAuthorizationStatus: { notificationMirrorManager.authorizationStatus },
+                    onOpenNotificationSettings: {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                )
+                onboardingWindow = window
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
@@ -115,35 +149,34 @@ struct MenuBarView: View {
         }
     }
 
-    /// Overflow menu for settings that apply to one specific trusted device but
-    /// don't need to be visible on the home row: revoking trust and the fallback-
-    /// host override today; per-pair BLE-driven settings (Lock-on-Leave, auto-hotspot)
-    /// land here too once built. Kept separate from `mirrorButton`, which stays a
-    /// direct row action since it's used often enough to want one click, not two.
+    /// Settings for one specific trusted device that don't need to be visible on the
+    /// home row: fallback-host override and revoking trust today; per-pair BLE-driven
+    /// settings (Lock-on-Leave, auto-hotspot) land here too once built. Kept separate
+    /// from `mirrorButton`, which stays a direct row action since it's used often
+    /// enough to want one click, not two.
     ///
-    /// "Edit Fallback Host…" opens a plain `NSWindow` rather than embedding the
-    /// field directly in this `Menu` — a `TextField` inside a `Menu` shown from
-    /// this app's `MenuBarExtra(.window)` panel never gets a chance to take
-    /// keyboard focus, because the panel resigns key and dismisses itself the
-    /// instant the field is clicked. See `FallbackHostWindow`.
+    /// Opens a plain `NSWindow` (`DeviceSettingsWindow`) rather than an inline `Menu` —
+    /// a `TextField` inside a `Menu` shown from this app's `MenuBarExtra(.window)`
+    /// panel never gets a chance to take keyboard focus, because the panel resigns key
+    /// and dismisses itself the instant the field is clicked. Previously only the
+    /// fallback-host field got this treatment, with "Forget" left as a plain inline
+    /// menu item — consolidated so the whole per-device settings surface is one
+    /// consistent window instead of half a menu, half a window.
     @ViewBuilder
     private func deviceSettingsMenu(for device: TrustedDevice) -> some View {
-        Menu {
-            Button("Edit Fallback Host…") {
-                let window = FallbackHostWindow(device: device, trustedDevicesStore: trustedDevicesStore)
-                fallbackHostWindow = window
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-            }
-            Divider()
-            Button("Forget", role: .destructive) {
-                rosterGossipManager.revoke(deviceId: device.deviceId)
-            }
+        Button {
+            let window = DeviceSettingsWindow(
+                device: device,
+                trustedDevicesStore: trustedDevicesStore,
+                onForget: { rosterGossipManager.revoke(deviceId: device.deviceId) }
+            )
+            deviceSettingsWindow = window
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
         } label: {
             Image(systemName: "ellipsis.circle")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+        .buttonStyle(.borderless)
     }
 
     /// Before launching the mirroring pipeline, makes sure `adb` already sees an

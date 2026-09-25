@@ -109,10 +109,22 @@ app's own dex output entirely, which is what makes the trick work.
 rest of the feature's plumbing (GATT channel, signed-request auth, UI) can be built without this
 being a live risk.
 
-**TODO (onboarding)**: `TetherHelper` currently picks a mechanism from `Build.VERSION.SDK_INT`
-alone, given the mixed Android-10–15 evidence above. Once there's a real onboarding flow for this
-feature, it should *probe* which mechanism actually works on the user's specific device/OS build
-(try the cheap path, fall back and remember the result) rather than assuming from SDK level.
+**Done (was a TODO here)**: `TetherHelper` no longer picks a mechanism from `Build.VERSION.SDK_INT`
+alone. It was refactored (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 1) into an ordered
+`MECHANISMS: List<HotspotToggleMechanism>` (`WriteSecureSettingsMechanism`,
+`ShizukuHotspotMechanism` — `android/app/src/main/kotlin/com/connect/features/hotspot/
+HotspotToggleMechanism.kt`), tried in order by `setHotspotEnabled` unless a
+`preferredMechanismId` is supplied. Onboarding's "test hotspot methods" step (Phase 2 —
+`OnboardingActivity.kt`'s `HotspotTestStep`) calls the new `TetherHelper.probeMechanisms()` once,
+persists the winning mechanism's `id` via `OnboardingPreferences.preferredHotspotMechanismId` (a
+local, per-device preference — never sent over the wire), and `SyncForegroundService`'s hotspot
+call site reads it back so runtime doesn't have to re-probe or guess from SDK level. **Caveat**:
+the probe step only calls `isAvailable()` (a permission/connection check), not an actual
+`trySetEnabled()` toggle — so it can't catch a device-specific mechanism that reports available
+but still fails to actually toggle in practice; see that handoff phase's "Known gaps" for the
+open UX question (a real toggle-and-revert would be more thorough but also more disruptive/
+visible during onboarding). Also still open: this whole path is build-verified only, not yet
+live-tested on a real device (no onboarding run has happened outside a compiler yet).
 
 ## Not yet built
 

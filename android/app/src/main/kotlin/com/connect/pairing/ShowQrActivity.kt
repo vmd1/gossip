@@ -63,7 +63,7 @@ class ShowQrActivity : ComponentActivity() {
                 val local = binder as? SyncForegroundService.LocalBinder ?: return
                 boundService = local.service()
                 setContent {
-                    MaterialTheme {
+                    com.connect.ui.theme.ConnectTheme {
                         Surface(modifier = Modifier.fillMaxSize()) {
                             ShowQrScreen(viewModel = viewModel, onDone = { finish() })
                         }

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UserNotifications
 import Combine
 import CryptoKit
@@ -30,10 +31,22 @@ struct ConnectApp: App {
     private let fallbackDialSubscriptions = SubscriptionBox()
     private let rosterResyncSubscriptions = SubscriptionBox()
 
+    /// Same rationale as `SubscriptionBox` above: `OnboardingWindow`/`PairingWindow` are
+    /// local values with nothing else keeping them alive once `init()`/a button closure
+    /// returns, unlike `MenuBarView`'s `@State private var pairingWindow`, which only
+    /// exists once the menu-bar tray has actually been opened — exactly the timing bug
+    /// this class's other boxes were added to avoid (see `transport.start()`'s doc
+    /// comment). Held at `ConnectApp` scope instead so first-run onboarding (and pairing
+    /// launched from inside it) survives being shown before the tray is ever opened.
+    private final class WindowBox { var window: NSWindow? }
+    private let onboardingWindowBox = WindowBox()
+    private let onboardingPairingWindowBox = WindowBox()
+
     init() {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
-        _pairingViewModel = StateObject(wrappedValue: PairingViewModel(transportManager: transport))
+        let pairingViewModel = PairingViewModel(transportManager: transport)
+        _pairingViewModel = StateObject(wrappedValue: pairingViewModel)
         _mediaControlManager = StateObject(wrappedValue: MediaControlManager(transportManager: transport))
         let notificationMirror = NotificationMirrorManager(transportManager: transport)
         _notificationMirrorManager = StateObject(wrappedValue: notificationMirror)
@@ -58,6 +71,40 @@ struct ConnectApp: App {
         // a fresh launch until the user happened to click the menu-bar icon.
         transport.start()
         notificationMirror.requestAuthorizationIfNeeded()
+
+        // First-run onboarding (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 2). Same
+        // "must not depend on the menu-bar tray ever being opened" reasoning as
+        // `transport.start()` above — shown unconditionally here, not from
+        // `MenuBarView.onAppear`, and held in `onboardingWindowBox` (see its doc
+        // comment) so nothing releases it before the user interacts with it.
+        if !OnboardingPreferences.isCompleted {
+            let onboarding = OnboardingWindow(
+                onPairNewDevice: { [pairingViewModel, onboardingPairingWindowBox] in
+                    pairingViewModel.startPairing()
+                    let window = PairingWindow(pairingViewModel: pairingViewModel)
+                    onboardingPairingWindowBox.window = window
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                },
+                onOpenDNDSetup: { [onboardingPairingWindowBox] in
+                    let window = DNDSetupWindow()
+                    onboardingPairingWindowBox.window = window
+                    window.makeKeyAndOrderFront(nil)
+                    NSApp.activate(ignoringOtherApps: true)
+                },
+                notificationAuthorizationStatus: { [notificationMirror] in
+                    notificationMirror.authorizationStatus
+                },
+                onOpenNotificationSettings: {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            )
+            onboardingWindowBox.window = onboarding
+            onboarding.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         // Same reasoning as `transport.start()` above, and the same bug: this was
         // previously wired from `MenuBarView`'s `.onAppear`, so `connect://` URLs

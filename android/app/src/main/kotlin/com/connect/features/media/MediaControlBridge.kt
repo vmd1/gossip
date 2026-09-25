@@ -167,6 +167,17 @@ class MediaControlBridge(
         command.seekMs?.let { controls.seekTo(it.toLong()) }
     }
 
+    /** Re-sends the current now-playing snapshot (if any session is active), for a
+     *  caller reconciling this device's state to a peer that may have missed the
+     *  original event-driven publish — a fresh reconnect, or a periodic self-healing
+     *  backstop. See `SyncForegroundService`'s connection-state observer and resync
+     *  loop, which call this the same way `DndSyncManager.reportInitialSyncState`/
+     *  `RosterGossipManager.periodicResync` are already called for the same reason
+     *  (this project's `CLAUDE.md` convention: anything configuring state on a
+     *  recipient needs a self-healing resync, not just a one-shot send-on-change). A
+     *  no-op — not an error — when nothing is currently playing. */
+    fun resyncNowPlaying() = publishNowPlaying()
+
     private fun publishNowPlaying() {
         val controller = activeController ?: return
         val snapshot = snapshotFrom(controller) ?: return

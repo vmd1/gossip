@@ -25,9 +25,14 @@ final class ClipboardSyncManager: ObservableObject {
     private let pollInterval: TimeInterval
 
     private var timer: Timer?
+    private var resyncTimer: Timer?
     private var lastChangeCount: Int
     private var lastRemoteSetValue: String?
     private var lastRemoteSetImageData: Data?
+
+    /// Periodic-resync interval — matches `dnd.update`/`trust.roster_update`/
+    /// `lock_on_leave.config`'s existing ~60s self-healing cadence.
+    private static let resyncInterval: TimeInterval = 60
 
     init(
         transportManager: TransportManager,
@@ -50,20 +55,47 @@ final class ClipboardSyncManager: ObservableObject {
     // MARK: - Lifecycle
 
     /// Starts polling the pasteboard. Call when the transport becomes connected.
+    ///
+    /// Also resends whatever is currently on the pasteboard once, immediately — per
+    /// this project's `CLAUDE.md` convention that anything configuring state on a
+    /// recipient needs a self-healing resync, not just a one-shot send-on-change.
+    /// Without this, a local copy made *while transiently disconnected* (or lost to
+    /// any other send race) would never reach a peer until the next actual clipboard
+    /// change on this Mac, which might be a long time or never — the exact same
+    /// silent-desync failure mode `dnd.update`'s `isInitialSync` and
+    /// `lock_on_leave.config`'s on-connect resend both exist to prevent. Goes through
+    /// the same `shouldSend` loop-guard as a real poll, so it's a no-op on a peer that
+    /// already has this exact value (e.g. multiple peers reconnecting around the same
+    /// time doesn't cause a resend storm beyond one message per newly-live peer).
     func start() {
         stop()
         lastChangeCount = NSPasteboard.general.changeCount
+        sendCurrentPasteboardContentIfNeeded()
         let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.pollPasteboard()
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+
+        // Periodic backstop on top of the on-connect resync above and the frequent
+        // change-detecting poll — covers a `clipboard.update` send that was attempted
+        // mid-disconnect or otherwise dropped, which neither of those catches (the
+        // poll only reacts to a *new* local change; a drop leaves both sides silently
+        // mismatched until the next one). Harmless when already in sync: goes through
+        // the same loop-guarded send path as a real poll.
+        let resync = Timer(timeInterval: Self.resyncInterval, repeats: true) { [weak self] _ in
+            self?.sendCurrentPasteboardContentIfNeeded()
+        }
+        RunLoop.main.add(resync, forMode: .common)
+        self.resyncTimer = resync
     }
 
     /// Stops polling. Call when the transport disconnects.
     func stop() {
         timer?.invalidate()
         timer = nil
+        resyncTimer?.invalidate()
+        resyncTimer = nil
     }
 
     // MARK: - Outbound: local pasteboard -> wire
@@ -72,6 +104,15 @@ final class ClipboardSyncManager: ObservableObject {
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
+        sendCurrentPasteboardContentIfNeeded()
+    }
+
+    /// Sends whatever is currently on the pasteboard (if anything, and if it isn't
+    /// just the echo of a remote update we wrote ourselves), regardless of whether
+    /// `changeCount` moved — the shared body behind both a real detected change
+    /// (`pollPasteboard`) and the on-connect resync (`start`).
+    private func sendCurrentPasteboardContentIfNeeded() {
+        let pasteboard = NSPasteboard.general
 
         // Text takes priority when both are somehow present, matching pre-image
         // behavior exactly for plain-text copies.

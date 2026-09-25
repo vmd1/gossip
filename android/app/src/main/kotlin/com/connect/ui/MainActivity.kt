@@ -16,7 +16,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -38,6 +40,8 @@ import com.connect.crypto.TrustedDevice
 import com.connect.crypto.TrustedDevicesStore
 import com.connect.features.dnd.DndSyncManager
 import com.connect.features.proximity.LockOnLeaveManager
+import com.connect.onboarding.OnboardingActivity
+import com.connect.onboarding.OnboardingPreferences
 import com.connect.pairing.QRScanActivity
 import com.connect.pairing.ShowQrActivity
 import com.connect.protocol.DeviceType
@@ -71,7 +75,21 @@ class MainActivity : ComponentActivity() {
     private var serviceConnection: ServiceConnection? = null
 
     private val requestNotificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op either way */ }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            notificationPermissionGranted = granted
+        }
+
+    /** Gates whether *any* local notification this app posts actually shows — both its own
+     *  sync-status notification and, less obviously, a peer device's mirrored notifications
+     *  (see `NotificationMirrorReceiver.handlePosted`'s `NotificationManagerCompat.notify`
+     *  call, which silently no-ops without this, same failure mode Mac's own
+     *  `notificationsDisabledRow` was built to warn about for its single unified permission
+     *  — Android splits this from *listener* access, which only gates detecting this
+     *  device's own notifications to mirror *out*). Found missing a persistent home-screen
+     *  warning during this handoff's Phase 3 parity audit
+     *  (`HANDOFF_ONBOARDING_AND_POLISH.md`) — previously only requested once at launch with
+     *  no ongoing indication if denied (or later revoked in Settings). */
+    private var notificationPermissionGranted by androidx.compose.runtime.mutableStateOf(true)
 
     private val requestBluetoothPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -96,6 +114,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        if (!OnboardingPreferences(applicationContext).isCompleted) {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+            finish()
+            return
+        }
+
         val serviceIntent = Intent(this, SyncForegroundService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
@@ -103,11 +127,17 @@ class MainActivity : ComponentActivity() {
             startService(serviceIntent)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!notificationPermissionGranted) {
+                requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
+        // Pre-Tiramisu: POST_NOTIFICATIONS doesn't exist as a runtime permission — posting
+        // is always allowed (subject only to the user's OS-level notification settings,
+        // which this app has no API to query) — notificationPermissionGranted's `true`
+        // default is correct as-is here.
 
         // BLE proximity (see docs/ble-proximity-protocol.md) needs BLUETOOTH_SCAN or
         // BLUETOOTH_ADVERTISE depending on this device's role, both runtime-dangerous
@@ -147,7 +177,7 @@ class MainActivity : ComponentActivity() {
         deviceAdminActive = isDeviceAdminActive(this)
 
         setContent {
-            MaterialTheme {
+            com.connect.ui.theme.ConnectTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     ConnectHomeScreen(
                         connectionStateProvider = { boundService?.transportManager()?.connectionState },
@@ -158,11 +188,20 @@ class MainActivity : ComponentActivity() {
                         onShowQrToPair = {
                             startActivity(Intent(this@MainActivity, ShowQrActivity::class.java))
                         },
+                        onRunSetupAgain = {
+                            startActivity(Intent(this@MainActivity, OnboardingActivity::class.java))
+                        },
                         isNotificationAccessGranted = { isNotificationListenerEnabled(this@MainActivity) },
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                         },
                         onSendTestNotification = { postTestNotification() },
+                        notificationPermissionGranted = { notificationPermissionGranted },
+                        onRequestNotificationPermission = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                        },
                         dndSyncManagerProvider = { boundService?.dndSyncManager() },
                         onRequestDndAccess = { dndSyncManager ->
                             startActivity(dndSyncManager.requestPolicyAccessIntent())
@@ -272,9 +311,12 @@ fun ConnectHomeScreen(
     trustedDevicesStore: TrustedDevicesStore,
     onPairNewDevice: () -> Unit,
     onShowQrToPair: () -> Unit = {},
+    onRunSetupAgain: () -> Unit = {},
     isNotificationAccessGranted: () -> Boolean = { true },
     onEnableNotificationAccess: () -> Unit = {},
     onSendTestNotification: () -> Unit = {},
+    notificationPermissionGranted: () -> Boolean = { true },
+    onRequestNotificationPermission: () -> Unit = {},
     dndSyncManagerProvider: () -> DndSyncManager? = { null },
     onRequestDndAccess: (DndSyncManager) -> Unit = {},
     rosterGossipManagerProvider: () -> com.connect.features.trust.RosterGossipManager? = { null },
@@ -332,6 +374,10 @@ fun ConnectHomeScreen(
                 Text("Show QR to Pair")
             }
 
+            androidx.compose.material3.TextButton(onClick = onRunSetupAgain) {
+                Text("Run Setup Again")
+            }
+
             if (!notificationAccessGranted) {
                 Text(
                     "Grant notification access so your Android notifications can be mirrored to your Mac.",
@@ -353,6 +399,32 @@ fun ConnectHomeScreen(
                         "pipeline reaches your Mac without waiting for a real app to notify you.",
                     style = MaterialTheme.typography.bodySmall
                 )
+            }
+
+            if (!notificationPermissionGranted()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.errorContainer
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            "Notifications permission is off — a paired device's mirrored " +
+                                "notifications will be silently dropped, with no error shown " +
+                                "anywhere (separate from notification mirroring access above, " +
+                                "which only controls sending this device's own notifications " +
+                                "out).",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Button(onClick = onRequestNotificationPermission) {
+                            Text("Grant Notifications Permission")
+                        }
+                    }
+                }
             }
 
             if (!dndAccessGranted) {

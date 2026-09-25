@@ -99,11 +99,23 @@ class ClipboardSyncManager(
     private var started = false
 
     private var pollJob: Job? = null
+    private var resyncJob: Job? = null
 
     /** Starts listening for local clipboard changes and registers the wire handlers —
      *  see this class's doc for why the local-read side only reliably fires while
      *  Connect's own UI has focus, unless [shizukuManager] is connected. Call once the
-     *  transport is CONNECTED. */
+     *  transport is CONNECTED.
+     *
+     *  Also resends whatever is currently on the clipboard once, immediately, and then
+     *  periodically every [RESYNC_INTERVAL_MS] while connected — per this project's
+     *  `CLAUDE.md` convention that anything configuring state on a recipient needs a
+     *  self-healing resync, not just a one-shot send-on-change. Without this, a local
+     *  copy made while transiently disconnected (or a send lost to any other race)
+     *  would never reach a peer until the next actual clipboard change on this device,
+     *  which might be a long time or never — the same failure mode `dnd.update`'s
+     *  `isInitialSync` + periodic resync and `lock_on_leave.config`'s on-connect resend
+     *  both already exist to prevent. Goes through the same loop-guard as a real
+     *  observed change, so it's a no-op against a peer that already has this value. */
     fun start() {
         if (started) return
         started = true
@@ -112,6 +124,13 @@ class ClipboardSyncManager(
         transportManager.onRawFrameReceived = { envelope, data -> onRemoteImageUpdate(envelope, data) }
         if (shizukuManager != null) {
             pollJob = scope.launch { runBackgroundPollLoop() }
+        }
+        resendCurrentClipboardIfNeeded()
+        resyncJob = scope.launch {
+            while (true) {
+                delay(RESYNC_INTERVAL_MS)
+                resendCurrentClipboardIfNeeded()
+            }
         }
     }
 
@@ -124,6 +143,24 @@ class ClipboardSyncManager(
         transportManager.onRawFrameReceived = null
         pollJob?.cancel()
         pollJob = null
+        resyncJob?.cancel()
+        resyncJob = null
+    }
+
+    /** Shared body behind both the on-connect and periodic resync: sends whatever is
+     *  currently on the clipboard (text takes priority, matching [onLocalClipChanged]),
+     *  regardless of whether it was actually just observed as "new" — the resync's
+     *  whole point is to resend even unchanged state as a self-healing backstop. */
+    private fun resendCurrentClipboardIfNeeded() {
+        val text = currentClipText()
+        if (text != null) {
+            lastObservedText = text
+            if (shouldSend(text, lastRemoteSetValue)) sendText(text)
+            return
+        }
+
+        val imageBytes = currentClipImagePng() ?: return
+        if (shouldSendImage(imageBytes, lastRemoteSetImageData)) sendImage(imageBytes)
     }
 
     private fun onLocalClipChanged() {
@@ -253,6 +290,10 @@ class ClipboardSyncManager(
          *  enough that a background copy feels responsive, cheap enough (a single Binder
          *  round-trip) that polling this often isn't a real cost. */
         private const val SHIZUKU_POLL_INTERVAL_MS = 2_000L
+
+        /** Periodic-resync interval — matches `dnd.update`/`trust.roster_update`/
+         *  `lock_on_leave.config`'s existing ~60s self-healing cadence. */
+        private const val RESYNC_INTERVAL_MS = 60_000L
 
         /**
          * Pure loop-suppression check, exposed for unit testing: returns `false` when
