@@ -1,16 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Mesh icon: 5 connected nodes (a small abstract network graph), replacing the old
+     wifi-arcs glyph — the app is fundamentally a multi-device mesh now, not just a
+     two-device Mac↔phone pairing. Node/edge layout (including the crossing B-E diagonal,
+     which is what reads as "mesh" rather than "simple pentagon outline") kept within
+     Android's adaptive-icon safe zone (centered, radius well under 33dp of the 54dp
+     half-canvas) so nothing clips under any launcher's mask shape. Mirrors
+     mac/Gossip/Assets.xcassets's app icon design — see docs/design-system.md for the
+     accent color (background) this pairs with. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Edges, drawn first so node circles sit on top of their endpoints. -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,24 C71.67,24 86,38.33 86,56 L86,58 L74,58 L74,56 C74,45.0 65.0,36 54,36 C43.0,36 34,45.0 34,56 L34,58 L22,58 L22,56 C22,38.33 36.33,24 54,24 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,44 C62.84,44 70,51.16 70,60 L70,62 L58,62 L58,60 C58,57.79 56.21,56 54,56 C51.79,56 50,57.79 50,60 L50,62 L38,62 L38,60 C38,51.16 45.16,44 54,44 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,68 C58.42,68 62,71.58 62,76 C62,80.42 58.42,84 54,84 C49.58,84 46,80.42 46,76 C46,71.58 49.58,68 54,68 Z" />
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:pathData="M52,33 L33,47 M52,33 L75,46 M33,47 L75,46 M33,47 L38,73 M75,46 L68,71 M38,73 L68,71 M33,47 L68,71" />
+    <!-- Nodes -->
+    <path android:fillColor="#FFFFFF" android:pathData="M48,33 A4,4 0 1,0 56,33 A4,4 0 1,0 48,33 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M29,47 A4,4 0 1,0 37,47 A4,4 0 1,0 29,47 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M71,46 A4,4 0 1,0 79,46 A4,4 0 1,0 71,46 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M34,73 A4,4 0 1,0 42,73 A4,4 0 1,0 34,73 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M64,71 A4,4 0 1,0 72,71 A4,4 0 1,0 64,71 Z" />
 </vector>
