@@ -226,7 +226,14 @@ struct ConnectApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("Gossip", systemImage: "laptopcomputer.and.iphone") {
+        // "point.3.connected.trianglepath.dotted" (macOS 14+) replaces the old
+        // laptop+phone glyph — the app is fundamentally a multi-device mesh now (Mac,
+        // phones, tablets all trusting each other), not just a two-device Mac↔phone
+        // pairing, and a mesh/network-shaped SF Symbol reads that way at a glance. Stays
+        // an SF Symbol per docs/design-system.md's "no custom icon assets" convention —
+        // only the actual app icon (Assets.xcassets/AppIcon) needed a custom asset,
+        // since there's no SF Symbol usable as a full app icon.
+        MenuBarExtra("Gossip", systemImage: "point.3.connected.trianglepath.dotted") {
             MenuBarView(
                 transportManager: transportManager,
                 pairingViewModel: pairingViewModel,
