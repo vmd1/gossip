@@ -14,6 +14,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "connect"
+rootProject.name = "gossip"
 include(":app")
 include(":system-api-stubs")

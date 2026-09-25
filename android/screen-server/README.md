@@ -9,7 +9,7 @@ socket that the Mac `adb forward`s to a local TCP port — exactly scrcpy's own
 architecture (Genymobile/scrcpy, Apache 2.0).
 
 **This unit shipped with approach (b) instead** (`adb exec-out screenrecord
---output-format=h264 -`, see `mac/Connect/Features/ScreenMirror/ADBClient.swift`).
+--output-format=h264 -`, see `mac/Gossip/Features/ScreenMirror/ADBClient.swift`).
 Approach (a) is the better long-term architecture — lower latency, no
 `screenrecord` 3-minute/`--time-limit` quirks, and a socket stream instead of
 re-spawning a process — but a correct capture server is substantial work on

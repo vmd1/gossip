@@ -9,7 +9,7 @@ plugins {
 }
 
 android {
-    namespace = "com.connect.systemapistubs"
+    namespace = "dev.vmd1.gossip.systemapistubs"
     compileSdk = 36
 
     defaultConfig {

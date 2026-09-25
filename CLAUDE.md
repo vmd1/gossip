@@ -1,6 +1,6 @@
-# Connect
+# Gossip
 
-Mac ↔ Android continuity app. Mac app is Swift (`mac/Connect`), Android app is Kotlin (`android/app/src/main/kotlin/com/connect`). No shared compiler/types between them — the wire protocol is the only contract.
+Mac ↔ Android continuity app (formerly "Connect"). Mac app is Swift (`mac/Gossip`), Android app is Kotlin (`android/app/src/main/kotlin/dev/vmd1/gossip`). No shared compiler/types between them — the wire protocol is the only contract.
 
 ## Wire protocol changes
 

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Gossip</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string></string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Gossip uses your local network to discover and communicate with your paired Android phone.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Gossip uses Bluetooth to detect when your paired phone is physically nearby, for features like locking your Mac when it leaves range.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Gossip needs Location Services to join a nearby phone's Instant Hotspot automatically — this is a macOS requirement for any app that joins Wi-Fi networks programmatically, not something Gossip uses your location for.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Gossip needs Location Services to join a nearby phone's Instant Hotspot automatically — this is a macOS requirement for any app that joins Wi-Fi networks programmatically, not something Gossip uses your location for.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_gossip._tcp</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.connect.app.dnd</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>connect</string>
+			</array>
+		</dict>
+	</array>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>
