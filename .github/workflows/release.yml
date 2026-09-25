@@ -57,12 +57,12 @@ jobs:
         run: ./gradlew assembleDebug
 
       - name: Rename APK with release tag
-        run: cp app/build/outputs/apk/debug/app-debug.apk "connect-${{ needs.version.outputs.tag }}.apk"
+        run: cp app/build/outputs/apk/debug/app-debug.apk "gossip-${{ needs.version.outputs.tag }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: android/connect-${{ needs.version.outputs.tag }}.apk
+          path: android/gossip-${{ needs.version.outputs.tag }}.apk
 
   mac-release:
     needs: version
@@ -91,13 +91,13 @@ jobs:
       # otherwise require a real team/account that CI doesn't have. The resulting .app is
       # runnable locally but not notarized, so macOS Gatekeeper will quarantine-block it
       # on first launch until the user right-click-opens it once (or runs
-      # `xattr -cr Connect.app`) — expected and acceptable for an unsigned personal build,
+      # `xattr -cr Gossip.app`) — expected and acceptable for an unsigned personal build,
       # not a bug in this workflow.
       - name: Build (ad-hoc signed Release)
         run: >
           xcodebuild
-          -project Connect.xcodeproj
-          -scheme Connect
+          -project Gossip.xcodeproj
+          -scheme Gossip
           -configuration Release
           -destination 'platform=macOS'
           -derivedDataPath build
@@ -111,12 +111,12 @@ jobs:
       - name: Zip app bundle
         run: |
           cd build/Build/Products/Release
-          zip -r "../../../../connect-${{ needs.version.outputs.tag }}.zip" Connect.app
+          zip -r "../../../../gossip-${{ needs.version.outputs.tag }}.zip" Gossip.app
 
       - uses: actions/upload-artifact@v4
         with:
           name: mac-zip
-          path: mac/connect-${{ needs.version.outputs.tag }}.zip
+          path: mac/gossip-${{ needs.version.outputs.tag }}.zip
 
   publish:
     needs: [version, android-release, mac-release]
