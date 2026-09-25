@@ -32,6 +32,7 @@
 		74D7A00B76C9410CD40B667B /* TrustedDevicesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66ECB2F4DBC6481E50AC8CB9 /* TrustedDevicesStoreTests.swift */; };
 		765324B1B436614908B60E84 /* AutoHotspotRequestManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 372EA6673BF8134B741DBFD8 /* AutoHotspotRequestManager.swift */; };
 		8208A29FB2BA49F70B06CFE4 /* HotspotGattProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C308BCE327FDBA6FA83669C /* HotspotGattProtocol.swift */; };
+		866EAF8C0BAC18690AFFDAB6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2A17F8064A3E7D5E32E1644F /* Assets.xcassets */; };
 		86FD95E70451BF72F7513977 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6F76AD1F641AAAA7086653 /* OnboardingView.swift */; };
 		927DE5368BCCC4D2FA13C3DF /* MediaControlManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51167B6D0A34CF95C05E372A /* MediaControlManager.swift */; };
 		92B9E244656E166623D562BB /* NotificationMirrorManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4592A6AD4FB3BDCFB605C679 /* NotificationMirrorManagerTests.swift */; };
@@ -77,6 +78,7 @@
 		23C903FB6E6E3D47587B9D30 /* DNDSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DNDSyncManagerTests.swift; sourceTree = "<group>"; };
 		258D9B38E1B2C0B32FD2618F /* QRCodeGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeGenerator.swift; sourceTree = "<group>"; };
 		2738FBCC8A068980AD4D501D /* ScreenMirrorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenMirrorController.swift; sourceTree = "<group>"; };
+		2A17F8064A3E7D5E32E1644F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2ED09422E5F4DC5180D22885 /* FallbackHostWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FallbackHostWindow.swift; sourceTree = "<group>"; };
 		372EA6673BF8134B741DBFD8 /* AutoHotspotRequestManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoHotspotRequestManager.swift; sourceTree = "<group>"; };
 		37914254ECFDCA496DBB2447 /* Gossip.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Gossip.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -160,6 +162,7 @@
 		4E4722B49A0789ABAA583C0C /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				2A17F8064A3E7D5E32E1644F /* Assets.xcassets */,
 				546460B75E9EA500DCFF6860 /* bin */,
 			);
 			path = Resources;
@@ -399,6 +402,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				866EAF8C0BAC18690AFFDAB6 /* Assets.xcassets in Resources */,
 				28FA8F0144944F0603A79B94 /* bin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

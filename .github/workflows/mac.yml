@@ -43,6 +43,7 @@ jobs:
           -scheme Gossip
           -configuration Debug
           -destination 'platform=macOS'
+          -derivedDataPath build
           CODE_SIGNING_ALLOWED=NO
           build
 
@@ -53,5 +54,20 @@ jobs:
           -scheme Gossip
           -configuration Debug
           -destination 'platform=macOS'
+          -derivedDataPath build
           CODE_SIGNING_ALLOWED=NO
           test
+
+      # Unsigned (CODE_SIGNING_ALLOWED=NO above) — this is a build-verification artifact
+      # for every push/PR, not a distributable release; release.yml's ad-hoc-signed
+      # Release build on push to main is the one meant to actually be run outside CI.
+      - name: Zip built app bundle
+        run: |
+          cd build/Build/Products/Debug
+          zip -r ../../../../gossip-debug.zip Gossip.app
+
+      - name: Upload built app
+        uses: actions/upload-artifact@v4
+        with:
+          name: gossip-debug-app
+          path: mac/gossip-debug.zip
