@@ -138,8 +138,10 @@ class SyncForegroundService : Service() {
                 override fun onReceive(ctx: android.content.Context, intent: Intent) {
                     val enable = intent.getBooleanExtra("enable", true)
                     serviceScope.launch {
+                        val preferredMechanismId = com.connect.onboarding.OnboardingPreferences(applicationContext)
+                            .preferredHotspotMechanismId
                         val result = com.connect.features.hotspot.TetherHelper.setHotspotEnabled(
-                            applicationContext, enable, shizukuManager
+                            applicationContext, enable, shizukuManager, preferredMechanismId = preferredMechanismId
                         )
                         Log.i("HotspotDebug", "setHotspotEnabled(enable=$enable) -> $result")
                     }
@@ -204,6 +206,13 @@ class SyncForegroundService : Service() {
                     // DndSyncManager.reportInitialSyncState's doc for why this can't be
                     // a plain reportCurrentState() call.
                     dndSyncManager.reportInitialSyncState()
+                    // Same reasoning: a Mac that reconnects after being disconnected
+                    // (or missed the original event-driven publish to any other race)
+                    // otherwise never learns this device is currently playing anything
+                    // until the *next* playback/metadata change, which might be a long
+                    // time or never — mediaControlBridge.start() only ever published
+                    // once, at service startup, with no reconnect-triggered resend.
+                    mediaControlBridge.resyncNowPlaying()
                 } else {
                     clipboardSyncManager.stop()
                 }
@@ -213,6 +222,7 @@ class SyncForegroundService : Service() {
         runFallbackDialLoop(trustedDevices)
         runDndResyncLoop()
         runRosterResyncLoop()
+        runMediaResyncLoop()
     }
 
     /** Self-healing backstop for roster gossip, on top of the event-driven paths (a fresh
@@ -244,6 +254,23 @@ class SyncForegroundService : Service() {
                 delay(DND_RESYNC_INTERVAL_MS)
                 if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
                     dndSyncManager.reportInitialSyncState()
+                }
+            }
+        }
+    }
+
+    /** Self-healing backstop for `media.nowplaying`, on top of the event-driven publish
+     *  (a playback/metadata change) and the on-connect resend above: periodically
+     *  re-sends this device's current now-playing snapshot while connected. Mirrors
+     *  [runDndResyncLoop] — a no-op both when nothing is playing and when a peer
+     *  already has this exact snapshot, since it's the same publish a real change
+     *  would trigger. */
+    private fun runMediaResyncLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(DND_RESYNC_INTERVAL_MS)
+                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
+                    mediaControlBridge.resyncNowPlaying()
                 }
             }
         }
@@ -310,6 +337,22 @@ class SyncForegroundService : Service() {
     fun rosterGossipManager(): RosterGossipManager = rosterGossipManager
 
     fun bleProximityMonitor(): BLEProximityMonitor = bleProximityMonitor
+
+    /** Exposed so the home screen can show a "your screen is being mirrored" indicator —
+     *  see [com.connect.features.screenmirror.ScreenMirrorState]'s own doc comment, which
+     *  already anticipated this accessor ("exists purely so a future 'Mirroring active'
+     *  indicator... has something to observe") but nothing had wired it up yet; found
+     *  during this handoff's Phase 3 parity audit (`HANDOFF_ONBOARDING_AND_POLISH.md`) —
+     *  the state was tracked correctly the whole time, just never surfaced anywhere. */
+    fun screenMirrorState(): ScreenMirrorState = screenMirrorState
+
+    /** Null until Shizuku's binder lifecycle initializes it in [onCreate] — practically
+     *  always non-null by the time a bound client reads this, since binding itself is
+     *  already async. Exposed so onboarding's hotspot-mechanism-test step (see
+     *  `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 2) can call [com.connect.features.hotspot.
+     *  TetherHelper.probeMechanisms] with the real, running instance instead of
+     *  constructing a second one. */
+    fun shizukuManager(): com.connect.features.hotspot.ShizukuManager? = shizukuManager
 
     inner class LocalBinder : android.os.Binder() {
         fun service(): SyncForegroundService = this@SyncForegroundService

@@ -50,8 +50,26 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Signature files from signed dependency jars (bcprov-jdk18on) — APK
+            // packaging never verifies jar signatures, so these are dead weight in the
+            // APK. NOTE: this alone does NOT fix the `SecurityException: SHA-256 digest
+            // error` that bcprov triggers in `testDebugUnitTest` — that's a separate,
+            // host-JVM-only issue fixed near the `stripBcprovSignature` task below.
+            excludes += "META-INF/*.SF"
+            excludes += "META-INF/*.DSA"
+            excludes += "META-INF/*.RSA"
         }
     }
+}
+
+// Rebuilds bcprov-jdk18on with its signature metadata stripped (same class bytes) — see
+// the `testImplementation(files(stripBcprovSignature))` comment below for why this exists.
+val stripBcprovSignature by tasks.registering(Jar::class) {
+    from(zipTree(configurations.detachedConfiguration(dependencies.create("org.bouncycastle:bcprov-jdk18on:1.78.1")).singleFile)) {
+        exclude("META-INF/*.SF", "META-INF/*.RSA", "META-INF/*.DSA")
+    }
+    archiveFileName.set("bcprov-jdk18on-1.78.1-unsigned.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("bcprov-unsigned"))
 }
 
 dependencies {
@@ -111,4 +129,29 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+
+    // bcprov-jdk18on (used by NoiseSession.kt's Noise_IK handshake) is a signed jar. The
+    // `dev.rikka.tools.refine` plugin applied above installs an ASM classes-transform
+    // (`transformDebug(UnitTest)?ClassesWithAsm`) that runs over *every* class on this
+    // module's classpath — including third-party dependency jars, not just this project's
+    // own classes — looking for calls to `@RefineAs`-annotated stubs. Re-emitting bcprov's
+    // class files through that pipeline (even though nothing in bcprov needs rewriting)
+    // invalidates the jar's per-entry SHA-256 digests recorded in its signed manifest, so
+    // the plain JVM unit-test classpath (unlike the on-device APK classpath, which never
+    // signature-verifies jars at all) throws `SecurityException: SHA-256 digest error` the
+    // instant a BC class loads. Confirmed via `jarsigner -verify`: the pristine dependency
+    // jar verifies cleanly; the specific copy under this module's Gradle transforms cache
+    // does not. Reproduces identically in CI on a clean checkout (not local cache
+    // corruption — see the Android workflow run for commit b6c2cef) and is unrelated to
+    // the Noise handshake logic itself or to any change in this session.
+    //
+    // Fix: exclude bcprov from the test configurations' transitively-inherited copy (the
+    // one the Refine transform corrupts) and supply an unsigned rebuild — same class
+    // bytes, signature metadata stripped so there's nothing left for `JarFile` to
+    // (mis)verify — in its place, test-only.
+    testImplementation(files(stripBcprovSignature))
+}
+
+configurations.matching { it.name == "testCompileClasspath" || it.name == "testRuntimeClasspath" }.configureEach {
+    exclude(group = "org.bouncycastle", module = "bcprov-jdk18on")
 }
