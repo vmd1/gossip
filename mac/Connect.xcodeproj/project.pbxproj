@@ -17,6 +17,7 @@
 		2981551EFC245F3700EFDC04 /* OnboardingPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24688972DFAD8A1D9A458D4E /* OnboardingPreferences.swift */; };
 		315142A2EBF675A60EFC4D88 /* RosterGossipManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D901C8DA5F1F4ED991BB21F /* RosterGossipManager.swift */; };
 		3322151AC534059AB917F954 /* ADBPairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BF45EE121447A0E9D788FE9 /* ADBPairingWindow.swift */; };
+		3A4582D787ED3233C0EBA074 /* AutoHotspotRequestManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99515CAB57EF15D7ACBF911B /* AutoHotspotRequestManager.swift */; };
 		458F8D43C1A1DD0686CC65AA /* LockOnLeaveManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5A9A61D5D4715E581FA4FC0 /* LockOnLeaveManager.swift */; };
 		45C9C61C9B1A1C690DE8E48B /* Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22D902BF5E5FB455B8C961A /* Envelope.swift */; };
 		49BFE6F763D27F1888455DBD /* LocalDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA24BBEFDE5080C1825AF716 /* LocalDiscovery.swift */; };
@@ -44,6 +45,7 @@
 		C3C17D1865BACEB48E906168 /* TrustedDevicesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 845DD794B62D4498D167B007 /* TrustedDevicesStoreTests.swift */; };
 		C44CABF376342CC8EA6CCF7D /* ScreenMirrorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3019A1BAA5AC068B9EE4BB7A /* ScreenMirrorController.swift */; };
 		C67F35936573A1754319D478 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC9E054C18EBA967A124597 /* OnboardingView.swift */; };
+		CE42312733B7DB5619BCC12A /* WanReachabilityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2B9527F34D24AD95FDA787F /* WanReachabilityMonitor.swift */; };
 		D060D4B2A524E6D48DF50DEF /* TransportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CD0FFF8D292E7F374435FD7 /* TransportManager.swift */; };
 		D1A0F7AB96295233F4A826C3 /* BLEProximityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEFC27A75535638122ECF2AD /* BLEProximityMonitor.swift */; };
 		D8E32986179C76DBF251708B /* PairingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46C430A1871D8467997697CD /* PairingViewModel.swift */; };
@@ -89,7 +91,9 @@
 		80B102CD0611ADD4EB6A18DC /* HotspotGattProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotspotGattProtocol.swift; sourceTree = "<group>"; };
 		845DD794B62D4498D167B007 /* TrustedDevicesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustedDevicesStoreTests.swift; sourceTree = "<group>"; };
 		91A02B7EC9FEDDBEBD53C8DA /* ClipboardSyncManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardSyncManagerTests.swift; sourceTree = "<group>"; };
+		99515CAB57EF15D7ACBF911B /* AutoHotspotRequestManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoHotspotRequestManager.swift; sourceTree = "<group>"; };
 		9A784B4A72BC93CA1974E821 /* bin */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bin; path = Connect/Resources/bin; sourceTree = SOURCE_ROOT; };
+		A2B9527F34D24AD95FDA787F /* WanReachabilityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WanReachabilityMonitor.swift; sourceTree = "<group>"; };
 		A4911A62B9DB9069394B164F /* ADBWirelessPairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADBWirelessPairingTests.swift; sourceTree = "<group>"; };
 		ACAD12F736759DC26C7803B4 /* MessageRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRouter.swift; sourceTree = "<group>"; };
 		AFC9E054C18EBA967A124597 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -182,10 +186,12 @@
 		82388DAE3AE7950A9846021C /* Hotspot */ = {
 			isa = PBXGroup;
 			children = (
+				99515CAB57EF15D7ACBF911B /* AutoHotspotRequestManager.swift */,
 				E424590CA287643BCD4B8309 /* HotspotAutoConnect.swift */,
 				3DE429C16C1A1E0D88838D3C /* HotspotGattClient.swift */,
 				80B102CD0611ADD4EB6A18DC /* HotspotGattProtocol.swift */,
 				07DC0EED275F1CB8C860B74A /* HotspotStateManager.swift */,
+				A2B9527F34D24AD95FDA787F /* WanReachabilityMonitor.swift */,
 			);
 			path = Hotspot;
 			sourceTree = "<group>";
@@ -444,6 +450,7 @@
 				3322151AC534059AB917F954 /* ADBPairingWindow.swift in Sources */,
 				72BCE33379D5D47F9AC39ACA /* ADBWirelessPairing.swift in Sources */,
 				541AA90A2F842CF97F315523 /* AppDelegate.swift in Sources */,
+				3A4582D787ED3233C0EBA074 /* AutoHotspotRequestManager.swift in Sources */,
 				D1A0F7AB96295233F4A826C3 /* BLEProximityMonitor.swift in Sources */,
 				19D9063D207F06BFF6A76712 /* ClipboardSyncManager.swift in Sources */,
 				5AFC1213C710656A12BBE5E3 /* ConnectApp.swift in Sources */,
@@ -474,6 +481,7 @@
 				C44CABF376342CC8EA6CCF7D /* ScreenMirrorController.swift in Sources */,
 				D060D4B2A524E6D48DF50DEF /* TransportManager.swift in Sources */,
 				C1B34115520F70D9A2A20236 /* TrustedDevicesStore.swift in Sources */,
+				CE42312733B7DB5619BCC12A /* WanReachabilityMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
