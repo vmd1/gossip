@@ -43,10 +43,25 @@ class OnboardingPreferences internal constructor(private val prefs: SharedPrefer
         get() = prefs.getBoolean(KEY_PROVIDE_HOTSPOT, false)
         set(value) = prefs.edit().putBoolean(KEY_PROVIDE_HOTSPOT, value).apply()
 
+    /** Whether *this* device automatically requests Instant Hotspot from a nearby,
+     *  eligible, opted-in phone after being offline (no WAN reachability) for a while —
+     *  see `docs/ble-hotspot-protocol.md`'s WAN-reachability probe and
+     *  [com.connect.features.hotspot.AutoHotspotRequestManager]. Distinct from the
+     *  per-phone [com.connect.crypto.TrustedDevice.autoHotspotRequestEligible] flag: this
+     *  is the global on/off switch for *this* device; that flag narrows which trusted
+     *  phones are eligible targets once this is on. Off by default, local-only, never
+     *  sent over the wire — same category as [provideHotspotEnabled]. Meaningful for any
+     *  device type (Mac, tablet, or a phone with no cellular/Wi-Fi of its own), not just
+     *  phones, unlike [provideHotspotEnabled]. */
+    var autoRequestHotspotEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_REQUEST_HOTSPOT, false)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_REQUEST_HOTSPOT, value).apply()
+
     private companion object {
         const val PREFS_NAME = "onboarding_prefs"
         const val KEY_COMPLETED = "completed"
         const val KEY_PREFERRED_HOTSPOT_MECHANISM = "preferred_hotspot_mechanism"
         const val KEY_PROVIDE_HOTSPOT = "provide_hotspot_enabled"
+        const val KEY_AUTO_REQUEST_HOTSPOT = "auto_request_hotspot_enabled"
     }
 }

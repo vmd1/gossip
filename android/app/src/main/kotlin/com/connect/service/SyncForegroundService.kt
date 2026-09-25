@@ -55,6 +55,7 @@ class SyncForegroundService : Service() {
     private var shizukuManager: com.connect.features.hotspot.ShizukuManager? = null
     private var hotspotGattServer: com.connect.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: com.connect.features.hotspot.HotspotStateManager
+    private lateinit var autoHotspotRequestManager: com.connect.features.hotspot.AutoHotspotRequestManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -171,6 +172,16 @@ class SyncForegroundService : Service() {
             scope = serviceScope
         )
         lockOnLeaveManager.start()
+        autoHotspotRequestManager = com.connect.features.hotspot.AutoHotspotRequestManager(
+            context = applicationContext,
+            identityKeyStore = identity,
+            trustedDevicesStore = trustedDevices,
+            bleProximityMonitor = bleProximityMonitor,
+            onboardingPreferences = com.connect.onboarding.OnboardingPreferences(applicationContext),
+            deviceType = deviceType,
+            scope = serviceScope
+        )
+        autoHotspotRequestManager.start()
 
         // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
         // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.

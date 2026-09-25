@@ -65,6 +65,7 @@ fun PairedDevicesScreen(
     nearbyDeviceIds: Set<String> = emptySet(),
     myDeviceType: DeviceType = DeviceType.ANDROID_PHONE,
     onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    onSetAutoHotspotRequestEligible: (deviceId: String, eligible: Boolean) -> Unit = { _, _ -> },
     hotspotStates: Map<String, HotspotState> = emptyMap(),
     bleHotspotOnStates: Map<String, Boolean> = emptyMap(),
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
@@ -137,7 +138,9 @@ fun PairedDevicesScreen(
                             onForget = onForget,
                             onSetFallbackHost = onSetFallbackHost,
                             showLockOnLeaveToggle = myDeviceType == DeviceType.ANDROID_PHONE && device.deviceType != DeviceType.ANDROID_PHONE,
-                            onSetLockOnLeave = onSetLockOnLeave
+                            onSetLockOnLeave = onSetLockOnLeave,
+                            showAutoHotspotRequestToggle = device.deviceType == DeviceType.ANDROID_PHONE,
+                            onSetAutoHotspotRequestEligible = onSetAutoHotspotRequestEligible
                         )
                     }
                 }
@@ -160,7 +163,9 @@ private fun DeviceSettingsButton(
     onForget: (deviceId: String) -> Unit,
     onSetFallbackHost: (deviceId: String, fallbackHost: String?) -> Unit,
     showLockOnLeaveToggle: Boolean = false,
-    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> }
+    onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
+    showAutoHotspotRequestToggle: Boolean = false,
+    onSetAutoHotspotRequestEligible: (deviceId: String, eligible: Boolean) -> Unit = { _, _ -> }
 ) {
     var showSettings by remember { mutableStateOf(false) }
     IconButton(onClick = { showSettings = true }) {
@@ -172,6 +177,8 @@ private fun DeviceSettingsButton(
             onSetFallbackHost = onSetFallbackHost,
             showLockOnLeaveToggle = showLockOnLeaveToggle,
             onSetLockOnLeave = onSetLockOnLeave,
+            showAutoHotspotRequestToggle = showAutoHotspotRequestToggle,
+            onSetAutoHotspotRequestEligible = onSetAutoHotspotRequestEligible,
             onForget = {
                 onForget(device.deviceId)
                 showSettings = false
@@ -187,6 +194,8 @@ private fun DeviceSettingsDialog(
     onSetFallbackHost: (deviceId: String, fallbackHost: String?) -> Unit,
     showLockOnLeaveToggle: Boolean,
     onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit,
+    showAutoHotspotRequestToggle: Boolean = false,
+    onSetAutoHotspotRequestEligible: (deviceId: String, eligible: Boolean) -> Unit = { _, _ -> },
     onForget: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -219,6 +228,25 @@ private fun DeviceSettingsDialog(
                         Switch(
                             checked = device.lockOnLeaveEnabled,
                             onCheckedChange = { onSetLockOnLeave(device.deviceId, it) }
+                        )
+                    }
+                }
+
+                // Per-phone eligibility for *my* WAN-offline auto-request-hotspot trigger
+                // (docs/ble-hotspot-protocol.md) — the other half of this is the global
+                // per-device switch on the home screen (OnboardingPreferences.
+                // autoRequestHotspotEnabled). Shown on any phone row regardless of my own
+                // device type, since a Mac, tablet, or another phone can all auto-request.
+                if (showAutoHotspotRequestToggle) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Eligible for auto-request hotspot")
+                        Switch(
+                            checked = device.autoHotspotRequestEligible,
+                            onCheckedChange = { onSetAutoHotspotRequestEligible(device.deviceId, it) }
                         )
                     }
                 }

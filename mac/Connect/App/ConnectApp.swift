@@ -20,6 +20,7 @@ struct ConnectApp: App {
     @StateObject private var bleProximityMonitor: BLEProximityMonitor
     @StateObject private var hotspotStateManager: HotspotStateManager
     private let lockOnLeaveManager: LockOnLeaveManager
+    private let autoHotspotRequestManager: AutoHotspotRequestManager
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
     /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
@@ -68,6 +69,11 @@ struct ConnectApp: App {
             trustedDevicesStore: TrustedDevicesStore.shared,
             bleProximityMonitor: bleMonitor
         )
+        autoHotspotRequestManager = AutoHotspotRequestManager(
+            trustedDevicesStore: TrustedDevicesStore.shared,
+            bleProximityMonitor: bleMonitor
+        )
+        autoHotspotRequestManager.start()
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
