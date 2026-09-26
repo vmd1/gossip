@@ -1,10 +1,10 @@
 # Gossip
 
-[![Open Source](https://img.shields.io/badge/open%20source-%E2%9C%93-brightgreen)](https://github.com/vmd1/gossip)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Mac](https://github.com/vmd1/gossip/actions/workflows/mac-test.yml/badge.svg)](https://github.com/vmd1/gossip/actions/workflows/mac-test.yml)
 [![Android](https://github.com/vmd1/gossip/actions/workflows/android-test.yml/badge.svg)](https://github.com/vmd1/gossip/actions/workflows/android-test.yml)
 
-Gossip is now open source — issues and PRs welcome.
+Gossip is open source under the [Apache 2.0 license](LICENSE) — issues and PRs welcome.
 
 Mac ↔ Android continuity app (formerly "Connect"): notification mirroring (with inline reply),
 clipboard sync, Do Not Disturb/Focus sync, media/Now Playing remote control, screen mirroring, and

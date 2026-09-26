@@ -2,6 +2,7 @@
   "name": "connect-relay",
   "version": "0.1.0",
   "description": "Minimal WebSocket relay server for Connect (Mac <-> Android bridge over Noise-encrypted opaque frames).",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "main": "dist/relay.js",
