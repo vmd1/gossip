@@ -1,0 +1,51 @@
+name: Mac Test
+
+on:
+  push:
+    # Every branch, including main — tests must run on every commit regardless of branch.
+    # Building/uploading an artifact is mac-build.yml's job, gated to non-main branches
+    # only (release.yml handles the main-only release build).
+    paths:
+      - "mac/**"
+      - "schema/**"
+      - ".github/workflows/mac-test.yml"
+  pull_request:
+    paths:
+      - "mac/**"
+      - "schema/**"
+      - ".github/workflows/mac-test.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # `xcodebuild test` builds the app itself as a precondition, so a separate build
+      # step isn't needed here — no debug artifact is produced/uploaded, that's
+      # mac-build.yml's job.
+      - name: Test
+        run: >
+          xcodebuild
+          -project Gossip.xcodeproj
+          -scheme Gossip
+          -configuration Debug
+          -destination 'platform=macOS'
+          -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO
+          test

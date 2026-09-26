@@ -1,23 +1,25 @@
-name: Android
+name: Android Build
 
 on:
   push:
-    # Every branch, not just main — see CLAUDE.md/the CI handoff: build+test must run on
-    # every push, with an additional release step gated separately (release.yml) on main
-    # specifically.
+    # Non-main branches only — a push to main is a release, and release.yml already
+    # builds+publishes the release APK; a second unsigned debug build+upload on the same
+    # main push would be redundant. android-test.yml still runs tests on every branch,
+    # main included.
+    branches-ignore: [main]
     paths:
       - "android/**"
       - "schema/**"
-      - ".github/workflows/android.yml"
+      - ".github/workflows/android-build.yml"
   pull_request:
     paths:
       - "android/**"
       - "schema/**"
-      - ".github/workflows/android.yml"
+      - ".github/workflows/android-build.yml"
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -36,9 +38,6 @@ jobs:
 
       - name: Make gradlew executable
         run: chmod +x gradlew
-
-      - name: Unit tests
-        run: ./gradlew testDebugUnitTest
 
       - name: Assemble debug APK
         run: ./gradlew assembleDebug

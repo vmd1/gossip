@@ -1,23 +1,25 @@
-name: Mac
+name: Mac Build
 
 on:
   push:
-    # Every branch, not just main — see CLAUDE.md/the CI handoff: build+test must run on
-    # every push, with an additional release step gated separately (release.yml) on main
-    # specifically.
+    # Non-main branches only — a push to main is a release, and release.yml already
+    # builds+publishes the release .app; a second unsigned debug build+upload on the same
+    # main push would be redundant. mac-test.yml still runs tests on every branch, main
+    # included.
+    branches-ignore: [main]
     paths:
       - "mac/**"
       - "schema/**"
-      - ".github/workflows/mac.yml"
+      - ".github/workflows/mac-build.yml"
   pull_request:
     paths:
       - "mac/**"
       - "schema/**"
-      - ".github/workflows/mac.yml"
+      - ".github/workflows/mac-build.yml"
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  build:
     runs-on: macos-15
     defaults:
       run:
@@ -47,19 +49,8 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           build
 
-      - name: Test
-        run: >
-          xcodebuild
-          -project Gossip.xcodeproj
-          -scheme Gossip
-          -configuration Debug
-          -destination 'platform=macOS'
-          -derivedDataPath build
-          CODE_SIGNING_ALLOWED=NO
-          test
-
       # Unsigned (CODE_SIGNING_ALLOWED=NO above) — this is a build-verification artifact
-      # for every push/PR, not a distributable release; release.yml's ad-hoc-signed
+      # for every non-main push/PR, not a distributable release; release.yml's ad-hoc-signed
       # Release build on push to main is the one meant to actually be run outside CI.
       - name: Zip built app bundle
         run: |

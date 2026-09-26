@@ -1,9 +1,10 @@
 name: Release
 
-# Runs only on push to main (build+test on every branch is android.yml/mac.yml's job —
-# this workflow adds release-artifact building and publishing on top, gated to main only,
-# per the CI/CD handoff). workflow_dispatch is included so a release can be cut manually
-# without an empty push.
+# Runs only on push to main. Tests run on every branch including main (android-test.yml/
+# mac-test.yml); the non-main debug build+upload (android-build.yml/mac-build.yml) is
+# deliberately skipped on main, since this workflow is main's build — it builds+publishes
+# the actual release artifacts on top of that, gated to main only. workflow_dispatch is
+# included so a release can be cut manually without an empty push.
 on:
   push:
     branches: [main]
