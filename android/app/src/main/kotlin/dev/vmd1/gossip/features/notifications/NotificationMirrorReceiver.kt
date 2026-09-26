@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import java.util.UUID
 
 private const val TAG = "NotificationMirror"
 private const val CHANNEL_ID = "connect_notification_mirror"
@@ -173,7 +174,10 @@ class NotificationMirrorReceiver(
             type = MessageType.NOTIFICATION_REPLY,
             senderId = identityKeyStore.deviceId,
             recipientId = sourceDeviceId,
-            payload = Json.encodeToJsonElement(NotificationReplyPayload.serializer(), NotificationReplyPayload(id = originalId, text = text)).jsonObject
+            payload = Json.encodeToJsonElement(
+                NotificationReplyPayload.serializer(),
+                NotificationReplyPayload(id = originalId, text = text, attemptId = UUID.randomUUID().toString())
+            ).jsonObject
         )
         scope.launch {
             runCatching { transportManager.send(envelope) }

@@ -1,5 +1,6 @@
 # Xcode
 mac/DerivedData/
+mac/Gossip.xcodeproj/
 *.xcuserstate
 xcuserdata/
 .DS_Store
@@ -8,3 +9,6 @@ xcuserdata/
 .build/
 .swiftpm/
 .claude/worktrees/
+
+# Project instructions (kept locally, not tracked in history)
+CLAUDE.md

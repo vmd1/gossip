@@ -355,7 +355,7 @@ class MainActivity : ComponentActivity() {
         }
         val notification = androidx.core.app.NotificationCompat.Builder(this, channelId)
             .setContentTitle("Gossip test notification")
-            .setContentText("If this shows up on your Mac, mirroring is working.")
+            .setContentText("If this shows up on your paired devices, mirroring is working.")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
@@ -465,7 +465,7 @@ fun ConnectHomeScreen(
 
             if (!notificationAccessGranted) {
                 Text(
-                    "Grant notification access so your Android notifications can be mirrored to your Mac.",
+                    "Grant notification access so your Android notifications can be mirrored to your paired devices.",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Button(onClick = {
@@ -481,7 +481,7 @@ fun ConnectHomeScreen(
                 }
                 Text(
                     "Posts a local notification — a quick way to confirm the mirroring " +
-                        "pipeline reaches your Mac without waiting for a real app to notify you.",
+                        "pipeline reaches your paired devices without waiting for a real app to notify you.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -514,7 +514,7 @@ fun ConnectHomeScreen(
 
             if (!dndAccessGranted) {
                 Text(
-                    "To sync Do Not Disturb with your Mac, Gossip needs notification " +
+                    "To sync Do Not Disturb with your paired devices, Gossip needs notification " +
                         "policy access.",
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -528,7 +528,7 @@ fun ConnectHomeScreen(
             if (!bluetoothPermissionGranted()) {
                 Text(
                     "To detect nearby trusted devices over Bluetooth (for features like " +
-                        "locking your Mac when your phone leaves range), Gossip needs " +
+                        "locking a paired Mac or tablet when your phone leaves range), Gossip needs " +
                         "Bluetooth permission.",
                     style = MaterialTheme.typography.bodySmall
                 )

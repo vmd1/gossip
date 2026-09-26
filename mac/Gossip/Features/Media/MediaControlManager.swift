@@ -97,8 +97,12 @@ final class MediaControlManager: ObservableObject {
         )
     }
 
-    static func commandPayload(action: MediaCommandAction, seekMs: Int?) -> JSONValue {
-        var fields: [String: JSONValue] = ["action": .string(action.rawValue)]
+    /// `commandId` uniquely identifies this command *instance* (a fresh UUID per call,
+    /// not per action) so the Android receiver can drop an exact duplicate delivery
+    /// (retry, relay race, dedupe-cache eviction) without skipping/rewinding twice —
+    /// see `MediaControlBridge.handleCommand` (Android).
+    static func commandPayload(action: MediaCommandAction, seekMs: Int?, commandId: String = UUID().uuidString) -> JSONValue {
+        var fields: [String: JSONValue] = ["action": .string(action.rawValue), "commandId": .string(commandId)]
         if let seekMs {
             fields["seekMs"] = .number(Double(seekMs))
         }

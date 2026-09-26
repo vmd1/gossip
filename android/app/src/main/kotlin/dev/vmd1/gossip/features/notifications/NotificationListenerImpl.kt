@@ -27,6 +27,7 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "NotificationListener"
+private const val REPLY_DEDUPE_CACHE_LIMIT = 128
 
 /**
  * Bridges the Android [NotificationListenerService] special-access API into the
@@ -55,6 +56,27 @@ class NotificationListenerImpl : NotificationListenerService() {
     private var scope: CoroutineScope? = null
     private var replyHandler: EnvelopeHandler? = null
     private var dismissHandler: EnvelopeHandler? = null
+
+    /** Bounded, size-capped cache of recently-handled `notification.reply` [NotificationReplyPayload.attemptId]s.
+     *  A duplicate delivery (retry, relay race, mesh dedupe-cache eviction — see
+     *  `docs/wire-protocol.md`'s "De-duplication" section) must not fire the source app's
+     *  own `PendingIntent` twice, since that sends the same reply text into a real
+     *  conversation a second time. Mirrors `TransportManager.recentEnvelopeIds`/`recordSeen`. */
+    private val dedupeLock = Any()
+    private val recentReplyAttemptIds = ArrayDeque<String>()
+    private val recentReplyAttemptIdSet = HashSet<String>()
+
+    /** Returns `true` the first time [attemptId] is seen (caller should act on it), `false`
+     *  for a repeat (caller should drop it as a no-op). */
+    private fun recordReplyAttemptSeen(attemptId: String): Boolean = synchronized(dedupeLock) {
+        if (!recentReplyAttemptIdSet.add(attemptId)) return@synchronized false
+        recentReplyAttemptIds.addLast(attemptId)
+        if (recentReplyAttemptIds.size > REPLY_DEDUPE_CACHE_LIMIT) {
+            val evicted = recentReplyAttemptIds.removeFirst()
+            recentReplyAttemptIdSet.remove(evicted)
+        }
+        true
+    }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
@@ -176,6 +198,10 @@ class NotificationListenerImpl : NotificationListenerService() {
             NotificationReplyPayload.fromPayload(payload)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to decode notification.reply payload", e)
+            return
+        }
+        if (!recordReplyAttemptSeen(reply.attemptId)) {
+            Log.i(TAG, "Dropping duplicate delivery of reply attempt ${reply.attemptId} for notification ${reply.id}")
             return
         }
         val target = replyTargets[reply.id] ?: run {

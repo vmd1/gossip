@@ -13,7 +13,7 @@ class MediaCommandTest {
     fun `parses a play command with no seekMs`() {
         val payload = buildJsonObject { put("action", "play") }
         val command = MediaCommand.fromPayload(payload)
-        assertEquals(MediaCommand("play", null), command)
+        assertEquals(MediaCommand("play", null, null), command)
     }
 
     @Test
@@ -23,7 +23,7 @@ class MediaCommandTest {
             put("seekMs", 4200)
         }
         val command = MediaCommand.fromPayload(payload)
-        assertEquals(MediaCommand("pause", 4200), command)
+        assertEquals(MediaCommand("pause", 4200, null), command)
     }
 
     @Test
@@ -42,6 +42,21 @@ class MediaCommandTest {
     fun `returns null when action is not a string primitive`() {
         val payload = buildJsonObject { put("action", JsonNull) }
         assertNull(MediaCommand.fromPayload(payload))
+    }
+
+    @Test
+    fun `parses commandId when present`() {
+        val payload = buildJsonObject {
+            put("action", "next")
+            put("commandId", "abc-123")
+        }
+        assertEquals("abc-123", MediaCommand.fromPayload(payload)?.commandId)
+    }
+
+    @Test
+    fun `commandId is null when absent (older peer)`() {
+        val payload = buildJsonObject { put("action", "next") }
+        assertNull(MediaCommand.fromPayload(payload)?.commandId)
     }
 
     @Test

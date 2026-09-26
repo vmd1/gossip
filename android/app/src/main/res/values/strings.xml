@@ -3,5 +3,5 @@
     <string name="app_name">Gossip</string>
     <string name="sync_notification_channel">Gossip Sync</string>
     <string name="sync_notification_title">Gossip is running</string>
-    <string name="sync_notification_text">Watching for your paired Mac</string>
+    <string name="sync_notification_text">Watching for your paired devices</string>
 </resources>

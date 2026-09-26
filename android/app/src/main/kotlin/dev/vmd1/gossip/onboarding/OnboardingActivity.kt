@@ -338,7 +338,7 @@ private fun PermissionsStep(
     if (!notificationAccessGranted) {
         PermissionRow(
             "Notification mirroring",
-            "Mirrors this phone's notifications to your Mac.",
+            "Mirrors this phone's notifications to your paired devices.",
             onEnableNotificationAccess
         )
     }

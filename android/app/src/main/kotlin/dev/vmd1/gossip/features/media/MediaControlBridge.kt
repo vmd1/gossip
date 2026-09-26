@@ -26,6 +26,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 private const val TAG = "MediaControlBridge"
+private const val COMMAND_DEDUPE_CACHE_LIMIT = 64
 
 /** `type` values this unit registers in `schema/message-types.md`. */
 object MediaMessageType {
@@ -37,8 +38,13 @@ object MediaMessageType {
  * A parsed, validated `media.command` payload (mac -> android). Kept as a plain data
  * class, independent of the Android media framework, so parsing can be unit tested
  * without instrumentation.
+ *
+ * [commandId] identifies this command *instance* (a fresh UUID minted per Mac-side call,
+ * not per action — two distinct user presses of "next" get distinct ids) — see
+ * [MediaControlBridge.handleCommand], which keys its dedupe cache off it so a duplicate
+ * delivery of the same instance can't fire `skipToNext()`/`skipToPrevious()` twice.
  */
-data class MediaCommand(val action: String, val seekMs: Int?) {
+data class MediaCommand(val action: String, val seekMs: Int?, val commandId: String?) {
     companion object {
         const val ACTION_PLAY = "play"
         const val ACTION_PAUSE = "pause"
@@ -52,7 +58,8 @@ data class MediaCommand(val action: String, val seekMs: Int?) {
             val action = (payload["action"] as? JsonPrimitive)?.contentOrNull ?: return null
             if (action !in VALID_ACTIONS) return null
             val seekMs = (payload["seekMs"] as? JsonPrimitive)?.intOrNull
-            return MediaCommand(action, seekMs)
+            val commandId = (payload["commandId"] as? JsonPrimitive)?.contentOrNull
+            return MediaCommand(action, seekMs, commandId)
         }
     }
 }
@@ -118,6 +125,25 @@ class MediaControlBridge(
 
     private val commandHandler = EnvelopeHandler { envelope -> handleCommand(envelope) }
 
+    /** Bounded, size-capped cache of recently-handled `media.command` [MediaCommand.commandId]s.
+     *  `skipToNext()`/`skipToPrevious()` are not idempotent — a duplicate delivery (retry,
+     *  relay race, mesh dedupe-cache eviction) must not skip twice. `play`/`pause` are
+     *  naturally idempotent and don't strictly need this, but it's harmless to cover them
+     *  too. Mirrors `TransportManager.recentEnvelopeIds`/`recordSeen`. */
+    private val dedupeLock = Any()
+    private val recentCommandIds = ArrayDeque<String>()
+    private val recentCommandIdSet = HashSet<String>()
+
+    private fun recordCommandSeen(commandId: String): Boolean = synchronized(dedupeLock) {
+        if (!recentCommandIdSet.add(commandId)) return@synchronized false
+        recentCommandIds.addLast(commandId)
+        if (recentCommandIds.size > COMMAND_DEDUPE_CACHE_LIMIT) {
+            val evicted = recentCommandIds.removeFirst()
+            recentCommandIdSet.remove(evicted)
+        }
+        true
+    }
+
     /** Registers the `media.command` handler and starts observing active sessions. */
     fun start() {
         messageRouter.register(MediaMessageType.COMMAND, commandHandler)
@@ -157,6 +183,12 @@ class MediaControlBridge(
     private fun handleCommand(envelope: Envelope) {
         if (envelope.type != MediaMessageType.COMMAND) return
         val command = MediaCommand.fromPayload(envelope.payload) ?: return
+        // commandId is only absent from a peer running a build from before this field
+        // existed; nothing to dedupe against in that case, same as before this fix.
+        if (command.commandId != null && !recordCommandSeen(command.commandId)) {
+            Log.i(TAG, "Dropping duplicate delivery of media.command ${command.commandId}")
+            return
+        }
         val controls = activeController?.transportControls ?: return
         when (command.action) {
             MediaCommand.ACTION_PLAY -> controls.play()

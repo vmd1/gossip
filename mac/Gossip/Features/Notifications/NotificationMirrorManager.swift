@@ -216,7 +216,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     private func sendReply(id: String, text: String, to sourceDeviceId: String) {
         guard let transportManager else { return }
         do {
-            let payloadData = try JSONEncoder().encode(NotificationReplyPayload(id: id, text: text))
+            let payloadData = try JSONEncoder().encode(NotificationReplyPayload(id: id, text: text, attemptId: UUID().uuidString))
             let payloadJSON = try JSONDecoder().decode(JSONValue.self, from: payloadData)
             let envelope = Envelope(
                 type: "notification.reply",
@@ -336,9 +336,14 @@ struct NotificationRemovedPayload: Codable {
     let id: String
 }
 
+/// `attemptId` identifies this reply *attempt*, not the notification (`id` is reused
+/// across distinct replies to the same notification) — the Android receiver keys its
+/// recently-handled dedupe cache off it so a duplicate delivery can't fire the same
+/// real-world reply twice. See `NotificationListenerImpl.handleReply` (Android).
 struct NotificationReplyPayload: Codable {
     let id: String
     let text: String
+    let attemptId: String
 }
 
 struct NotificationDismissPayload: Codable {

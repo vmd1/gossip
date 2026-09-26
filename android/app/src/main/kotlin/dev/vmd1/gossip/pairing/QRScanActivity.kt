@@ -76,7 +76,7 @@ class QRScanActivity : ComponentActivity() {
                 bottomMargin = 64
             }
             setTextColor(android.graphics.Color.WHITE)
-            text = "Point the camera at the Mac's pairing QR code"
+            text = "Point the camera at the device's pairing QR code"
         }
         root.addView(previewView)
         root.addView(statusView)
@@ -114,8 +114,8 @@ class QRScanActivity : ComponentActivity() {
         lifecycleScope.launch {
             viewModel.uiState.collect { state ->
                 statusView.text = when (state) {
-                    is PairingUiState.Idle -> "Point the camera at the Mac's pairing QR code"
-                    is PairingUiState.Discovering -> "Looking for the Mac on your network…"
+                    is PairingUiState.Idle -> "Point the camera at the device's pairing QR code"
+                    is PairingUiState.Discovering -> "Looking for the device on your network…"
                     is PairingUiState.Handshaking -> "Connecting securely…"
                     is PairingUiState.Success -> "Paired with ${state.deviceName}"
                     is PairingUiState.Failed -> "Pairing failed: ${state.reason}"

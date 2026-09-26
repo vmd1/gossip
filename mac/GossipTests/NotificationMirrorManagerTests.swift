@@ -51,11 +51,12 @@ final class NotificationMirrorManagerTests: XCTestCase {
     }
 
     func testNotificationReplyPayloadEncodesExpectedFields() throws {
-        let reply = NotificationReplyPayload(id: "42", text: "On my way")
+        let reply = NotificationReplyPayload(id: "42", text: "On my way", attemptId: "attempt-1")
         let data = try JSONEncoder().encode(reply)
         let decoded = try JSONDecoder().decode(NotificationReplyPayload.self, from: data)
         XCTAssertEqual(decoded.id, "42")
         XCTAssertEqual(decoded.text, "On my way")
+        XCTAssertEqual(decoded.attemptId, "attempt-1")
     }
 
     func testReplyCategoryUsesTextInputAction() {

@@ -80,13 +80,14 @@ class NotificationPayloadsTest {
             recipientId = "device-android",
             payload = kotlinx.serialization.json.Json.encodeToJsonElement(
                 NotificationReplyPayload.serializer(),
-                NotificationReplyPayload(id = "notif-4", text = "On my way")
+                NotificationReplyPayload(id = "notif-4", text = "On my way", attemptId = "attempt-1")
             ).let { it as kotlinx.serialization.json.JsonObject }
         )
 
         val parsed = NotificationReplyPayload.fromPayload(replyEnvelope.payload)
         assertEquals("notif-4", parsed.id)
         assertEquals("On my way", parsed.text)
+        assertEquals("attempt-1", parsed.attemptId)
         assertTrue(envelope.type == MessageType.NOTIFICATION_POSTED) // sanity: unrelated envelope untouched
     }
 }
