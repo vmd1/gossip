@@ -7,10 +7,11 @@ end to end on real hardware** (this Mac + Samsung SM-S711B, Android 16): a real
 Mac-originated request over BLE GATT turned the phone's hotspot on, read back its real SSID and
 password via a Shizuku-brokered privileged call, encrypted them, and the Mac decrypted and
 recovered them correctly. See "Status as of this session" below for the full breakdown and the
-live-test transcript. Not yet built: `hotspot.auto_config`/the WAN-reachability probe (auto-
-hotspot-on-timeout), UI polish, and live-testing a couple of symmetric paths this session's
-hardware couldn't reach (Android-as-requester, Mac's own auto-connect actually joining a
-network) — see "Not yet built" at the end of this doc.
+live-test transcript. `hotspot.auto_config`/the WAN-reachability probe (auto-hotspot-on-timeout)
+is now also built (build-verified, not yet live-tested) — see its own section below. Not yet
+built: UI polish, and live-testing a couple of symmetric paths this session's hardware couldn't
+reach (Android-as-requester, Mac's own auto-connect actually joining a network) — see "Not yet
+built" at the end of this doc.
 
 ## Design decisions made
 
@@ -130,7 +131,7 @@ being a live risk.
 **Done (was a TODO here)**: `TetherHelper` no longer picks a mechanism from `Build.VERSION.SDK_INT`
 alone. It was refactored (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 1) into an ordered
 `MECHANISMS: List<HotspotToggleMechanism>` (`WriteSecureSettingsMechanism`,
-`ShizukuHotspotMechanism` — `android/app/src/main/kotlin/com/connect/features/hotspot/
+`ShizukuHotspotMechanism` — `android/app/src/main/kotlin/dev/vmd1/gossip/features/hotspot/
 HotspotToggleMechanism.kt`), tried in order by `setHotspotEnabled` unless a
 `preferredMechanismId` is supplied. Onboarding's "test hotspot methods" step (Phase 2 —
 `OnboardingActivity.kt`'s `HotspotTestStep`) calls the new `TetherHelper.probeMechanisms()` once,
@@ -365,14 +366,45 @@ just the debug hook) found five more real bugs, all fixed and live-reverified:
    the BLE bit's `enabled` value whenever the peer is currently BLE-nearby (fresher by construction)
    while keeping the mesh report's `ssid` either way.
 
+## WAN-reachability probe + auto-request-hotspot — built
+
+The last originally-scoped piece: `hotspot.auto_config` (the per-pair auto-request eligibility
+flag) plus the WAN-reachability probe that triggers an automatic `hotspot.toggle_request`, no tap
+needed.
+
+- **Probe**: a raw TCP connect to `1.1.1.1:443` (Cloudflare's resolver — a fixed IP, not a
+  hostname, so this never depends on DNS) every 20s, 5s timeout — `WanReachabilityMonitor.kt`
+  (Android, `java.net.Socket`) / `.swift` (Mac, `NWConnection`). ICMP ping was rejected per the
+  original design note: it needs a permission Android doesn't grant a normal app.
+- **Trigger**: fires once per offline episode (edge-triggered, mirroring
+  `LockOnLeaveManager`'s "once per transition" convention) once both at least 1 minute have
+  elapsed since the last successful probe *and* at least 3 consecutive probes have failed — the
+  consecutive-failure debounce exists so one dropped probe can't trip this alone, same
+  "don't be a hair-trigger" reasoning as `docs/ble-proximity-protocol.md`'s RSSI-loss timeout.
+- **Two separate opt-in settings**, both local-only, never sent over the wire (matching
+  `TrustedDevice.fallbackHost`'s precedent): a global per-device switch
+  (`OnboardingPreferences.autoRequestHotspotEnabled`, home screen/menu-bar toggle, off by
+  default) and a per-trusted-phone eligibility flag (`TrustedDevice.autoHotspotRequestEligible`,
+  a field on that row exactly like `lockOnLeaveEnabled`, toggled in that phone's settings
+  dialog/window). Both must be true for an auto-request to fire against a given phone.
+- **Candidate selection** (`AutoHotspotRequestManager` on both platforms): first nearby,
+  hotspot-available, not-already-on, eligible trusted phone wins — no fancier tiebreak. Mac/
+  Android-tablet use the existing continuous `BLEProximityMonitor.nearbyDeviceIds`; a requesting
+  Android **phone** (which has no continuous central-scan role) runs `startHotspotRequestScan`
+  for a bounded ~8s window instead, mirroring the manual phone-requests-from-phone path, then
+  tears the scan back down.
+- **On success**, the same `HotspotAutoConnect` join used by the manual button runs
+  automatically. **Deliberately no auto-shutoff**: once back online, the manual toggle/icon still
+  controls turning the hotspot off — auto-shutoff has its own false-negative risk (a brief WAN
+  blip yanking a hotspot out from under active use), and wasn't asked for.
+- **Cooldown**: 60s after each attempt (success or failure) before firing again, so a flapping
+  WAN connection can't spam requests; only one request is ever in flight at a time, same as the
+  manual button.
+- Build-verified on both platforms (`./gradlew :app:compileDebugKotlin`, `xcodebuild ... build`);
+  not yet live-tested against a real offline episode on real hardware.
+
 ## Not yet built
 
-- `hotspot.auto_config` — purely local per-pair configuration (a timeout duration), never sent
-  over the wire, similar to `TrustedDevice.fallbackHost` today. Needed for the WAN-probe-triggered
-  auto-hotspot below, not for the manual toggle (which has no timeout concept).
-- The WAN-reachability probe (auto-hotspot-on-offline-timeout) — lowest priority per this feature's
-  original handoff; the manual toggle above is "the more immediately useful half of this feature"
-  and has no dependency on this existing first.
 - Polished UI beyond the first cut above: a persistent in-progress indicator, retry affordance, and
   a UX decision on whether a received credential auto-connects silently or shows a "Connecting to
   <phone>'s hotspot..." transition state.

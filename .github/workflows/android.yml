@@ -2,7 +2,9 @@ name: Android
 
 on:
   push:
-    branches: [main]
+    # Every branch, not just main — see CLAUDE.md/the CI handoff: build+test must run on
+    # every push, with an additional release step gated separately (release.yml) on main
+    # specifically.
     paths:
       - "android/**"
       - "schema/**"
@@ -44,5 +46,5 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: connect-debug-apk
+          name: gossip-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk

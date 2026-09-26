@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.connect"
+    namespace = "dev.vmd1.gossip"
     // 36 (Android 16), not 34: needed at compile time only, for `@RefineAs(TetheringManager
     // .class)` in the vendored features/hotspot stub — that class isn't in the public SDK
     // jar until API 36. minSdk/targetSdk are unchanged; this doesn't affect runtime
@@ -15,7 +15,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.connect"
+        applicationId = "dev.vmd1.gossip"
         minSdk = 29
         targetSdk = 34
         versionCode = 1
