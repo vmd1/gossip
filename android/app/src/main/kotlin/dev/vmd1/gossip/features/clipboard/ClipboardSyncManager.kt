@@ -83,6 +83,19 @@ class ClipboardSyncManager(
     @Volatile
     private var lastRemoteSetImageData: ByteArray? = null
 
+    /** The last value *this device itself* successfully sent (as opposed to
+     *  [lastRemoteSetValue], which is the last value *received* from a peer). Without this,
+     *  the periodic resync in [resendCurrentClipboardIfNeeded] would re-broadcast a
+     *  locally-originated clipboard value on every tick forever — [lastRemoteSetValue] never
+     *  matches it, since that field is only ever set by [onRemoteUpdate]. Set synchronously
+     *  at the call site (not inside the send coroutine) so a resync tick that races an
+     *  in-flight send still sees it. */
+    @Volatile
+    private var lastSentText: String? = null
+
+    @Volatile
+    private var lastSentImageData: ByteArray? = null
+
     /** The last local text observed by *either* [onLocalClipChanged] (the focus-gated
      *  listener) or [runBackgroundPollLoop] (the Shizuku-driven poll) — shared so the same
      *  genuinely-new text isn't sent twice if both paths happen to observe it (e.g. the
@@ -155,12 +168,12 @@ class ClipboardSyncManager(
         val text = currentClipText()
         if (text != null) {
             lastObservedText = text
-            if (shouldSend(text, lastRemoteSetValue)) sendText(text)
+            if (shouldSend(text, lastRemoteSetValue, lastSentText)) sendText(text)
             return
         }
 
         val imageBytes = currentClipImagePng() ?: return
-        if (shouldSendImage(imageBytes, lastRemoteSetImageData)) sendImage(imageBytes)
+        if (shouldSendImage(imageBytes, lastRemoteSetImageData, lastSentImageData)) sendImage(imageBytes)
     }
 
     private fun onLocalClipChanged() {
@@ -171,7 +184,7 @@ class ClipboardSyncManager(
         }
 
         val imageBytes = currentClipImagePng() ?: return
-        if (!shouldSendImage(imageBytes, lastRemoteSetImageData)) return
+        if (!shouldSendImage(imageBytes, lastRemoteSetImageData, lastSentImageData)) return
         sendImage(imageBytes)
     }
 
@@ -192,11 +205,12 @@ class ClipboardSyncManager(
     private fun handleObservedText(text: String) {
         if (text == lastObservedText) return
         lastObservedText = text
-        if (!shouldSend(text, lastRemoteSetValue)) return
+        if (!shouldSend(text, lastRemoteSetValue, lastSentText)) return
         sendText(text)
     }
 
     private fun sendText(text: String) {
+        lastSentText = text
         scope.launch {
             runCatching {
                 transportManager.send(
@@ -218,6 +232,7 @@ class ClipboardSyncManager(
     }
 
     private fun sendImage(data: ByteArray) {
+        lastSentImageData = data
         scope.launch {
             runCatching {
                 val envelope = Envelope(
@@ -298,13 +313,21 @@ class ClipboardSyncManager(
         /**
          * Pure loop-suppression check, exposed for unit testing: returns `false` when
          * [newValue] matches [lastRemoteSetValue] (an echo of an update we just applied
-         * ourselves, not a genuine local copy), `true` otherwise.
+         * ourselves, not a genuine local copy) *or* [lastSentValue] (this device already
+         * broadcast this exact value — otherwise the periodic resync would re-send an
+         * unchanged, locally-originated value on every tick forever, since
+         * [lastRemoteSetValue] alone never catches that case), `true` otherwise.
          */
-        fun shouldSend(newValue: String, lastRemoteSetValue: String?): Boolean =
-            newValue != lastRemoteSetValue
+        fun shouldSend(newValue: String, lastRemoteSetValue: String?, lastSentValue: String? = null): Boolean =
+            newValue != lastRemoteSetValue && newValue != lastSentValue
 
         /** Same loop-suppression check as [shouldSend], for image content. */
-        fun shouldSendImage(newImageData: ByteArray, lastRemoteSetImageData: ByteArray?): Boolean =
-            lastRemoteSetImageData == null || !newImageData.contentEquals(lastRemoteSetImageData)
+        fun shouldSendImage(
+            newImageData: ByteArray,
+            lastRemoteSetImageData: ByteArray?,
+            lastSentImageData: ByteArray? = null
+        ): Boolean =
+            (lastRemoteSetImageData == null || !newImageData.contentEquals(lastRemoteSetImageData)) &&
+                (lastSentImageData == null || !newImageData.contentEquals(lastSentImageData))
     }
 }
