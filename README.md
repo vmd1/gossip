@@ -8,7 +8,7 @@ Gossip is open source under the [Apache 2.0 license](LICENSE) — issues and PRs
 
 Mac ↔ Android continuity app (formerly "Connect"): notification mirroring (with inline reply),
 clipboard sync, Do Not Disturb/Focus sync, media/Now Playing remote control, screen mirroring, and
-multi-device mesh trust (pair once, propagate everywhere). See `CONTINUITY_FEATURES.md` for the
+multi-device mesh trust (pair once, propagate everywhere). See `ROADMAP.md` for the
 full feature list mapped against Apple Continuity, and `docs/architecture.md` for how the two apps
 fit together.
 

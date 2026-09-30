@@ -1,3 +1,14 @@
+> **Direction change (2026-09-30):** the plan is no longer a custom capture server we write and
+> `adb push`. Instead, bundle the upstream **scrcpy server** jar (Genymobile/scrcpy, Apache 2.0,
+> pinned to one version) in the Android app and launch it on the phone via **Shizuku** (already a
+> Gossip prerequisite for Instant Hotspot and clipboard read) with `app_process` and `CLASSPATH`
+> pointing at the jar. The Gossip Android app connects to the server's local socket and bridges its
+> video and control streams to the viewing device over a WebSocket, so the viewer needs no `adb` or
+> `scrcpy` and implements only the client side of scrcpy's protocol. See "On-device screen
+> mirroring" in `ROADMAP.md`. The findings below (the `MediaProjection` consent-dialog
+> result, `app_process`/dalvik-cache behavior) still apply, and the scrcpy-style `CLASSPATH` launch
+> they say is untested is now the first thing to verify from a Shizuku process.
+
 # On-device capture server (fast-follow, not implemented in this unit)
 
 This directory is a placeholder for scrcpy-style approach (a) from the Wave 2
