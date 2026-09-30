@@ -30,6 +30,15 @@ final class ClipboardSyncManager: ObservableObject {
     private var lastRemoteSetValue: String?
     private var lastRemoteSetImageData: Data?
 
+    /// The last value *this Mac itself* successfully sent (as opposed to
+    /// `lastRemoteSetValue`, which is the last value *received* from a peer). Without
+    /// this, the periodic resync in `sendCurrentPasteboardContentIfNeeded` would
+    /// re-broadcast a locally-originated pasteboard value on every tick forever —
+    /// `lastRemoteSetValue` alone never matches it, since that's only ever set by
+    /// `handleIncoming`/`handleIncomingImage`.
+    private var lastSentValue: String?
+    private var lastSentImageData: Data?
+
     /// Periodic-resync interval — matches `dnd.update`/`trust.roster_update`/
     /// `lock_on_leave.config`'s existing ~60s self-healing cadence.
     private static let resyncInterval: TimeInterval = 60
@@ -117,17 +126,18 @@ final class ClipboardSyncManager: ObservableObject {
         // Text takes priority when both are somehow present, matching pre-image
         // behavior exactly for plain-text copies.
         if let text = pasteboard.string(forType: .string) {
-            guard Self.shouldSend(newValue: text, lastRemoteSetValue: lastRemoteSetValue) else { return }
+            guard Self.shouldSend(newValue: text, lastRemoteSetValue: lastRemoteSetValue, lastSentValue: lastSentValue) else { return }
             sendClipboardUpdate(text: text)
             return
         }
 
         guard let pngData = Self.imagePNGData(from: pasteboard) else { return }
-        guard Self.shouldSend(newImageData: pngData, lastRemoteSetImageData: lastRemoteSetImageData) else { return }
+        guard Self.shouldSend(newImageData: pngData, lastRemoteSetImageData: lastRemoteSetImageData, lastSentImageData: lastSentImageData) else { return }
         sendClipboardImage(data: pngData)
     }
 
     private func sendClipboardUpdate(text: String) {
+        lastSentValue = text
         let envelope = Envelope(
             type: "clipboard.update",
             senderId: identity.deviceId,
@@ -142,6 +152,7 @@ final class ClipboardSyncManager: ObservableObject {
     }
 
     private func sendClipboardImage(data: Data) {
+        lastSentImageData = data
         let envelope = Envelope(
             type: "clipboard.update",
             senderId: identity.deviceId,
@@ -188,17 +199,20 @@ final class ClipboardSyncManager: ObservableObject {
 
     /// Returns whether a newly-observed pasteboard value should be sent over the
     /// wire, given the last value this manager itself wrote to the pasteboard in
-    /// response to a remote update. Returns `false` when `newValue` is exactly
-    /// that echoed value (suppressing the infinite-ping-pong loop), `true`
-    /// otherwise (a genuine local copy, or the very first observation).
-    static func shouldSend(newValue: String, lastRemoteSetValue: String?) -> Bool {
-        newValue != lastRemoteSetValue
+    /// response to a remote update (`lastRemoteSetValue`) and the last value this
+    /// manager itself already sent (`lastSentValue`). Returns `false` when `newValue`
+    /// matches either (an echoed remote update, or a value the periodic resync would
+    /// otherwise re-broadcast forever since `lastRemoteSetValue` alone never catches a
+    /// locally-originated value), `true` otherwise (a genuine local copy, or the very
+    /// first observation).
+    static func shouldSend(newValue: String, lastRemoteSetValue: String?, lastSentValue: String? = nil) -> Bool {
+        newValue != lastRemoteSetValue && newValue != lastSentValue
     }
 
-    /// Same loop-suppression check as `shouldSend(newValue:lastRemoteSetValue:)`, for
-    /// image content.
-    static func shouldSend(newImageData: Data, lastRemoteSetImageData: Data?) -> Bool {
-        newImageData != lastRemoteSetImageData
+    /// Same loop-suppression check as `shouldSend(newValue:lastRemoteSetValue:lastSentValue:)`,
+    /// for image content.
+    static func shouldSend(newImageData: Data, lastRemoteSetImageData: Data?, lastSentImageData: Data? = nil) -> Bool {
+        newImageData != lastRemoteSetImageData && newImageData != lastSentImageData
     }
 
     // MARK: - Image handling (pure enough to unit test the byte-level parts; pasteboard read is not)
