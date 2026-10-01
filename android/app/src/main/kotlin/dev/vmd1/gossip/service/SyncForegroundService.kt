@@ -205,7 +205,9 @@ class SyncForegroundService : Service() {
             messageRouter = messageRouter,
             ringer = dev.vmd1.gossip.features.find.AlarmRinger(applicationContext),
             scope = serviceScope,
-            onRingingChanged = { ringing -> showRingNotification(ringing) }
+            onRingingChanged = { ringing -> showRingNotification(ringing) },
+            selfId = identity.deviceId,
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } }
         )
         ringManager.start()
         registerReceiver(
@@ -603,6 +605,8 @@ class SyncForegroundService : Service() {
     fun bleProximityMonitor(): BLEProximityMonitor = bleProximityMonitor
 
     fun hotspotStateManager(): dev.vmd1.gossip.features.hotspot.HotspotStateManager = hotspotStateManager
+
+    fun ringManager(): dev.vmd1.gossip.features.find.RingManager = ringManager
 
     fun batterySyncManager(): dev.vmd1.gossip.features.battery.BatterySyncManager = batterySyncManager
 

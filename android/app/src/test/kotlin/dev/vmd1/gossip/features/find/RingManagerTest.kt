@@ -81,4 +81,61 @@ class RingManagerTest {
         open.dispatch(Envelope(type = MessageType.DEVICE_RING, senderId = "p"))  // no payload
         assertEquals(0, ringer.starts)
     }
+
+    private fun ringState(from: String, ringing: Boolean) = Envelope(
+        type = MessageType.DEVICE_RING_STATE, senderId = from, recipientId = "me",
+        payload = kotlinx.serialization.json.buildJsonObject { put("ringing", kotlinx.serialization.json.JsonPrimitive(ringing)) }
+    )
+
+    private fun states(sent: List<Envelope>) = sent.filter { it.type == MessageType.DEVICE_RING_STATE }
+        .map { it.recipientId to it.payload["ringing"].toString() }
+
+    @Test
+    fun `reports ring_state to the requester when ringing starts and stops, however it stops`() = runTest {
+        val router = MessageRouter(); val sent = mutableListOf<Envelope>()
+        val scope = TestScope(testScheduler)
+        val m = RingManager(router, FakeRinger(), scope, autoStopMs = 1_000, selfId = "me", send = { sent += it }); m.start()
+        router.dispatch(env("start", "a"))                       // requester is "peer"
+        m.stopRinging()                                          // local Stop
+        assertEquals(listOf("peer" to "true", "peer" to "false"), states(sent))
+        sent.clear()
+        router.dispatch(env("start", "b")); scope.advanceTimeBy(1_001); scope.testScheduler.runCurrent()   // auto-stop
+        assertEquals(listOf("peer" to "true", "peer" to "false"), states(sent))
+        sent.clear()
+        router.dispatch(env("start", "c")); router.dispatch(env("stop", "d"))                              // stop message
+        assertEquals(listOf("peer" to "true", "peer" to "false"), states(sent))
+        sent.clear()
+        router.dispatch(env("stop", "e")); router.dispatch(env("start", "c"))   // no-ops send nothing
+        assertEquals(0, sent.size)
+        m.shutdown()
+    }
+
+    @Test
+    fun `toggleRing sends start then stop and tracks the ringing peer`() = runTest {
+        val router = MessageRouter(); val sent = mutableListOf<Envelope>()
+        val m = RingManager(router, FakeRinger(), TestScope(testScheduler), selfId = "me", send = { sent += it }); m.start()
+        m.toggleRing("phone")
+        assertEquals(setOf("phone"), m.ringingPeers.value)
+        assertEquals("start", sent.last().payload["action"].toString().trim('"'))
+        assertEquals("phone", sent.last().recipientId)
+        m.toggleRing("phone")
+        assertEquals(emptySet<String>(), m.ringingPeers.value)
+        assertEquals("stop", sent.last().payload["action"].toString().trim('"'))
+        m.shutdown()
+    }
+
+    @Test
+    fun `peer ring_state updates the button state and a lost report expires`() = runTest {
+        val router = MessageRouter()
+        val scope = TestScope(testScheduler)
+        val m = RingManager(router, FakeRinger(), scope, selfId = "me"); m.start()
+        router.dispatch(ringState("phone", true)); router.dispatch(ringState("phone", true))
+        assertEquals(setOf("phone"), m.ringingPeers.value)
+        router.dispatch(ringState("phone", false)); router.dispatch(ringState("phone", false))
+        assertEquals(emptySet<String>(), m.ringingPeers.value)
+        router.dispatch(ringState("tablet", true))                // report of "stopped" never arrives
+        scope.advanceTimeBy(RingManager.PEER_RINGING_EXPIRY_MS + 1); scope.testScheduler.runCurrent()
+        assertEquals(emptySet<String>(), m.ringingPeers.value)
+        m.shutdown()
+    }
 }

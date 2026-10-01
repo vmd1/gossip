@@ -45,6 +45,57 @@ final class RingManagerTests: XCTestCase {
     }
 }
 
+final class RingStateTests: XCTestCase {
+    private func ring(_ action: String, _ id: String) -> Envelope {
+        Envelope(type: "device.ring", senderId: "peer", recipientId: "me", payload: RingManager.payload(action: action, ringId: id))
+    }
+    private func ringState(_ from: String, _ ringing: Bool) -> Envelope {
+        Envelope(type: "device.ring_state", senderId: from, recipientId: "me", payload: .object(["ringing": .bool(ringing)]))
+    }
+    private func flat(_ sent: [Envelope]) -> [String] {
+        sent.map { "\($0.type)>\($0.recipientId ?? "")" + ($0.payload["ringing"]?.boolValue.map { ":\($0)" } ?? ":" + ($0.payload["action"]?.stringValue ?? "")) }
+    }
+
+    func testReportsRingStateToRequesterHoweverRingStops() {
+        var sent: [Envelope] = []
+        let m = RingManager(transportManager: TransportManager(), ringer: FakeRinger(), autoStopAfter: 0.1, showsAlert: false, sendEnvelope: { sent.append($0) })
+        m.handle(ring("start", "a")); m.stopRinging()               // local Stop
+        XCTAssertEqual(flat(sent), ["device.ring_state>peer:true", "device.ring_state>peer:false"])
+        sent.removeAll()
+        m.handle(ring("start", "b")); m.handle(ring("stop", "c"))   // stop message
+        XCTAssertEqual(flat(sent), ["device.ring_state>peer:true", "device.ring_state>peer:false"])
+        sent.removeAll()
+        m.handle(ring("stop", "d")); m.handle(ring("start", "b"))   // no-ops send nothing
+        XCTAssertTrue(sent.isEmpty)
+        m.handle(ring("start", "e"))                                // auto-stop
+        let done = expectation(description: "auto-stop"); DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(flat(sent), ["device.ring_state>peer:true", "device.ring_state>peer:false"])
+    }
+
+    func testToggleRingStartsThenStopsAndTracksPeer() {
+        var sent: [Envelope] = []
+        let m = RingManager(transportManager: TransportManager(), ringer: FakeRinger(), showsAlert: false, sendEnvelope: { sent.append($0) })
+        m.toggleRing("phone")
+        XCTAssertEqual(m.ringingPeers, ["phone"]); XCTAssertEqual(sent.last?.payload["action"]?.stringValue, "start")
+        m.toggleRing("phone")
+        XCTAssertTrue(m.ringingPeers.isEmpty); XCTAssertEqual(sent.last?.payload["action"]?.stringValue, "stop")
+        XCTAssertEqual(sent.last?.recipientId, "phone")
+    }
+
+    func testPeerRingStateUpdatesButtonAndLostReportExpires() {
+        let m = RingManager(transportManager: TransportManager(), ringer: FakeRinger(), peerRingingExpiry: 0.1, showsAlert: false, sendEnvelope: { _ in })
+        m.handleRingState(ringState("phone", true)); m.handleRingState(ringState("phone", true))
+        XCTAssertEqual(m.ringingPeers, ["phone"])
+        m.handleRingState(ringState("phone", false)); m.handleRingState(ringState("phone", false))
+        XCTAssertTrue(m.ringingPeers.isEmpty)
+        m.handleRingState(ringState("tablet", true))                // the "stopped" report never arrives
+        let done = expectation(description: "expiry"); DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
+        wait(for: [done], timeout: 2)
+        XCTAssertTrue(m.ringingPeers.isEmpty)
+    }
+}
+
 final class BatterySyncManagerTests: XCTestCase {
     private func update(_ from: String, _ level: Int, _ charging: Bool) -> Envelope {
         Envelope(type: "battery.update", senderId: from, broadcast: true,

@@ -4,11 +4,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -66,6 +66,29 @@ private val DeviceType.icon: ImageVector
 
 private const val HOTSPOT_OVERRIDE_MS = 30_000L
 
+/** One line under the device name: battery icon + level, then "Nearby" when in Bluetooth range
+ *  (same layout as the Mac's device rows). Draws nothing when there is neither. */
+@Composable
+private fun DeviceSubtitle(battery: BatteryState?, nearby: Boolean, modifier: Modifier = Modifier) {
+    if (battery == null && !nearby) return
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (battery != null) {
+            val low = battery.level <= BatterySyncManager.LOW_THRESHOLD && !battery.isCharging
+            val tint = if (low) MaterialTheme.colorScheme.error else muted
+            Icon(
+                imageVector = batteryIcon(battery),
+                contentDescription = "Battery ${battery.level}%" + if (battery.isCharging) ", charging" else "",
+                tint = tint,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(" ${battery.level}%", style = MaterialTheme.typography.bodySmall, color = tint)
+        }
+        if (battery != null && nearby) Text("  ·  ", style = MaterialTheme.typography.bodySmall, color = muted)
+        if (nearby) Text("Nearby", style = MaterialTheme.typography.bodySmall, color = muted)
+    }
+}
+
 /** Battery glyph for a reported level: charging bolt, low-battery alert, else a level-matched bar icon. */
 private fun batteryIcon(b: BatteryState): ImageVector = when {
     b.isCharging -> Icons.Default.BatteryChargingFull
@@ -96,46 +119,30 @@ fun PairedDevicesScreen(
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
     hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
     batteryStates: Map<String, BatteryState> = emptyMap(),
-    onRingDevice: (deviceId: String, start: Boolean) -> Unit = { _, _ -> }
+    ringingPeers: Set<String> = emptySet(),
+    onToggleRing: (deviceId: String) -> Unit = {}
 ) {
     Column {
         Text("Paired devices", style = MaterialTheme.typography.titleMedium)
         if (devices.isEmpty()) {
-            Text("No devices paired yet.")
+            Text("No devices paired yet. Open Settings to pair one.")
             return
         }
         LazyColumn {
             items(devices, key = { it.deviceId }) { device ->
+                Column {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = device.deviceType.icon,
                             contentDescription = device.deviceType.wireValue,
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(device.deviceName)
-                        batteryStates[device.deviceId]?.let { b ->
-                            val low = b.level <= BatterySyncManager.LOW_THRESHOLD && !b.isCharging
-                            val tint = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                            Icon(
-                                imageVector = batteryIcon(b),
-                                contentDescription = "Battery ${b.level}%" + if (b.isCharging) ", charging" else "",
-                                tint = tint,
-                                modifier = Modifier.padding(start = 8.dp).size(18.dp)
-                            )
-                            Text("${b.level}%", style = MaterialTheme.typography.bodySmall, color = tint)
-                        }
-                        if (device.deviceId in nearbyDeviceIds) {
-                            Icon(
-                                imageVector = Icons.Default.Bluetooth,
-                                contentDescription = "Nearby over Bluetooth",
-                                modifier = Modifier.padding(start = 8.dp)
-                            )
-                        }
+                        Text(device.deviceName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     }
                     // Grouped in their own Row (not two more top-level children of the
                     // outer SpaceBetween Row) — real layout bug, confirmed live: with
@@ -143,22 +150,13 @@ fun PairedDevicesScreen(
                     // in the middle of the row instead of keeping it against the right
                     // edge next to the settings button.
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        var confirmRing by remember(device.deviceId) { mutableStateOf(false) }
-                        IconButton(onClick = { confirmRing = true }) {
-                            Icon(Icons.Default.NotificationsActive, contentDescription = "Ring ${device.deviceName}")
-                        }
-                        if (confirmRing) {
-                            AlertDialog(
-                                onDismissRequest = { confirmRing = false },
-                                title = { Text("Ring ${device.deviceName}?") },
-                                text = { Text("It will play a loud alarm, even if silenced, until stopped or after 30 seconds.") },
-                                confirmButton = { TextButton(onClick = { onRingDevice(device.deviceId, true); confirmRing = false }) { Text("Ring") } },
-                                dismissButton = {
-                                    Row {
-                                        TextButton(onClick = { onRingDevice(device.deviceId, false); confirmRing = false }) { Text("Stop ringing") }
-                                        TextButton(onClick = { confirmRing = false }) { Text("Cancel") }
-                                    }
-                                }
+                        // Press to ring; blue while it's ringing; press again to stop.
+                        val ringing = device.deviceId in ringingPeers
+                        IconButton(onClick = { onToggleRing(device.deviceId) }) {
+                            Icon(
+                                Icons.Default.NotificationsActive,
+                                contentDescription = if (ringing) "Stop ringing ${device.deviceName}" else "Ring ${device.deviceName}",
+                                tint = if (ringing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                         if (device.deviceType == DeviceType.ANDROID_PHONE) {
@@ -204,6 +202,12 @@ fun PairedDevicesScreen(
                             onSetLockOnLeave = onSetLockOnLeave
                         )
                     }
+                }
+                DeviceSubtitle(
+                    battery = batteryStates[device.deviceId],
+                    nearby = device.deviceId in nearbyDeviceIds,
+                    modifier = Modifier.padding(start = 32.dp).offset(y = (-10).dp)
+                )
                 }
             }
         }

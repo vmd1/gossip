@@ -1,8 +1,5 @@
 package dev.vmd1.gossip.ui
 
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,28 +22,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.vmd1.gossip.features.settings.Feature
 import dev.vmd1.gossip.features.settings.FeatureSettings
-import dev.vmd1.gossip.ui.theme.ConnectTheme
 
 /**
- * Per-feature on/off switches for *this* device (all on by default). Turning one off makes this
- * device stop sending and receiving that feature entirely — see [FeatureSettings].
+ * The Settings page: setup actions (via [content]) followed by per-feature on/off switches for *this*
+ * device (all on by default). Turning a feature off makes this device stop sending and receiving it
+ * entirely — see [FeatureSettings].
  */
-class SettingsActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val settings = FeatureSettings.getInstance(applicationContext)
-        setContent {
-            ConnectTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    SettingsScreen(settings = settings, onBack = { finish() })
-                }
-            }
-        }
-    }
-}
-
 @Composable
-fun SettingsScreen(settings: FeatureSettings, onBack: () -> Unit) {
+fun SettingsScreen(
+    settings: FeatureSettings,
+    onBack: () -> Unit,
+    /** Setup actions shown above the feature switches (pairing, permissions, ...). */
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {}
+) {
     val disabled by settings.disabled.collectAsState()
     Scaffold { padding ->
         Column(
@@ -58,6 +46,8 @@ fun SettingsScreen(settings: FeatureSettings, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text("Settings", style = MaterialTheme.typography.headlineMedium)
+            content()
+            Text("Features", style = MaterialTheme.typography.titleMedium)
             Text(
                 "Turning a feature off stops this device from sending or receiving it at all. " +
                     "Your other devices keep their own settings.",
@@ -79,7 +69,7 @@ fun SettingsScreen(settings: FeatureSettings, onBack: () -> Unit) {
                     )
                 }
             }
-            TextButton(onClick = onBack) { Text("Done") }
+            TextButton(onClick = onBack) { Text("Back") }
         }
     }
 }

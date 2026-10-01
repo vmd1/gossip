@@ -19,7 +19,6 @@ struct MenuBarView: View {
     @State private var settingsWindow: SettingsWindow?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
     @State private var hotspotGattClients: [String: HotspotGattClient] = [:]
-    @State private var hotspotStatusMessages: [String: String] = [:]
     @State private var activeHotspotAutoConnect: HotspotAutoConnect?
     /// The hotspot state the phone itself just confirmed over GATT. The BLE advertisement bit and the
     /// mesh report both lag a real toggle by several seconds, so the icon trusts this until the
@@ -73,55 +72,39 @@ struct MenuBarView: View {
                             deviceActionButtons(for: device)
                         }
                         deviceSubtitleRow(for: device)
-                        if let status = hotspotStatusMessages[device.deviceId] {
-                            Text(status)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 26)
-                        }
                     }
                 }
             }
 
             Divider()
 
-            Button("Settings…") {
-                if let existing = settingsWindow, existing.isVisible {
-                    existing.makeKeyAndOrderFront(nil)
-                } else {
-                    let window = SettingsWindow(
-                        featureSettings: featureSettings,
-                        pairingViewModel: pairingViewModel,
-                        notificationMirrorManager: notificationMirrorManager
-                    )
-                    settingsWindow = window
-                    window.makeKeyAndOrderFront(nil)
+            HStack {
+                Button("Quit Gossip") {
+                    NSApplication.shared.terminate(nil)
                 }
-                NSApp.activate(ignoringOtherApps: true)
-            }
-
-            Button("Quit Gossip") {
-                NSApplication.shared.terminate(nil)
+                Spacer()
+                Button {
+                    if let existing = settingsWindow, existing.isVisible {
+                        existing.makeKeyAndOrderFront(nil)
+                    } else {
+                        let window = SettingsWindow(
+                            featureSettings: featureSettings,
+                            pairingViewModel: pairingViewModel,
+                            notificationMirrorManager: notificationMirrorManager
+                        )
+                        settingsWindow = window
+                        window.makeKeyAndOrderFront(nil)
+                    }
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Settings…")
             }
         }
         .padding(12)
         .frame(width: 300)
-    }
-
-    /// Asks before ringing — it plays a loud alarm on the other device.
-    private func confirmRing(_ device: TrustedDevice) {
-        let alert = NSAlert()
-        alert.messageText = "Ring \(device.deviceName)?"
-        alert.informativeText = "It will play a loud alarm, even if silenced, until stopped or after 30 seconds."
-        alert.addButton(withTitle: "Ring")
-        alert.addButton(withTitle: "Stop Ringing")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: ringManager.sendRing(to: device.deviceId, start: true)
-        case .alertSecondButtonReturn: ringManager.sendRing(to: device.deviceId, start: false)
-        default: break
-        }
     }
 
     /// Merges the two hotspot-state sources: `hotspot.state_update`'s mesh report
@@ -154,12 +137,14 @@ struct MenuBarView: View {
         return HotspotState(enabled: bleOn, ssid: nil)
     }
 
+    /// Requests `enable` from the phone over BLE GATT, then joins its network on a successful "on".
+    /// Deliberately silent in the UI — the hotspot icon's own state is the feedback — but failures
+    /// are written to the BLE debug log.
     private func requestHotspot(for device: TrustedDevice, enable: Bool) {
         guard let peripheralId = bleProximityMonitor.peripheralIdentifierByDeviceId[device.deviceId] else {
-            hotspotStatusMessages[device.deviceId] = "Device is no longer nearby"
+            BLEProximityMonitor.debugLog("requestHotspot: \(device.deviceName) is no longer nearby")
             return
         }
-        hotspotStatusMessages[device.deviceId] = enable ? "Requesting…" : "Requesting off…"
         let client = HotspotGattClient()
         hotspotGattClients[device.deviceId] = client
         client.requestToggle(providerId: device.deviceId, peripheralIdentifier: peripheralId, enable: enable) { result in
@@ -167,24 +152,14 @@ struct MenuBarView: View {
                 hotspotGattClients[device.deviceId] = nil
                 switch result {
                 case .failed(let reason):
-                    hotspotStatusMessages[device.deviceId] = "Failed: \(reason)"
+                    BLEProximityMonitor.debugLog("requestHotspot failed: \(reason)")
                 case .success(let enabled, let ssid, let passphrase):
                     hotspotOverrides[device.deviceId] = (enabled, Date())
-                    if !enable {
-                        hotspotStatusMessages[device.deviceId] = enabled ? "That device kept its hotspot on" : "Hotspot turned off"
-                    } else if !enabled {
-                        hotspotStatusMessages[device.deviceId] = "That device declined the request"
-                    } else if let ssid, let passphrase {
-                        hotspotStatusMessages[device.deviceId] = "Connecting to \(ssid)…"
-                        let autoConnect = HotspotAutoConnect()
-                        activeHotspotAutoConnect = autoConnect
-                        autoConnect.connect(ssid: ssid, passphrase: passphrase) { connected in
-                            DispatchQueue.main.async {
-                                hotspotStatusMessages[device.deviceId] = connected ? "Connected to \(ssid)" : "Hotspot on — could not auto-connect, join manually"
-                            }
-                        }
-                    } else {
-                        hotspotStatusMessages[device.deviceId] = "Hotspot on — connect manually"
+                    guard enable, enabled, let ssid, let passphrase else { return }
+                    let autoConnect = HotspotAutoConnect()
+                    activeHotspotAutoConnect = autoConnect
+                    autoConnect.connect(ssid: ssid, passphrase: passphrase) { connected in
+                        if !connected { BLEProximityMonitor.debugLog("requestHotspot: could not auto-connect to \(ssid)") }
                     }
                 }
             }
@@ -197,9 +172,12 @@ struct MenuBarView: View {
     private func deviceActionButtons(for device: TrustedDevice) -> some View {
         HStack(spacing: 8) {
             if featureSettings.isEnabled(.findDevice) {
-                Button { confirmRing(device) } label: { Image(systemName: "bell.and.waves.left.and.right") }
+                // Press to ring; blue while it's ringing; press again to stop.
+                let ringing = ringManager.ringingPeers.contains(device.deviceId)
+                Button { ringManager.toggleRing(device.deviceId) } label: { Image(systemName: "bell.and.waves.left.and.right") }
                     .buttonStyle(.borderless)
-                    .help("Ring \(device.deviceName)")
+                    .foregroundStyle(ringing ? Color.blue : Color.secondary)
+                    .help(ringing ? "Stop ringing \(device.deviceName)" : "Ring \(device.deviceName)")
             }
             if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
                 mirrorButton(for: device)
@@ -255,19 +233,22 @@ struct MenuBarView: View {
     /// requests the opposite of the currently known state.
     @ViewBuilder
     private func hotspotButton(for device: TrustedDevice, state: HotspotState) -> some View {
-        let isInFlight = hotspotGattClients[device.deviceId] != nil
-        Button {
-            requestHotspot(for: device, enable: !state.enabled)
-        } label: {
-            // "personalhotspot.slash" isn't a real SF Symbol — off state is conveyed by tint alone.
-            Image(systemName: "personalhotspot")
+        if hotspotGattClients[device.deviceId] != nil {
+            // Request in flight: a spinner, like the screen-mirroring button while it starts.
+            ProgressView().controlSize(.small)
+        } else {
+            Button {
+                requestHotspot(for: device, enable: !state.enabled)
+            } label: {
+                // "personalhotspot.slash" isn't a real SF Symbol — off state is conveyed by tint alone.
+                Image(systemName: "personalhotspot")
+            }
+            .buttonStyle(.borderless)
+            // On the `Button` itself (not the inner `Image`): `.borderless` tinting overrides the latter.
+            // Explicit `.blue`, not `Color.accentColor`, which can be set to gray in System Settings.
+            .foregroundStyle(state.enabled ? Color.blue : Color.secondary)
+            .help(state.enabled ? "Instant Hotspot is on\(state.ssid.map { " (\($0))" } ?? "") — click to turn off" : "Instant Hotspot is off — click to request")
         }
-        .buttonStyle(.borderless)
-        // On the `Button` itself (not the inner `Image`): `.borderless` tinting overrides the latter.
-        // Explicit `.blue`, not `Color.accentColor`, which can be set to gray in System Settings.
-        .foregroundStyle(state.enabled ? Color.blue : Color.secondary)
-        .disabled(isInFlight)
-        .help(state.enabled ? "Instant Hotspot is on\(state.ssid.map { " (\($0))" } ?? "") — click to turn off" : "Instant Hotspot is off — click to request")
     }
 
     private func lowBattery(_ device: TrustedDevice) -> Bool {
