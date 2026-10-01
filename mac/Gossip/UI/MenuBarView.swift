@@ -15,8 +15,6 @@ struct MenuBarView: View {
 
     @State private var pairingWindow: PairingWindow?
     @State private var dndSetupWindow: DNDSetupWindow?
-    @State private var adbPairingWindow: ADBPairingWindow?
-    @State private var adbPairingCancellable: AnyCancellable?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
     @State private var onboardingWindow: OnboardingWindow?
     @State private var hotspotGattClients: [String: HotspotGattClient] = [:]
@@ -30,6 +28,13 @@ struct MenuBarView: View {
 
             if notificationMirrorManager.authorizationStatus == .denied {
                 notificationsDisabledRow
+            }
+
+            if let mirrorError = screenMirrorController.lastError {
+                Text(mirrorError)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let nowPlaying = mediaControlManager.nowPlaying {
@@ -157,7 +162,7 @@ struct MenuBarView: View {
     /// Per-device "Mirror"/"Stop Mirroring" button shown next to "Forget" in the
     /// Trusted Devices list, so the user picks *which* Android device to mirror now
     /// that more than one can be trusted at once — `ScreenMirrorController` only ever
-    /// runs one `scrcpy` session at a time, so every other row's button is disabled
+    /// runs one mirroring session at a time, so every other row's button is disabled
     /// while one is active.
     @ViewBuilder
     private func mirrorButton(for device: TrustedDevice) -> some View {
@@ -298,74 +303,14 @@ struct MenuBarView: View {
         .buttonStyle(.borderless)
     }
 
-    /// Before launching the mirroring pipeline, makes sure `adb` already sees an
-    /// authorized device matching *this specific* trusted device (preferring one
-    /// whose `ip:port` adb serial matches this device's known Connect transport IP,
-    /// so picking "Mirror" on the tablet doesn't accidentally mirror the phone);
-    /// if not, opens the QR wireless-pairing flow first and only starts mirroring
-    /// once it reaches `.connected`. Either way, mirroring itself is just `scrcpy`
-    /// launched as a subprocess — it opens and owns its own window, Connect doesn't
-    /// render anything itself. See `ScreenMirrorController`.
+    /// Starts on-device screen mirroring for `device`: negotiated over the mesh, streamed from the
+    /// phone over its WebSocket bridge, shown in Gossip's own window. See `ScreenMirrorController`.
     private func startMirroring(for device: TrustedDevice) {
-        sendScreenSignal(type: "screen.start", to: device.deviceId)
-        guard let adbPath = ADBClient.resolveADBPath() else {
-            screenMirrorController.start(deviceId: device.deviceId) // surfaces the "adb/scrcpy not found" failure state
-            return
-        }
-
-        let targetIP = transportManager.ipAddress(for: device.deviceId)
-        DispatchQueue.global(qos: .userInitiated).async {
-            let output = (try? ADBClient.run(["devices", "-l"])).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            // If we know this device's IP, only match a serial for that exact IP —
-            // never fall back to "whichever device adb happens to see first" once
-            // there's a specific device to target. Only fall back to that (matching
-            // today's pre-mesh behavior) when we have no IP to go on at all, e.g. this
-            // device isn't currently connected over the Connect transport.
-            let existingSerial = targetIP.map { ADBWirelessPairing.firstAuthorizedSerial(output, matchingIP: $0) }
-                ?? ADBWirelessPairing.firstAuthorizedSerial(output)
-            DispatchQueue.main.async {
-                if let existingSerial {
-                    screenMirrorController.start(serial: existingSerial, deviceId: device.deviceId)
-                } else {
-                    beginADBPairing(adbPath: adbPath, device: device, trustedPeerIP: targetIP)
-                }
-            }
-        }
-    }
-
-    private func beginADBPairing(adbPath: String, device: TrustedDevice, trustedPeerIP: String?) {
-        let pairing = ADBWirelessPairing(adbPath: adbPath)
-        pairing.trustedPeerIP = trustedPeerIP
-        let window = ADBPairingWindow(pairing: pairing)
-        adbPairingWindow = window
-
-        adbPairingCancellable = pairing.$state.sink { state in
-            if case .connected(let serial, _) = state {
-                adbPairingCancellable = nil
-                window.close()
-                adbPairingWindow = nil
-                screenMirrorController.start(serial: serial, deviceId: device.deviceId)
-            }
-        }
-
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        screenMirrorController.start(deviceId: device.deviceId, deviceName: device.deviceName, transport: transportManager)
     }
 
     private func stopMirroring() {
-        if let deviceId = screenMirrorController.mirroringDeviceId {
-            sendScreenSignal(type: "screen.stop", to: deviceId)
-        }
         screenMirrorController.stop()
-    }
-
-    private func sendScreenSignal(type: String, to deviceId: String) {
-        let envelope = Envelope(
-            type: type,
-            senderId: IdentityKeyStore.shared.deviceId,
-            recipientId: deviceId
-        )
-        try? transportManager.send(envelope: envelope)
     }
 
     /// Warns when notification permission is off, since mirrored notifications

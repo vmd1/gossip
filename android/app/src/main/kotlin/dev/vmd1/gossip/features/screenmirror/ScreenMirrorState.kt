@@ -50,7 +50,6 @@ class ScreenMirrorState(
 
     private val lock = Any()
     private var active: Active? = null
-    private var legacyMirroring = false
     private val recentlyEnded = LinkedHashSet<String>()
 
     private val _isMirroring = MutableStateFlow(false)
@@ -63,11 +62,7 @@ class ScreenMirrorState(
     }
 
     internal fun onScreenStart(envelope: Envelope) {
-        val sessionId = envelope.payload.str("sessionId")
-        if (sessionId == null) {
-            synchronized(lock) { legacyMirroring = true; publish() }
-            return
-        }
+        val sessionId = envelope.payload.str("sessionId") ?: return
         val options = parseOptions(envelope.payload)
         val entry: Active
         synchronized(lock) {
@@ -110,15 +105,10 @@ class ScreenMirrorState(
     }
 
     internal fun onScreenStop(envelope: Envelope) {
-        val sessionId = envelope.payload.str("sessionId")
+        val sessionId = envelope.payload.str("sessionId") ?: return
         synchronized(lock) {
-            if (sessionId == null) {
-                legacyMirroring = false
-                active?.let { endLocked(it) }
-            } else {
-                remember(sessionId)
-                active?.takeIf { it.sessionId == sessionId }?.let { endLocked(it) }
-            }
+            remember(sessionId)
+            active?.takeIf { it.sessionId == sessionId }?.let { endLocked(it) }
             publish()
         }
     }
@@ -154,7 +144,7 @@ class ScreenMirrorState(
         while (recentlyEnded.size > RECENT_CACHE) recentlyEnded.remove(recentlyEnded.first())
     }
 
-    private fun publish() { _isMirroring.value = active != null || legacyMirroring }
+    private fun publish() { _isMirroring.value = active != null }
 
     private fun sendReady(to: String, sessionId: String, r: ScreenSession.Ready) {
         if (logReadyToken) Log.d(TAG, "READY sessionId=$sessionId port=${r.port} token=${r.token}")

@@ -20,19 +20,6 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/Gossip.entitlements"
-          - "Resources/bin/**"
-      - path: Gossip/Resources/bin
-        type: folder
-        buildPhase: resources
-    postBuildScripts:
-      - name: Make bundled adb/scrcpy executable
-        script: |
-          set -e
-          BIN_DIR="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/bin"
-          if [ -d "$BIN_DIR" ]; then
-            chmod +x "$BIN_DIR/adb" "$BIN_DIR/scrcpy" 2>/dev/null || true
-            find "$BIN_DIR/scrcpy-libs" -type f -exec chmod +x {} \; 2>/dev/null || true
-          fi
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vmd1.gossip.Gossip

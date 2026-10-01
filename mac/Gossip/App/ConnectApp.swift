@@ -11,7 +11,7 @@ struct ConnectApp: App {
     @StateObject private var trustedDevicesStore = TrustedDevicesStore.shared
     @StateObject private var transportManager: TransportManager
     @StateObject private var pairingViewModel: PairingViewModel
-    @StateObject private var screenMirrorController = ScreenMirrorController()
+    @StateObject private var screenMirrorController: ScreenMirrorController
     @StateObject private var mediaControlManager: MediaControlManager
     @StateObject private var notificationMirrorManager: NotificationMirrorManager
     private let dndSyncManager: DNDSyncManager
@@ -52,6 +52,8 @@ struct ConnectApp: App {
     init() {
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
+        let screenMirror = ScreenMirrorController()
+        _screenMirrorController = StateObject(wrappedValue: screenMirror)
         let pairingViewModel = PairingViewModel(transportManager: transport)
         _pairingViewModel = StateObject(wrappedValue: pairingViewModel)
         _mediaControlManager = StateObject(wrappedValue: MediaControlManager(transportManager: transport))
@@ -125,9 +127,18 @@ struct ConnectApp: App {
         // silently dropped by `AppDelegate.application(_:open:)`'s `onOpenURLs?(urls)`
         // no-op on `nil` until the user opened the menu bar tray at least once after
         // launch.
-        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox] urls in
+        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport] urls in
             for url in urls {
-                if url.host == "debug-hotspot-request" {
+                if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
+                    // TEMPORARY debug hook: `open connect://debug-mirror` starts on-device mirroring of
+                    // the first connected trusted Android device without clicking the tray (remove
+                    // once there's UI-driven test coverage); `debug-stop-mirror` ends it.
+                    if url.host == "debug-stop-mirror" { screenMirror.stop(); continue }
+                    let target = TrustedDevicesStore.shared.devices.first { transport.hostWithZone(for: $0.deviceId) != nil }
+                    guard let target else { NSLog("debug-mirror: no connected trusted device"); continue }
+                    NSLog("debug-mirror: starting for \(target.deviceName)")
+                    screenMirror.start(deviceId: target.deviceId, deviceName: target.deviceName, transport: transport)
+                } else if url.host == "debug-hotspot-request" {
                     // TEMPORARY debug hook to live-test HotspotGattClient end to end
                     // before there's a scriptable UI path — remove once this is
                     // exercised through the real "Request Hotspot" menu bar button

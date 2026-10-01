@@ -140,12 +140,16 @@ class ScreenMirrorStateTest {
         assertFalse(s.isMirroring.value)
     }
 
-    @Test fun legacyStartWithoutSessionIdOnlyFlipsIndicator() {
+    @Test fun messagesWithoutSessionIdAreIgnored() {
         val s = state()
         s.onScreenStart(env(MessageType.SCREEN_START))
-        assertTrue(s.isMirroring.value)
+        Thread.sleep(100)
         assertEquals(0, sessions.size)
-        s.onScreenStop(env(MessageType.SCREEN_STOP))
         assertFalse(s.isMirroring.value)
+        s.onScreenStart(env(MessageType.SCREEN_START, "a"))
+        awaitSent(1)
+        s.onScreenStop(env(MessageType.SCREEN_STOP)) // no sessionId: must not end the active session
+        assertTrue(s.isMirroring.value)
+        assertEquals(0, sessions[0].closed)
     }
 }

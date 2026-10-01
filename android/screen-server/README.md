@@ -1,7 +1,8 @@
 # On-device screen capture (scrcpy server via Shizuku)
 
 **Status (2026-10-01): Android side implemented and verified on Android 16 and Android 12
-emulators, plus one smoke run on a real Samsung SM-S711B (Android 16). Mac viewer not built.**
+emulators, plus one smoke run on a real Samsung SM-S711B (Android 16). Mac viewer built
+(`mac/Gossip/Features/ScreenMirror/`); the old `adb`/`scrcpy` pipeline has been removed entirely.**
 
 Gossip bundles the upstream **scrcpy server** (Genymobile/scrcpy v4.1, Apache 2.0,
 `app/src/main/assets/scrcpy-server-v4.1.jar`, SHA-256
@@ -10,8 +11,8 @@ Gossip bundles the upstream **scrcpy server** (Genymobile/scrcpy v4.1, Apache 2.
 video + control streams to one viewer over an authenticated **WebSocket**. The viewer needs no
 `adb`/`scrcpy`. Protocol: `screen.start`/`stop`/`ready`/`error` in `schema/message-types.md`.
 
-The existing `adb exec-out screenrecord` pipeline (`mac/.../ScreenMirror/ADBClient.swift`,
-"approach (b)") is untouched and **remains the working fallback** until a Mac viewer exists.
+The earlier Mac pipeline (bundled `adb` + `scrcpy` binaries, QR wireless-debugging pairing) was
+removed: on-device capture is now the only mirroring path, and there is no fallback.
 
 ## Architecture (and why it isn't the one we planned)
 
@@ -95,7 +96,7 @@ design was already in place and works there); I'm not claiming it from evidence.
 
 ### 5. Via the relay: valid H.264 + control injection — both versions
 `ScreenBridge` is driven by `ws_test_client.py` (stdlib only, in this directory), which stands in
-for the unbuilt Mac viewer. Real output, final build:
+for the Mac viewer. Real output, final build:
 ```
 # Android 16                                          # Android 12
 screen.ready after 1.1s: port=36561                    screen.ready after 1.1s: port=39531
@@ -122,8 +123,7 @@ the emulator's screen is static (`key frames=1`).
 During a live capture: screenshot of the Android 16 screen showed the plain launcher (no
 "Start recording or casting?" dialog), `dumpsys media_projection` listed no projections, no
 consent window, and both shell processes were running. Same `dumpsys media_projection` result
-(empty) on Android 12 during a session. This closes the open point from the screenrecord-era
-finding: a scrcpy-style server at shell UID needs no consent either.
+(empty) on Android 12 during a session. This closes the open point from the earlier (removed) `screenrecord` finding: a scrcpy-style server at shell UID needs no consent either.
 
 ### 7. Teardown / leaks
 `force-stop` of Gossip mid-session: both shell-UID processes were gone within 4 s (relay exits on
@@ -165,10 +165,7 @@ Still not covered on hardware: control injection, sustained motion, latency, rot
   motion, bitrate behavior, and latency were **not** measured. The "first video at +4.5s" the test
   client prints includes its own wrong-token/second-viewer test steps; it is not a latency number.
   (`screen.ready` itself arrives ~1.1 s after `screen.start`.)
-- **Mac viewer not built** (scrcpy protocol client, H.264 decode/render, input mapping), so the
-  full Mac↔Android path and the `screen.start`-over-the-mesh exchange were exercised only via a
-  debug broadcast that dispatches the envelope locally; `screen.ready` was read from logcat
-  (debug builds log the token), not received over Noise by a real peer.
+- **Mac viewer** (`mac/Gossip/Features/ScreenMirror/`): see its own section below for what was and wasn't verified end to end.
 - **Video is not encrypted on the WebSocket.** Auth is a 256-bit per-session token delivered
   inside the Noise-encrypted mesh, constant-time compared, single viewer; but the WebSocket
   payload (screen contents + control) is plaintext on the LAN. Reusing the Noise trust
@@ -181,10 +178,19 @@ Still not covered on hardware: control injection, sustained motion, latency, rot
   not rotate the emulator), a slow viewer (writes block the video thread; no frame dropping yet).
 - `/data/local/tmp/gossip-scrcpy-server.jar` is left on the device (733 KB, overwritten each
   session); not cleaned up.
-- If this approach fails on a real device, approach (b) (`screenrecord`) remains the fallback.
+- There is no fallback path: if a particular device can't run the Shizuku-launched server, mirroring simply reports an error (`screen.error`) for that device.
 
-## Earlier findings still valid (screenrecord era, real Samsung SM-S711B, platform-tools 37.0.1)
-`adb exec-out screenrecord --output-format=h264 --time-limit=3 -` → valid Annex-B H.264,
-`codec_name=h264, profile=High, width=1080, height=2340, pix_fmt=yuv420p`, no on-device
-dialog. That shipped path is higher-latency (encoder start-up, process respawn, 3-minute cap
-lifted via `--time-limit 0`).
+## Mac viewer (`mac/Gossip/Features/ScreenMirror/`)
+`ScreenMirrorController` negotiates the session (`screen.start` re-sent every 2.5 s until
+`screen.ready`, 20 s timeout, `screen.error` surfaced in the menu), `ScreenBridgeClient`
+(`NWProtocolWebSocket`) connects with the token, `H264SampleFeeder` converts Annex-B→AVCC and
+feeds an `AVSampleBufferDisplayLayer` (hardware decode), and `ScreenMirrorWindow` shows it with
+Back/Home/Recents buttons, click-drag → touch, trackpad scroll → scroll, typing → text/keys.
+- **Verified:** Mac app builds; 46 Mac unit tests pass, including byte-exact tests of the control
+  encodings and Annex-B/AVCC handling. The same control layouts were verified live against the
+  scrcpy 4.1 server through the bridge (tap opened Chrome, scroll changed Settings, BACK
+  navigated back) with a Python client on the A16 emulator.
+- **Not verified by me:** the Mac window rendering real frames and its mouse/keyboard mapping
+  (no GUI automation was run), and the Mac↔phone `screen.start`/`screen.ready` exchange over the
+  real Noise mesh. Keyboard coverage is basic (printable text, Enter/Delete/Tab/arrows, Esc=Back);
+  no clipboard paste, no multi-touch, no audio.
