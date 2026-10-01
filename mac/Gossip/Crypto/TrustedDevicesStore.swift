@@ -51,16 +51,6 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
     /// `TrustedDevicesStore.backfillSigningPublicKey`. Decodes safely when absent from
     /// an older persisted file, same reasoning as `lockOnLeaveEnabled` above.
     var signingPublicKeyBase64: String? = nil
-    /// For a row where `deviceType == .androidPhone`: whether this phone is an eligible
-    /// target for *this* Mac's WAN-offline auto-request-hotspot trigger (see
-    /// `docs/ble-hotspot-protocol.md`'s WAN-reachability probe) — a user might trust
-    /// several phones but only want auto-request against one specific one. Meaningless
-    /// for a `.mac`/`.androidTablet` row. Local-only, never sent over the wire, same
-    /// category as `lockOnLeaveEnabled`/`fallbackHost`. Decodes safely when absent from
-    /// an older persisted file, same reasoning as `lockOnLeaveEnabled` above. Off by
-    /// default. See `AutoHotspotRequestManager` and `OnboardingPreferences.
-    /// autoRequestHotspotEnabled` (the separate per-device on/off switch this pairs with).
-    var autoHotspotRequestEligible: Bool = false
 
     init(
         deviceId: String,
@@ -70,8 +60,7 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         addedAt: Date,
         fallbackHost: String? = nil,
         lockOnLeaveEnabled: Bool = false,
-        signingPublicKeyBase64: String? = nil,
-        autoHotspotRequestEligible: Bool = false
+        signingPublicKeyBase64: String? = nil
     ) {
         self.deviceId = deviceId
         self.publicKeyBase64 = publicKeyBase64
@@ -81,7 +70,6 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         self.fallbackHost = fallbackHost
         self.lockOnLeaveEnabled = lockOnLeaveEnabled
         self.signingPublicKeyBase64 = signingPublicKeyBase64
-        self.autoHotspotRequestEligible = autoHotspotRequestEligible
     }
 
     init(from decoder: Decoder) throws {
@@ -94,7 +82,6 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         fallbackHost = try container.decodeIfPresent(String.self, forKey: .fallbackHost)
         lockOnLeaveEnabled = try container.decodeIfPresent(Bool.self, forKey: .lockOnLeaveEnabled) ?? false
         signingPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .signingPublicKeyBase64)
-        autoHotspotRequestEligible = try container.decodeIfPresent(Bool.self, forKey: .autoHotspotRequestEligible) ?? false
     }
 }
 
@@ -205,18 +192,6 @@ final class TrustedDevicesStore: ObservableObject {
         queue.sync {
             guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
             devices[index].lockOnLeaveEnabled = enabled
-        }
-        persist()
-        publishOnMain()
-    }
-
-    /// Updates just the auto-hotspot-request-eligibility flag for an already-trusted
-    /// phone (see `TrustedDevice.autoHotspotRequestEligible`). No-ops if `deviceId` isn't
-    /// trusted.
-    func setAutoHotspotRequestEligible(deviceId: String, eligible: Bool) {
-        queue.sync {
-            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
-            devices[index].autoHotspotRequestEligible = eligible
         }
         persist()
         publishOnMain()

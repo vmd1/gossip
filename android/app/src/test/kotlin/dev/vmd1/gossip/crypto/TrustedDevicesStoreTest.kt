@@ -74,4 +74,18 @@ class TrustedDevicesStoreTest {
         assertTrue(all.any { it.deviceId == "mac-1" })
         assertTrue(all.any { it.deviceId == "tablet-1" })
     }
+
+    @Test
+    fun `a row written by an older build with a since-removed field still loads`() {
+        val prefs = FakeSharedPreferences()
+        val legacy = """{"deviceId":"22222222-2222-2222-2222-222222222222","publicKeyBase64":"AQIDBA==",""" +
+            """"deviceName":"Old phone","deviceType":"android-phone","addedAt":1700000000000,""" +
+            """"lockOnLeaveEnabled":true,"autoHotspotRequestEligible":true}"""
+        prefs.edit().putString("device_22222222-2222-2222-2222-222222222222", legacy).apply()
+
+        val loaded = TrustedDevicesStore(prefs).getDevice("22222222-2222-2222-2222-222222222222")
+
+        assertEquals("Old phone", loaded?.deviceName)
+        assertTrue(loaded!!.lockOnLeaveEnabled)
+    }
 }

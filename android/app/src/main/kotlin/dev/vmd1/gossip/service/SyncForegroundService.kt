@@ -57,7 +57,6 @@ class SyncForegroundService : Service() {
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
-    private lateinit var autoHotspotRequestManager: dev.vmd1.gossip.features.hotspot.AutoHotspotRequestManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -65,7 +64,8 @@ class SyncForegroundService : Service() {
         IdentityKeyStore.ensureInitialized(applicationContext)
         val identity = IdentityKeyStore.getInstance(applicationContext)
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
-        val messageRouter = MessageRouter()
+        val featureSettings = dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(applicationContext)
+        val messageRouter = MessageRouter(isMessageAllowed = featureSettings::isMessageAllowed)
         val deviceType = detectDeviceType(applicationContext)
         screenMirrorState = ScreenMirrorState(
             selfId = identity.deviceId,
@@ -75,7 +75,8 @@ class SyncForegroundService : Service() {
             sessionFactory = { sessionId, options, onEnded ->
                 dev.vmd1.gossip.features.screenmirror.ScreenBridge(applicationContext, sessionId, options, onEnded)
             },
-            logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+            logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
         )
         screenMirrorState.register(messageRouter)
         transportManager = TransportManager(
@@ -83,7 +84,8 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter,
-            deviceType = deviceType
+            deviceType = deviceType,
+            isMessageAllowed = featureSettings::isMessageAllowed
         )
         mediaControlBridge = MediaControlBridge(
             context = applicationContext,
@@ -99,7 +101,8 @@ class SyncForegroundService : Service() {
             messageRouter = messageRouter,
             deviceId = identity.deviceId,
             scope = serviceScope,
-            shizukuManager = shizukuManager
+            shizukuManager = shizukuManager,
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.CLIPBOARD) }
         )
         dndSyncManager = DndSyncManager(
             context = applicationContext,
@@ -136,7 +139,16 @@ class SyncForegroundService : Service() {
         // change, so a phone that already had this enabled from a previous session
         // needs this to advertise the bit correctly from service startup, not just
         // after the user re-touches the switch.
-        bleProximityMonitor.setHotspotAvailable(dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled)
+        // The advertised "hotspot available" capability needs both the provide-hotspot policy and the
+        // Instant Hotspot feature toggle; recomputed whenever the feature toggle changes.
+        serviceScope.launch {
+            featureSettings.disabled.collect {
+                bleProximityMonitor.setHotspotAvailable(
+                    dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled &&
+                        featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.HOTSPOT)
+                )
+            }
+        }
         // Same reasoning, for the "hotspot currently on" bit: HotspotStateManager's own
         // WIFI_AP_STATE_CHANGED_ACTION receiver only fires on a live change, so a phone
         // whose hotspot was already on before this service (re)started needs this seed
@@ -181,19 +193,10 @@ class SyncForegroundService : Service() {
             transportManager = transportManager,
             identityKeyStore = identity,
             localDeviceType = deviceType,
-            scope = serviceScope
+            scope = serviceScope,
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.LOCK_ON_LEAVE) }
         )
         lockOnLeaveManager.start()
-        autoHotspotRequestManager = dev.vmd1.gossip.features.hotspot.AutoHotspotRequestManager(
-            context = applicationContext,
-            identityKeyStore = identity,
-            trustedDevicesStore = trustedDevices,
-            bleProximityMonitor = bleProximityMonitor,
-            onboardingPreferences = dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext),
-            deviceType = deviceType,
-            scope = serviceScope
-        )
-        autoHotspotRequestManager.start()
 
         // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
         // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.

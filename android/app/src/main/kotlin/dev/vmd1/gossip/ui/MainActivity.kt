@@ -191,6 +191,9 @@ class MainActivity : ComponentActivity() {
                         onRunSetupAgain = {
                             startActivity(Intent(this@MainActivity, OnboardingActivity::class.java))
                         },
+                        onOpenSettings = {
+                            startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                        },
                         isNotificationAccessGranted = { isNotificationListenerEnabled(this@MainActivity) },
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -251,14 +254,10 @@ class MainActivity : ComponentActivity() {
                         provideHotspotEnabledProvider = { OnboardingPreferences(applicationContext).provideHotspotEnabled },
                         onSetProvideHotspotEnabled = { enabled ->
                             OnboardingPreferences(applicationContext).provideHotspotEnabled = enabled
-                            boundService?.bleProximityMonitor()?.setHotspotAvailable(enabled)
-                        },
-                        autoRequestHotspotEnabledProvider = { OnboardingPreferences(applicationContext).autoRequestHotspotEnabled },
-                        onSetAutoRequestHotspotEnabled = { enabled ->
-                            OnboardingPreferences(applicationContext).autoRequestHotspotEnabled = enabled
-                        },
-                        onSetAutoHotspotRequestEligible = { deviceId, eligible ->
-                            trustedDevicesStore.setAutoHotspotRequestEligible(deviceId, eligible)
+                            boundService?.bleProximityMonitor()?.setHotspotAvailable(
+                                enabled && dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(applicationContext)
+                                    .isEnabled(dev.vmd1.gossip.features.settings.Feature.HOTSPOT)
+                            )
                         },
                         hotspotStatesProvider = { boundService?.hotspotStateManager()?.hotspotStateBySenderId },
                         bleHotspotOnStatesProvider = { boundService?.bleProximityMonitor()?.hotspotOnByDeviceId },
@@ -389,6 +388,7 @@ fun ConnectHomeScreen(
     onPairNewDevice: () -> Unit,
     onShowQrToPair: () -> Unit = {},
     onRunSetupAgain: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     isNotificationAccessGranted: () -> Boolean = { true },
     onEnableNotificationAccess: () -> Unit = {},
     onSendTestNotification: () -> Unit = {},
@@ -406,9 +406,6 @@ fun ConnectHomeScreen(
     onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
     provideHotspotEnabledProvider: () -> Boolean = { false },
     onSetProvideHotspotEnabled: (Boolean) -> Unit = {},
-    autoRequestHotspotEnabledProvider: () -> Boolean = { false },
-    onSetAutoRequestHotspotEnabled: (Boolean) -> Unit = {},
-    onSetAutoHotspotRequestEligible: (deviceId: String, eligible: Boolean) -> Unit = { _, _ -> },
     hotspotStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.hotspot.HotspotState>>? = { null },
     bleHotspotOnStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>>? = { null },
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
@@ -461,6 +458,10 @@ fun ConnectHomeScreen(
 
             androidx.compose.material3.TextButton(onClick = onRunSetupAgain) {
                 Text("Run Setup Again")
+            }
+
+            androidx.compose.material3.OutlinedButton(onClick = onOpenSettings) {
+                Text("Settings")
             }
 
             if (!notificationAccessGranted) {
@@ -573,31 +574,6 @@ fun ConnectHomeScreen(
                 }
             }
 
-            run {
-                var autoRequestHotspotEnabled by remember { mutableStateOf(autoRequestHotspotEnabledProvider()) }
-                androidx.compose.foundation.layout.Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Auto-request Instant Hotspot", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "When this device has no internet for a minute, automatically request a " +
-                                "hotspot from a nearby eligible phone (set per-phone in that phone's settings).",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = autoRequestHotspotEnabled,
-                        onCheckedChange = {
-                            autoRequestHotspotEnabled = it
-                            onSetAutoRequestHotspotEnabled(it)
-                        }
-                    )
-                }
-            }
-
             val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.hotspot.HotspotState>()) })
             val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
@@ -607,7 +583,6 @@ fun ConnectHomeScreen(
                 nearbyDeviceIds = nearbyDeviceIds,
                 myDeviceType = myDeviceType,
                 onSetLockOnLeave = onSetLockOnLeave,
-                onSetAutoHotspotRequestEligible = onSetAutoHotspotRequestEligible,
                 hotspotStates = hotspotStates,
                 bleHotspotOnStates = bleHotspotOnStates,
                 onRequestHotspot = onRequestHotspot,

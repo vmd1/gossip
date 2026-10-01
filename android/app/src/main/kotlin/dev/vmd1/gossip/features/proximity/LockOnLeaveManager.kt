@@ -58,7 +58,9 @@ class LockOnLeaveManager(
     private val transportManager: TransportManager,
     private val identityKeyStore: IdentityKeyStore,
     private val localDeviceType: DeviceType,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    /** Local BLE trigger (not a message), so the transport-level feature gate can't cover it. */
+    private val isEnabled: () -> Boolean = { true }
 ) {
     private var previousNearbyDeviceIds: Set<String> = emptySet()
     private var previousConnectedDeviceIds: Set<String> = emptySet()
@@ -124,6 +126,7 @@ class LockOnLeaveManager(
     private fun handleNearbyDeviceIdsChanged(newValue: Set<String>) {
         val justLeft = previousNearbyDeviceIds - newValue
         previousNearbyDeviceIds = newValue
+        if (!isEnabled()) return
 
         for (deviceId in justLeft) {
             val device = trustedDevicesStore.getDevice(deviceId)

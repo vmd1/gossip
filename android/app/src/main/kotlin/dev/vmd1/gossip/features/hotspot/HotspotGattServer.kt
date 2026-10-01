@@ -192,6 +192,13 @@ class HotspotGattServer(
             )
 
             val prefs = OnboardingPreferences(context)
+            if (!dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(context)
+                    .isEnabled(dev.vmd1.gossip.features.settings.Feature.HOTSPOT)
+            ) {
+                Log.i(TAG, "Rejecting hotspot.toggle_request: the Instant Hotspot feature is turned off")
+                sendResponse(device, request, enabled = false, sharedSecretKey = sharedSecretKey)
+                return@launch
+            }
             if (!prefs.provideHotspotEnabled) {
                 Log.i(TAG, "Rejecting hotspot.toggle_request: 'Provide Instant Hotspot' is off")
                 sendResponse(device, request, enabled = false, sharedSecretKey = sharedSecretKey)

@@ -72,7 +72,9 @@ class ClipboardSyncManager(
     private val messageRouter: MessageRouter,
     private val deviceId: String,
     private val scope: CoroutineScope,
-    private val shizukuManager: ShizukuManager? = null
+    private val shizukuManager: ShizukuManager? = null,
+    /** Local clipboard reads aren't messages, so the transport-level feature gate can't cover them. */
+    private val isEnabled: () -> Boolean = { true }
 ) {
     private val clipboardManager =
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -177,6 +179,7 @@ class ClipboardSyncManager(
     }
 
     private fun onLocalClipChanged() {
+        if (!isEnabled()) return
         val text = currentClipText()
         if (text != null) {
             handleObservedText(text)
@@ -196,6 +199,7 @@ class ClipboardSyncManager(
     private suspend fun runBackgroundPollLoop() {
         while (true) {
             delay(SHIZUKU_POLL_INTERVAL_MS)
+            if (!isEnabled()) continue
             if (!ShizukuClipboardReader.isReady(shizukuManager)) continue
             val text = ShizukuClipboardReader.readText() ?: continue
             handleObservedText(text)

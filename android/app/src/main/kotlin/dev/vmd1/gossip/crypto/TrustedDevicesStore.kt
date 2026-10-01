@@ -32,16 +32,7 @@ data class TrustedDevice(
      *  key-agreement key used for Noise_IK) — used to verify signed GATT requests (e.g.
      *  Instant Hotspot's `hotspot.toggle_request`). `null` for a row paired before this
      *  field existed; see [TrustedDevicesStore.backfillSigningPublicKey]. */
-    val signingPublicKey: ByteArray? = null,
-    /** For a row where [deviceType] is [DeviceType.ANDROID_PHONE]: whether this phone is
-     *  an eligible target for *this* device's WAN-offline auto-request-hotspot trigger
-     *  (`docs/ble-hotspot-protocol.md`'s WAN-reachability probe) — a user might trust
-     *  several phones but only want auto-request against one specific one. Meaningless
-     *  for a Mac/tablet row. Local-only, never sent over the wire — same category as
-     *  [lockOnLeaveEnabled]/[fallbackHost]. See [AutoHotspotRequestManager] and
-     *  `OnboardingPreferences.autoRequestHotspotEnabled` (the separate per-device on/off
-     *  switch this pairs with). Off by default. */
-    val autoHotspotRequestEligible: Boolean = false
+    val signingPublicKey: ByteArray? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -53,7 +44,6 @@ data class TrustedDevice(
             addedAt == other.addedAt &&
             fallbackHost == other.fallbackHost &&
             lockOnLeaveEnabled == other.lockOnLeaveEnabled &&
-            autoHotspotRequestEligible == other.autoHotspotRequestEligible &&
             when {
                 signingPublicKey == null && other.signingPublicKey == null -> true
                 signingPublicKey == null || other.signingPublicKey == null -> false
@@ -73,8 +63,7 @@ private data class TrustedDeviceRow(
     val addedAt: Long,
     val fallbackHost: String? = null,
     val lockOnLeaveEnabled: Boolean = false,
-    val signingPublicKeyBase64: String? = null,
-    val autoHotspotRequestEligible: Boolean = false
+    val signingPublicKeyBase64: String? = null
 )
 
 /**
@@ -100,8 +89,7 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             addedAt = device.addedAt,
             fallbackHost = device.fallbackHost,
             lockOnLeaveEnabled = device.lockOnLeaveEnabled,
-            signingPublicKeyBase64 = device.signingPublicKey?.let { Base64.getEncoder().encodeToString(it) },
-            autoHotspotRequestEligible = device.autoHotspotRequestEligible
+            signingPublicKeyBase64 = device.signingPublicKey?.let { Base64.getEncoder().encodeToString(it) }
         )
         prefs.edit().putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row)).apply()
     }
@@ -135,15 +123,6 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
         addDevice(existing.copy(lockOnLeaveEnabled = enabled))
     }
 
-    /** Updates just the auto-hotspot-request-eligibility flag for an already-trusted
-     *  phone (see [TrustedDevice.autoHotspotRequestEligible]). No-ops if [deviceId] isn't
-     *  trusted. */
-    @Synchronized
-    fun setAutoHotspotRequestEligible(deviceId: String, eligible: Boolean) {
-        val existing = getDevice(deviceId) ?: return
-        addDevice(existing.copy(autoHotspotRequestEligible = eligible))
-    }
-
     @Synchronized
     fun isTrusted(deviceId: String): Boolean = prefs.contains(rowKey(deviceId))
 
@@ -164,7 +143,7 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     }
 
     private fun parse(json: String): TrustedDevice {
-        val row = Json.decodeFromString(TrustedDeviceRow.serializer(), json)
+        val row = rowJson.decodeFromString(TrustedDeviceRow.serializer(), json)
         return TrustedDevice(
             deviceId = row.deviceId,
             publicKey = Base64.getDecoder().decode(row.publicKeyBase64),
@@ -173,10 +152,13 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             addedAt = row.addedAt,
             fallbackHost = row.fallbackHost,
             lockOnLeaveEnabled = row.lockOnLeaveEnabled,
-            signingPublicKey = row.signingPublicKeyBase64?.let { Base64.getDecoder().decode(it) },
-            autoHotspotRequestEligible = row.autoHotspotRequestEligible
+            signingPublicKey = row.signingPublicKeyBase64?.let { Base64.getDecoder().decode(it) }
         )
     }
+
+    /** Tolerates keys from rows written by older builds (e.g. the removed `autoHotspotRequestEligible`),
+     *  so dropping a field never makes an existing paired device fail to load. */
+    private val rowJson = Json { ignoreUnknownKeys = true }
 
     private fun rowKey(deviceId: String) = "$ROW_PREFIX$deviceId"
 

@@ -22,6 +22,7 @@ final class LockOnLeaveManager {
     private var previousNearbyDeviceIds: Set<String> = []
     private var lastFiredAt: [String: Date] = [:]
     private var cancellable: AnyCancellable?
+    var featureSettings: FeatureSettings = .shared
 
     init(
         transportManager: TransportManager,
@@ -50,6 +51,8 @@ final class LockOnLeaveManager {
     private func handleNearbyDeviceIdsChanged(_ newValue: Set<String>) {
         let justLeft = previousNearbyDeviceIds.subtracting(newValue)
         previousNearbyDeviceIds = newValue
+        // Local BLE trigger (not a message), so the transport-level feature gate can't cover it.
+        guard featureSettings.isEnabled(.lockOnLeave) else { return }
         BLEProximityMonitor.debugLog("LockOnLeaveManager: nearbyDeviceIds changed to \(newValue), justLeft=\(justLeft)")
 
         for deviceId in justLeft {

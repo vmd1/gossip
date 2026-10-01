@@ -9,6 +9,11 @@ final class MessageRouter {
 
     private var handlers: [String: [Handler]] = [:]
     private let queue = DispatchQueue(label: "dev.vmd1.gossip.messagerouter")
+    private let featureSettings: FeatureSettings
+
+    init(featureSettings: FeatureSettings = .shared) {
+        self.featureSettings = featureSettings
+    }
 
     /// Registers a handler for every envelope whose `type` starts with `prefix`
     /// (pass e.g. `"presence."` to catch `presence.online`, `presence.offline`, ...,
@@ -23,6 +28,8 @@ final class MessageRouter {
     /// prefix matches `envelope.type`. Called on whatever queue the transport
     /// decodes on; handlers are responsible for hopping to the main thread if needed.
     func route(_ envelope: Envelope) {
+        // A feature turned off on this device never reaches its handlers (see `FeatureSettings`).
+        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
         let matches: [Handler] = queue.sync {
             handlers.compactMap { prefix, list in
                 envelope.type.hasPrefix(prefix) ? list : nil

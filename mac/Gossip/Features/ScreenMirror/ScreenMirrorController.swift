@@ -55,6 +55,10 @@ final class ScreenMirrorController: ObservableObject {
     func start(deviceId: String, deviceName: String, transport: TransportManager) {
         guard case .idle = state else { return }
         lastError = nil
+        guard FeatureSettings.shared.isEnabled(.screenMirroring) else {
+            lastError = "Screen mirroring is turned off in Settings."
+            return
+        }
         guard transport.hostWithZone(for: deviceId) != nil else {
             lastError = "\(deviceName) isn't connected right now."
             return
@@ -119,6 +123,8 @@ final class ScreenMirrorController: ObservableObject {
         switch reason {
         case "shizuku_unavailable":
             return "Shizuku isn't running on \(deviceName). Start it (it needs re-activating after every reboot) and allow Gossip."
+        case "feature_disabled":
+            return "Screen mirroring is turned off on \(deviceName). Turn it on in Gossip's settings there."
         case "capture_failed":
             return "\(deviceName) couldn't start screen capture. Check Shizuku and try again."
         default:
