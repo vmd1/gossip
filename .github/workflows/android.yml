@@ -2,6 +2,7 @@ name: Android CI
 
 # One job per change: unit tests and the debug build share a single Gradle invocation (the
 # build is what the tests compile anyway), instead of two parallel runners doing the same work.
+# The debug APK is uploaded on every run.
 # Runs on pull requests (and manually) only — a push to a branch with an open PR used to trigger
 # a second, duplicate run via `push`, and merges to main were already tested on the PR.
 on:
@@ -45,9 +46,7 @@ jobs:
       - name: Unit tests and debug APK
         run: ./gradlew testDebugUnitTest assembleDebug
 
-      # The APK is only uploaded when someone asks for it (Run workflow), not on every PR push.
       - name: Upload debug APK
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: gossip-debug-apk
