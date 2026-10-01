@@ -83,4 +83,11 @@ final class ScrcpyBridgeProtocolTests: XCTestCase {
         let frame = Data([0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x65, 7, 8])
         XCTAssertEqual(H264.avcc(fromAnnexB: frame), Data([0, 0, 0, 3, 0x65, 7, 8]))
     }
+
+    // MARK: Bridge URL
+
+    func testWebSocketURLForIPv4AndIPv6LinkLocal() {
+        XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "192.168.0.122", port: 43417)?.absoluteString, "ws://192.168.0.122:43417/screen")
+        XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "fe80::1%en0", port: 9)?.absoluteString, "ws://[fe80::1%25en0]:9/screen")
+    }
 }

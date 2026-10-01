@@ -119,10 +119,16 @@ class ScreenBridge(
                 val ws = try {
                     sock.soTimeout = AUTH_TIMEOUT_MS
                     WebSocketConnection.accept(sock)
-                } catch (e: IOException) { runCatching { sock.close() }; continue }
-                val first = try { ws.readMessage() } catch (_: IOException) { null }
+                } catch (e: IOException) {
+                    Log.i(TAG, "[$sessionId] rejected non-WebSocket/failed handshake from ${sock.inetAddress}: $e")
+                    runCatching { sock.close() }; continue
+                }
+                val first = try { ws.readMessage() } catch (e: IOException) {
+                    Log.i(TAG, "[$sessionId] viewer ${sock.inetAddress} dropped before sending a token: $e"); null
+                }
                 val presented = first?.data?.toString(Charsets.UTF_8)?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
                 if (first == null || !MessageDigest.isEqual(presented, token.toByteArray(Charsets.UTF_8))) {
+                    Log.i(TAG, "[$sessionId] viewer ${sock.inetAddress} sent no/incorrect token (first=${first?.data?.size} bytes)")
                     ws.close(1008); continue
                 }
                 sock.soTimeout = 0

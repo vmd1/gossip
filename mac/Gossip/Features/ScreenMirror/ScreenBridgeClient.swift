@@ -26,14 +26,22 @@ final class ScreenBridgeClient {
     /// - Parameter host: the phone's address as the mesh transport saw it (IPv6 link-local
     ///   hosts must keep their `%zone`, see `TransportManager.hostWithZone(for:)`).
     init?(host: String, port: UInt16, token: String) {
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return nil }
+        guard let url = Self.webSocketURL(host: host, port: port) else { return nil }
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
         ws.maximumMessageSize = 8 * 1024 * 1024
         let params = NWParameters.tcp
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
-        connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
+        connection = NWConnection(to: .url(url), using: params)
         self.token = token
+    }
+
+    /// NWProtocolWebSocket must be given a URL endpoint so it can build the HTTP upgrade request;
+    /// a bare host/port endpoint makes the connection abort (POSIX 53) before anything is sent.
+    /// IPv6 literals need brackets, with the `%zone` percent-encoded.
+    static func webSocketURL(host: String, port: UInt16) -> URL? {
+        let urlHost = host.contains(":") ? "[\(host.replacingOccurrences(of: "%", with: "%25"))]" : host
+        return URL(string: "ws://\(urlHost):\(port)/screen")
     }
 
     func connect() {
@@ -43,7 +51,13 @@ final class ScreenBridgeClient {
             case .ready:
                 self.sendFrame(Data(self.token.utf8), opcode: .text)
                 self.receiveLoop()
+            case .waiting(let error):
+                // Can't reach the host right now (no route, local-network permission denied, ...).
+                // For a direct LAN address this doesn't resolve itself, so fail fast instead of spinning.
+                NSLog("Gossip: screen bridge connection waiting: \(error)")
+                self.finish(error)
             case .failed(let error):
+                NSLog("Gossip: screen bridge connection failed: \(error)")
                 self.finish(error)
             case .cancelled:
                 self.finish(nil)
