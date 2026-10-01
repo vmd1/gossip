@@ -56,16 +56,14 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           test
 
-      # Unsigned debug build, produced by the test run above — only zipped/uploaded on demand
-      # (Run workflow); release.yml's Release build is the distributable one.
+      # Unsigned debug build, produced by the test run above and uploaded on every run;
+      # release.yml's Release build is the distributable one.
       - name: Zip built app bundle
-        if: github.event_name == 'workflow_dispatch'
         run: |
           cd build/Build/Products/Debug
           zip -r ../../../../gossip-debug.zip Gossip.app
 
       - name: Upload built app
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: gossip-debug-app
