@@ -85,8 +85,6 @@ struct MenuBarView: View {
 
             Divider()
 
-            Divider()
-
             Button("Settings…") {
                 if let existing = settingsWindow, existing.isVisible {
                     existing.makeKeyAndOrderFront(nil)
