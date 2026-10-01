@@ -101,9 +101,15 @@ class OnboardingActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         }
 
-        // Same-process bind as MainActivity — the sync service is already started by
-        // MainActivity.onCreate by the time onboarding can launch (see below), this just
-        // gets a handle to the already-running ShizukuManager for the hotspot probe step.
+        // MainActivity hands off to onboarding *before* it starts the sync service on a fresh
+        // install, so start it here too — without it nothing listens or advertises on the network
+        // (no mDNS registration, no server socket) and pairing from the onboarding screens fails
+        // with "could not find <device> on the local network". Starting an already-running service
+        // is a no-op.
+        ContextCompat.startForegroundService(this, Intent(this, SyncForegroundService::class.java))
+
+        // Same-process bind as MainActivity: gets a handle to the running service (ShizukuManager
+        // for the hotspot probe step, etc.).
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 boundService = (binder as? SyncForegroundService.LocalBinder)?.service()

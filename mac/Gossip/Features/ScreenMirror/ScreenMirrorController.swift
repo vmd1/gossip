@@ -26,7 +26,22 @@ final class ScreenMirrorController: ObservableObject {
     @Published private(set) var mirroringDeviceId: String?
 
     /// Human-readable reason the last attempt failed, shown in the menu until the next attempt.
-    @Published private(set) var lastError: String?
+    /// The last start/session error, shown in the menu. Clears itself after `errorLifetime` so a stale
+    /// message never lingers.
+    @Published private(set) var lastError: String? {
+        didSet {
+            errorClearWork?.cancel()
+            errorClearWork = nil
+            guard let message = lastError else { return }
+            let work = DispatchWorkItem { [weak self] in
+                if self?.lastError == message { self?.lastError = nil }
+            }
+            errorClearWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.errorLifetime, execute: work)
+        }
+    }
+    static let errorLifetime: TimeInterval = 10
+    private var errorClearWork: DispatchWorkItem?
 
     private static let retryInterval: TimeInterval = 2.5
     private static let readyTimeout: TimeInterval = 20

@@ -40,9 +40,17 @@ final class ScreenBridgeClient {
 
     /// NWProtocolWebSocket must be given a URL endpoint so it can build the HTTP upgrade request;
     /// a bare host/port endpoint makes the connection abort (POSIX 53) before anything is sent.
-    /// IPv6 literals need brackets, with the `%zone` percent-encoded.
+    /// IPv6 literals need brackets, with the `%zone` percent-encoded. A `%zone`/interface suffix on
+    /// anything that isn't an IPv6 literal (a Bonjour hostname such as `tablet.local%en0`, or an IPv4
+    /// address) is meaningless there and makes the URL invalid, so it is dropped — the connection to a
+    /// tablet resolved through Bonjour reports its host that way.
     static func webSocketURL(host: String, port: UInt16) -> URL? {
-        let urlHost = host.contains(":") ? "[\(host.replacingOccurrences(of: "%", with: "%25"))]" : host
+        let urlHost: String
+        if host.contains(":") {
+            urlHost = "[\(host.replacingOccurrences(of: "%", with: "%25"))]"
+        } else {
+            urlHost = host.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? host
+        }
         return URL(string: "ws://\(urlHost):\(port)/screen")
     }
 
