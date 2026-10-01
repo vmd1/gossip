@@ -103,6 +103,21 @@ final class LocalDiscovery {
         discovered.removeAll()
     }
 
+    /// Re-delivers the currently visible peer set through `onPeersChanged` without waiting for the
+    /// browse results to change. `TransportManager` only dials a known peer from that callback, and a
+    /// peer that drops its connection while its Bonjour advertisement stays up never changes the
+    /// results — so without this the Mac sat on "Searching for devices" indefinitely. Dialling is
+    /// idempotent (already-connected / in-flight peers are skipped), so calling this on a timer is safe.
+    func redeliverPeers() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let peers = Array(self.discovered.values)
+            DispatchQueue.main.async { [weak self] in
+                self?.onPeersChanged?(peers)
+            }
+        }
+    }
+
     private func handleResultsChanged(_ results: Set<NWBrowser.Result>) {
         var updated: [NWEndpoint: DiscoveredPeer] = [:]
         for result in results {

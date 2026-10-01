@@ -5,11 +5,15 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
 private const val TAG = "NsdDiscovery"
 const val GOSSIP_SERVICE_TYPE = "_gossip._tcp."
+private const val MAX_RESOLVE_ATTEMPTS = 5
+private const val RESOLVE_RETRY_DELAY_MS = 500L
 
 /** A peer discovered (or lost) on the local network via mDNS/NSD. */
 data class DiscoveredPeer(
@@ -82,12 +86,44 @@ class NsdDiscovery(context: Context, private val deviceId: String, private val p
             }
 
             override fun onServiceFound(service: NsdServiceInfo) {
+                // Never look up this device's own advertisement.
+                if (service.serviceName == "connect-$deviceId") return
+                enqueueResolve(service)
+            }
+
+            private val resolveQueue = ArrayDeque<Pair<NsdServiceInfo, Int>>()
+            private var resolving = false
+
+            /** Android's NsdManager (before API 34) allows only **one** `resolveService` at a time and
+             *  fails any concurrent call with FAILURE_ALREADY_ACTIVE (3) — so when several services show
+             *  up together (e.g. a Mac and another Android device) all but one lookup used to fail and
+             *  were never retried, leaving that peer undiscoverable. Lookups are queued and run one at a
+             *  time, and an "already active" failure (some other lookup in flight) is retried. */
+            @Synchronized
+            private fun enqueueResolve(service: NsdServiceInfo, attempt: Int = 0) {
+                resolveQueue.addLast(service to attempt)
+                drainResolveQueue()
+            }
+
+            @Synchronized
+            private fun drainResolveQueue() {
+                if (resolving) return
+                val (service, attempt) = resolveQueue.removeFirstOrNull() ?: return
+                resolving = true
                 nsdManager.resolveService(service, object : NsdManager.ResolveListener {
                     override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
-                        Log.w(TAG, "Resolve failed for ${info.serviceName}: $errorCode")
+                        Log.w(TAG, "Resolve failed for ${info.serviceName}: $errorCode (attempt ${attempt + 1})")
+                        finishResolve()
+                        if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE && attempt < MAX_RESOLVE_ATTEMPTS) {
+                            launch {
+                                delay(RESOLVE_RETRY_DELAY_MS)
+                                enqueueResolve(service, attempt + 1)
+                            }
+                        }
                     }
 
                     override fun onServiceResolved(info: NsdServiceInfo) {
+                        finishResolve()
                         val attrs = info.attributes
                         val peer = DiscoveredPeer(
                             serviceName = info.serviceName,
@@ -99,6 +135,12 @@ class NsdDiscovery(context: Context, private val deviceId: String, private val p
                         trySend(DiscoveryEvent.Found(peer))
                     }
                 })
+            }
+
+            @Synchronized
+            private fun finishResolve() {
+                resolving = false
+                drainResolveQueue()
             }
 
             override fun onServiceLost(service: NsdServiceInfo) {

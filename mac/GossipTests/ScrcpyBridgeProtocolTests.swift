@@ -102,4 +102,12 @@ final class ScrcpyBridgeProtocolTests: XCTestCase {
         XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "192.168.0.122", port: 43417)?.absoluteString, "ws://192.168.0.122:43417/screen")
         XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "fe80::1%en0", port: 9)?.absoluteString, "ws://[fe80::1%25en0]:9/screen")
     }
+
+    func testWebSocketURLHandlesEveryHostShape() {
+        XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "192.168.0.169", port: 41559)?.absoluteString, "ws://192.168.0.169:41559/screen")
+        XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "fe80::1%en0", port: 41559)?.absoluteString, "ws://[fe80::1%25en0]:41559/screen")
+        // A zone on a hostname or IPv4 address (as a Bonjour-resolved connection reports it) is dropped.
+        XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "galaxy-tab.local%en0", port: 41559)?.absoluteString, "ws://galaxy-tab.local:41559/screen")
+        XCTAssertEqual(ScreenBridgeClient.webSocketURL(host: "192.168.0.169%en0", port: 41559)?.absoluteString, "ws://192.168.0.169:41559/screen")
+    }
 }

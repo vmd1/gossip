@@ -167,6 +167,8 @@ final class TransportManager: ObservableObject {
     /// ephemeral port — which left the previous listener's port stale
     /// everywhere it had already been advertised/discovered.
     private var hasStarted = false
+    private var redialTimer: Timer?
+    private static let redialInterval: TimeInterval = 10
 
     /// Starts advertising this Mac on the local network and browsing for
     /// peers. Automatically dials every discovered peer that is already
@@ -208,10 +210,20 @@ final class TransportManager: ObservableObject {
             }
         }
         discovery.startBrowsing()
+
+        // Self-healing redial: a peer that drops while its Bonjour advertisement stays visible produces
+        // no new browse result, so nothing would ever dial it again. Re-offer the visible peers
+        // periodically; `handleDiscoveredPeers` skips anything already connected or being dialled.
+        redialTimer?.invalidate()
+        redialTimer = Timer.scheduledTimer(withTimeInterval: Self.redialInterval, repeats: true) { [weak self] _ in
+            self?.discovery.redeliverPeers()
+        }
     }
 
     func stop() {
         hasStarted = false
+        redialTimer?.invalidate()
+        redialTimer = nil
         discovery.stopAdvertising()
         discovery.stopBrowsing()
         for (deviceId, peer) in peers {
