@@ -47,10 +47,14 @@ final class ScrcpyBridgeProtocolTests: XCTestCase {
     func testTouchLayout() {
         let d = ScrcpyControl.touch(.down, x: 354, y: 1050, width: 576, height: 1280)
         XCTAssertEqual(d.count, 32)
-        XCTAssertEqual([UInt8](d), [2, 0] + [0, 0, 0, 0, 0, 0, 0, 0]       // type, action, pointer id
-            + [0, 0, 1, 0x62] + [0, 0, 4, 0x1A]                              // x=354, y=1050
-            + [2, 0x40] + [5, 0]                                             // 576 x 1280
-            + [0xff, 0xff] + [0, 0, 0, 0] + [0, 0, 0, 0])                    // pressure, buttons
+        var expected: [UInt8] = [2, 0]                               // type, action
+        expected += [UInt8](repeating: 0, count: 8)                  // pointer id
+        expected += [0, 0, 1, 0x62]                                  // x = 354
+        expected += [0, 0, 4, 0x1A]                                  // y = 1050
+        expected += [2, 0x40, 5, 0]                                  // 576 x 1280
+        expected += [0xff, 0xff]                                     // pressure
+        expected += [UInt8](repeating: 0, count: 8)                  // actionButton, buttons
+        XCTAssertEqual([UInt8](d), expected)
         XCTAssertEqual([UInt8](ScrcpyControl.touch(.up, x: 1, y: 1, width: 2, height: 2))[26..<28], [0, 0]) // up = no pressure
     }
 
