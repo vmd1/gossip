@@ -17,7 +17,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -191,9 +195,6 @@ class MainActivity : ComponentActivity() {
                         onRunSetupAgain = {
                             startActivity(Intent(this@MainActivity, OnboardingActivity::class.java))
                         },
-                        onOpenSettings = {
-                            startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
-                        },
                         isNotificationAccessGranted = { isNotificationListenerEnabled(this@MainActivity) },
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -264,25 +265,10 @@ class MainActivity : ComponentActivity() {
                         onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) },
                         hotspotOverrides = hotspotOverrides,
                         batteryStatesProvider = { boundService?.batterySyncManager()?.batteryBySenderId },
-                        onRingDevice = { deviceId, start -> sendRing(deviceId, start) }
+                        ringingPeersProvider = { boundService?.ringManager()?.ringingPeers },
+                        onToggleRing = { deviceId -> boundService?.ringManager()?.toggleRing(deviceId) }
                     )
                 }
-            }
-        }
-    }
-
-    /** Sends `device.ring` (`start`/`stop`) to [deviceId]. */
-    private fun sendRing(deviceId: String, start: Boolean) {
-        val transport = boundService?.transportManager() ?: return
-        val envelope = Envelope(
-            type = MessageType.DEVICE_RING,
-            senderId = IdentityKeyStore.getInstance(applicationContext).deviceId,
-            recipientId = deviceId,
-            payload = dev.vmd1.gossip.features.find.RingManager.payload(if (start) "start" else "stop")
-        )
-        lifecycleScope.launch {
-            runCatching { transport.send(envelope) }.onFailure {
-                android.widget.Toast.makeText(this@MainActivity, "Couldn't reach that device", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -413,7 +399,6 @@ fun ConnectHomeScreen(
     onPairNewDevice: () -> Unit,
     onShowQrToPair: () -> Unit = {},
     onRunSetupAgain: () -> Unit = {},
-    onOpenSettings: () -> Unit = {},
     isNotificationAccessGranted: () -> Boolean = { true },
     onEnableNotificationAccess: () -> Unit = {},
     onSendTestNotification: () -> Unit = {},
@@ -436,7 +421,8 @@ fun ConnectHomeScreen(
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
     hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
     batteryStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.battery.BatteryState>>? = { null },
-    onRingDevice: (deviceId: String, start: Boolean) -> Unit = { _, _ -> }
+    ringingPeersProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    onToggleRing: (deviceId: String) -> Unit = {}
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
@@ -465,17 +451,15 @@ fun ConnectHomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+    // Everything that isn't the status + paired devices lives on the Settings page (pairing, setup,
+    // permissions, hotspot provider, per-feature switches), shown in place of the home screen.
+    var showSettings by remember { mutableStateOf(false) }
+    if (showSettings) {
+        androidx.activity.compose.BackHandler { showSettings = false }
+        dev.vmd1.gossip.ui.SettingsScreen(
+            settings = dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(androidx.compose.ui.platform.LocalContext.current),
+            onBack = { showSettings = false }
         ) {
-            Text("Gossip", style = MaterialTheme.typography.headlineMedium)
-            Text("Status: ${connectionState.name}")
-
             Button(onClick = onPairNewDevice) {
                 Text("Pair New Device")
             }
@@ -486,10 +470,6 @@ fun ConnectHomeScreen(
 
             androidx.compose.material3.TextButton(onClick = onRunSetupAgain) {
                 Text("Run Setup Again")
-            }
-
-            androidx.compose.material3.OutlinedButton(onClick = onOpenSettings) {
-                Text("Settings")
             }
 
             if (!notificationAccessGranted) {
@@ -602,9 +582,37 @@ fun ConnectHomeScreen(
                 }
             }
 
+        }
+        return
+    }
+
+    Scaffold { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text("Gossip", style = MaterialTheme.typography.headlineMedium)
+                androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
+                    androidx.compose.material3.Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings"
+                    )
+                }
+            }
+            ConnectionStatusCard(connectionState)
+
             val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.hotspot.HotspotState>()) })
             val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
+            val ringingPeers by (ringingPeersProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val batteryStates by (batteryStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.battery.BatteryState>()) })
 
             PairedDevicesScreen(
@@ -617,7 +625,8 @@ fun ConnectHomeScreen(
                 onRequestHotspot = onRequestHotspot,
                 hotspotOverrides = hotspotOverrides,
                 batteryStates = batteryStates,
-                onRingDevice = onRingDevice,
+                ringingPeers = ringingPeers,
+                onToggleRing = onToggleRing,
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls
@@ -635,6 +644,38 @@ fun ConnectHomeScreen(
                     devices = trustedDevicesStore.allDevices()
                 }
             )
+        }
+    }
+}
+
+/** Rounded status card: a coloured dot, a plain-language state and a one-line explanation. */
+@Composable
+private fun ConnectionStatusCard(state: ConnectionState) {
+    val (dot, title, detail) = when (state) {
+        ConnectionState.CONNECTED -> Triple(androidx.compose.ui.graphics.Color(0xFF34C759), "Connected", "Syncing with your paired devices")
+        ConnectionState.HANDSHAKING -> Triple(androidx.compose.ui.graphics.Color(0xFFFF9500), "Connecting…", "Securing the connection")
+        ConnectionState.DISCOVERING -> Triple(androidx.compose.ui.graphics.Color(0xFFFFCC00), "Searching…", "Looking for your paired devices")
+        ConnectionState.DISCONNECTED -> Triple(androidx.compose.ui.graphics.Color(0xFF8E8E93), "Disconnected", "Not connected to any device")
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .background(dot, androidx.compose.foundation.shape.CircleShape)
+            )
+            Column {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

@@ -17,17 +17,33 @@ protocol Ringer: AnyObject {
 /// recently-handled cache like `media.command`'s `commandId`) can never restart a ring the user
 /// already stopped. Rings stop on their own after `autoStopInterval`.
 ///
-/// Also the sending half: `sendRing(to:start:)` for the Mac menu's "Ring" button.
+/// Whenever this Mac starts or stops ringing — a `stop` message, the auto-stop, or the local Stop
+/// window — it reports `device.ring_state` back to whoever started the ring, so that device's ring
+/// button can show "ringing" and clear again.
+///
+/// Also the sending half: `toggleRing(deviceId)` for the ring button — starts a ring, or stops it if
+/// that peer is already ringing — tracked in `ringingPeers`. A peer's entry also expires after
+/// `peerRingingExpiry` (just past the auto-stop) as the self-healing backstop if a `ring_state`
+/// report is ever lost.
 final class RingManager: ObservableObject {
     static let autoStopInterval: TimeInterval = 30
     private static let recentCacheSize = 64
 
+    static let peerRingingExpiry: TimeInterval = 35
+
     @Published private(set) var isRinging = false
+    /// Peers this Mac has asked to ring that haven't reported stopping (or expired).
+    @Published private(set) var ringingPeers: Set<String> = []
+    private var peerExpiry: [String: DispatchWorkItem] = [:]
+    /// Who started the ring currently playing here — the device `ring_state` reports go to.
+    private var requesterId: String?
 
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
     private let ringer: Ringer
     private let autoStopAfter: TimeInterval
+    private let peerRingingExpiry: TimeInterval
+    private let sendOverride: ((Envelope) -> Void)?
     private var recentRingIds: [String] = []
     private var autoStop: DispatchWorkItem?
     /// Shown while ringing so the user can silence it from the Mac itself.
@@ -36,7 +52,10 @@ final class RingManager: ObservableObject {
 
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared,
          ringer: Ringer = SystemAlarmRinger(), autoStopAfter: TimeInterval = RingManager.autoStopInterval,
-         showsAlert: Bool = true) {
+         peerRingingExpiry: TimeInterval = RingManager.peerRingingExpiry, showsAlert: Bool = true,
+         sendEnvelope: ((Envelope) -> Void)? = nil) {
+        self.sendOverride = sendEnvelope
+        self.peerRingingExpiry = peerRingingExpiry
         self.transportManager = transportManager
         self.identity = identity
         self.ringer = ringer
@@ -44,6 +63,9 @@ final class RingManager: ObservableObject {
         self.showsAlert = showsAlert
         transportManager.router.register(prefix: "device.ring") { [weak self] envelope in
             DispatchQueue.main.async { self?.handle(envelope) }
+        }
+        transportManager.router.register(prefix: "device.ring_state") { [weak self] envelope in
+            DispatchQueue.main.async { self?.handleRingState(envelope) }
         }
     }
 
@@ -58,7 +80,9 @@ final class RingManager: ObservableObject {
             if recentRingIds.count > Self.recentCacheSize { recentRingIds.removeFirst() }
             guard !isRinging else { return }
             isRinging = true
+            requesterId = envelope.senderId
             ringer.start()
+            reportState(ringing: true)
             if showsAlert { showAlert() }
             let work = DispatchWorkItem { [weak self] in self?.stopRinging() }
             autoStop = work
@@ -77,6 +101,19 @@ final class RingManager: ObservableObject {
         isRinging = false
         ringer.stop()
         alertWindow?.close(); alertWindow = nil
+        reportState(ringing: false)
+        requesterId = nil
+    }
+
+    private func send(_ envelope: Envelope) {
+        if let sendOverride { sendOverride(envelope) } else { try? transportManager?.send(envelope: envelope) }
+    }
+
+    private func reportState(ringing: Bool) {
+        guard let requesterId else { return }
+        let envelope = Envelope(type: "device.ring_state", senderId: identity.deviceId, recipientId: requesterId,
+                                payload: .object(["ringing": .bool(ringing)]))
+        send(envelope)
     }
 
     // MARK: - Sending
@@ -85,10 +122,32 @@ final class RingManager: ObservableObject {
         .object(["action": .string(action), "ringId": .string(ringId)])
     }
 
-    func sendRing(to deviceId: String, start: Bool) {
+    /// Presses the ring button for `deviceId`: stops it if it's ringing, otherwise starts a ring.
+    /// Main-thread only.
+    func toggleRing(_ deviceId: String) {
+        let stopping = ringingPeers.contains(deviceId)
         let envelope = Envelope(type: "device.ring", senderId: identity.deviceId, recipientId: deviceId,
-                                payload: Self.payload(action: start ? "start" : "stop"))
-        try? transportManager?.send(envelope: envelope)
+                                payload: Self.payload(action: stopping ? "stop" : "start"))
+        send(envelope)
+        setPeerRinging(deviceId, !stopping)
+    }
+
+    /// Main-thread only.
+    func handleRingState(_ envelope: Envelope) {
+        guard let ringing = envelope.payload["ringing"]?.boolValue else { return }
+        setPeerRinging(envelope.senderId, ringing)
+    }
+
+    private func setPeerRinging(_ deviceId: String, _ ringing: Bool) {
+        peerExpiry.removeValue(forKey: deviceId)?.cancel()
+        if ringing {
+            ringingPeers.insert(deviceId)
+            let work = DispatchWorkItem { [weak self] in self?.setPeerRinging(deviceId, false) }
+            peerExpiry[deviceId] = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + peerRingingExpiry, execute: work)
+        } else {
+            ringingPeers.remove(deviceId)
+        }
     }
 
     private func showAlert() {

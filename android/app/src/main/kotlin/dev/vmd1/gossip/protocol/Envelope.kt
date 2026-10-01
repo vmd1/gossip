@@ -91,6 +91,7 @@ object MessageType {
     const val LOCK_ON_LEAVE_CONFIG = "lock_on_leave.config"
     const val HOTSPOT_STATE_UPDATE = "hotspot.state_update"
     const val DEVICE_RING = "device.ring"
+    const val DEVICE_RING_STATE = "device.ring_state"
     const val BATTERY_UPDATE = "battery.update"
 }
 
