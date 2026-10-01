@@ -130,4 +130,5 @@ def main():
     adb("forward", "--remove", f"tcp:{port}")
     sys.exit(0 if (n_pkt > 0 and key_frames > 0 and not left) else 1)
 
-main()
+if __name__ == "__main__":
+    main()

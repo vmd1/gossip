@@ -101,6 +101,8 @@ final class TransportManager: ObservableObject {
         /// Set only for outbound dials, so teardown can clear `dialingDeviceIds`.
         var dialTargetDeviceId: String?
         var peerIPAddress: String?
+        /// Same host as `peerIPAddress` but with any `%zone` kept — needed to dial IPv6 link-local peers.
+        var peerHostWithZone: String?
         /// Updated on every successfully-decrypted frame (any type, not just
         /// heartbeats) — see `startHeartbeatMonitoring`'s doc for why this exists.
         var lastReceivedAt: Date = .distantPast
@@ -377,23 +379,19 @@ final class TransportManager: ObservableObject {
         guard let remote = pending.connection.currentPath?.remoteEndpoint ?? pending.connection.endpoint as NWEndpoint? else { return }
         if case .hostPort(let host, _) = remote {
             let ipString = "\(host)"
+            pending.peerHostWithZone = ipString
             pending.peerIPAddress = ipString.split(separator: "%").first.map(String.init) ?? ipString
         }
     }
 
-    /// The remote IP address of the currently-tracked "primary" connected peer
-    /// (see `connectionState`), for `ADBWirelessPairing`'s defense-in-depth
-    /// check that the ADB-paired device is the same phone already
-    /// trust-paired over Connect's Noise-encrypted transport. Use
-    /// `ipAddress(for:)` to look up a specific peer once more than one may be
-    /// connected.
-    var connectedPeerIPAddress: String? {
-        guard case .connected(let deviceId) = connectionState else { return nil }
-        return peers[deviceId]?.peerIPAddress
-    }
-
     func ipAddress(for deviceId: String) -> String? {
         peers[deviceId]?.peerIPAddress
+    }
+
+    /// Like `ipAddress(for:)` but keeps an IPv6 `%zone` (e.g. `fe80::1%en0`), which a plain
+    /// `NWConnection` to a link-local peer needs. Used to dial the screen bridge's WebSocket.
+    func hostWithZone(for deviceId: String) -> String? {
+        peers[deviceId]?.peerHostWithZone ?? peers[deviceId]?.peerIPAddress
     }
 
     /// Tears down the live connection to one specific peer, if any (e.g. after

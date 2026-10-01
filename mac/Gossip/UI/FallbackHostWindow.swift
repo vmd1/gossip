@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// Hosts one device's settings (fallback host, Forget) in a plain `NSWindow` — same
-/// reason as `PairingWindow`/`DNDSetupWindow`/`ADBPairingWindow`: this app's menu bar
+/// reason as `PairingWindow`/`DNDSetupWindow`: this app's menu bar
 /// content is a `MenuBarExtra(.window)` panel, and any interactive control shown from
 /// inside it (a `.sheet`, or a `TextField`/`Button` embedded directly in a `Menu`)
 /// causes the panel to resign key and dismiss itself the instant it's touched — a
