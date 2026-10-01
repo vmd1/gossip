@@ -30,7 +30,9 @@ final class ScreenBridgeClient {
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
         ws.maximumMessageSize = 8 * 1024 * 1024
-        let params = NWParameters.tcp
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true // interactive stream: send touch events immediately
+        let params = NWParameters(tls: nil, tcp: tcp)
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         connection = NWConnection(to: .url(url), using: params)
         self.token = token

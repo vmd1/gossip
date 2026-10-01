@@ -138,8 +138,11 @@ class ScrcpyServerSession private constructor(
                             val buf = ByteArray(len)
                             input.readFully(buf)
                             when (channel) {
-                                ShellRelay.VIDEO -> videoPipeOut.write(buf)
-                                ShellRelay.DEVICE_MSG -> devPipeOut.write(buf)
+                                // flush() is load-bearing: PipedInputStream readers that have caught up
+                                // poll with a 1 s wait unless the writer flushes (which notifies them) —
+                                // without it, frames stalled for up to a second after an idle moment.
+                                ShellRelay.VIDEO -> videoPipeOut.write(buf).also { videoPipeOut.flush() }
+                                ShellRelay.DEVICE_MSG -> devPipeOut.write(buf).also { devPipeOut.flush() }
                             }
                         }
                     } catch (_: IOException) {

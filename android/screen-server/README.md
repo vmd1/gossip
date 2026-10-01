@@ -194,3 +194,22 @@ Back/Home/Recents buttons, click-drag → touch, trackpad scroll → scroll, typ
   (no GUI automation was run), and the Mac↔phone `screen.start`/`screen.ready` exchange over the
   real Noise mesh. Keyboard coverage is basic (printable text, Enter/Delete/Tab/arrows, Esc=Back);
   no clipboard paste, no multi-touch, no audio.
+
+## Latency (measured on the real Samsung SM-S711B over Wi-Fi, 2026-10-01)
+First user report: "noticeable delay between input and response". Measured with a Python viewer
+that sends an input that changes the screen and times the video packets that follow:
+- **Found and fixed a ~1 s stall.** Before the fix there were periodic gaps of ~980–1040 ms in
+  the video stream. Cause: the app's relay demux fed `PipedInputStream`s without `flush()`; a
+  `PipedInputStream` reader that has caught up polls with a 1 s `wait()` unless the writer flushes
+  (which notifies it). After adding `flush()` the max gap during a screen animation dropped from
+  ~980 ms to ~150 ms (`ScrcpyServerSession` demux thread). Also set `TCP_NODELAY` on the phone's
+  accepted socket and the Mac client (precautionary, not separately measured).
+- **After the fix**, input → first changed-screen packet was ~120–280 ms (median ~210 ms, n=16),
+  and the stream's packet pacing through the bridge matched the raw `adb forward` stream, so the
+  bridge itself adds no meaningful delay; the rest is the on-device animation, encode, Wi-Fi and
+  Mac display. Not measured: Mac decode/display time and end-to-end glass-to-glass latency (needs a
+  camera or on-screen timestamp).
+- **Encoder tuning tried, no effect:** `video_codec_options=latency:int=0` and the Exynos
+  `vendor.rtc-ext-enc-low-latency.enable:int=1` gave ~50 packets / ~102 ms p90 gaps in repeated
+  runs, same as default (one outlier run was noise), so they are not set.
+
