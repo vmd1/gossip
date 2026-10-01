@@ -12,3 +12,7 @@ xcuserdata/
 
 # Project instructions (kept locally, not tracked in history)
 CLAUDE.md
+
+# Python bytecode
+__pycache__/
+*.pyc
