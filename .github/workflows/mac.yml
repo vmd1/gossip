@@ -1,0 +1,72 @@
+name: Mac CI
+
+# One macOS job per change: `xcodebuild test` already builds the app, so a separate build job
+# only repeated the same compile on a second (10x-billed, if the repo is ever private) runner.
+# Runs on pull requests (and manually) only — see android.yml for why `push` is not a trigger.
+on:
+  pull_request:
+    paths:
+      - "mac/**"
+      - "schema/**"
+      - ".github/workflows/mac.yml"
+  workflow_dispatch:
+
+# A newer push to the same PR supersedes the run in flight.
+concurrency:
+  group: mac-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mac
+    env:
+      # `brew install` otherwise self-updates and cleans up the whole Homebrew tree first.
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build and test
+        run: >
+          xcodebuild
+          -project Gossip.xcodeproj
+          -scheme Gossip
+          -configuration Debug
+          -destination 'platform=macOS'
+          -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO
+          test
+
+      # Unsigned debug build, produced by the test run above — only zipped/uploaded on demand
+      # (Run workflow); release.yml's Release build is the distributable one.
+      - name: Zip built app bundle
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cd build/Build/Products/Debug
+          zip -r ../../../../gossip-debug.zip Gossip.app
+
+      - name: Upload built app
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gossip-debug-app
+          path: mac/gossip-debug.zip
