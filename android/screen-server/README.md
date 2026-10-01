@@ -1,7 +1,7 @@
 # On-device screen capture (scrcpy server via Shizuku)
 
 **Status (2026-10-01): Android side implemented and verified on Android 16 and Android 12
-emulators. Mac viewer not built; nothing here has run on real hardware.**
+emulators, plus one smoke run on a real Samsung SM-S711B (Android 16). Mac viewer not built.**
 
 Gossip bundles the upstream **scrcpy server** (Genymobile/scrcpy v4.1, Apache 2.0,
 `app/src/main/assets/scrcpy-server-v4.1.jar`, SHA-256
@@ -143,8 +143,23 @@ bridge re-frames these into WebSocket messages (`ScreenBridge.kt` doc comment). 
 scrcpy's wire format isn't a stable API, the jar is pinned and must not be auto-updated; a
 version bump means re-verifying this section.
 
+### 8. Real-hardware smoke run (Samsung SM-S711B, Android 16, mainline Shizuku already running)
+Debug build sideloaded with `adb install -r` (pairing preserved), then `ws_test_client.py
+--seconds 5` (no input injection):
+```
+screen.ready after 3.9s: port=46261
+wrong token rejected: True      second viewer refused: True
+stream header: {'codec': 'h264', 'width': 590, 'height': 1280, 'deviceName': 'SM-S711B'}
+video: 60 packets, 174122 bytes, key frames=1, size msgs=[(590, 1280), (590, 1280)]
+leftover shell app_process after stop: none
+$ ffprobe: codec_name=h264 profile=High width=590 height=1280
+```
+Hardware encoder gives High profile (the emulator's software encoder gave Constrained Baseline).
+`screen.ready` took 3.9 s here vs 1.1 s on the emulators (cold start, includes first-run jar push).
+Still not covered on hardware: control injection, sustained motion, latency, rotation.
+
 ## What is NOT proven / open
-- **Emulator only, not real hardware.** SurfaceFlinger/virtual-display/encoder behavior on a
+- **Mostly emulator-verified; only the smoke run above is on hardware.** SurfaceFlinger/virtual-display/encoder behavior on a
   real phone (vendor encoders, DRM/secure layers, rotation, HDR, display cutouts) can differ;
   the emulator uses the software `c2.android.avc.encoder` and a static screen, so sustained
   motion, bitrate behavior, and latency were **not** measured. The "first video at +4.5s" the test
