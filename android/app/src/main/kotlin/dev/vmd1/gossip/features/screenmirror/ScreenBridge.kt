@@ -117,6 +117,7 @@ class ScreenBridge(
                 l.soTimeout = remaining.toInt()
                 val sock = try { l.accept() } catch (_: java.net.SocketTimeoutException) { continue }
                 val ws = try {
+                    sock.tcpNoDelay = true // interactive stream: never let Nagle hold back a small frame/ack
                     sock.soTimeout = AUTH_TIMEOUT_MS
                     WebSocketConnection.accept(sock)
                 } catch (e: IOException) {
