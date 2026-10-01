@@ -261,9 +261,28 @@ class MainActivity : ComponentActivity() {
                         },
                         hotspotStatesProvider = { boundService?.hotspotStateManager()?.hotspotStateBySenderId },
                         bleHotspotOnStatesProvider = { boundService?.bleProximityMonitor()?.hotspotOnByDeviceId },
-                        onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) }
+                        onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) },
+                        hotspotOverrides = hotspotOverrides,
+                        batteryStatesProvider = { boundService?.batterySyncManager()?.batteryBySenderId },
+                        onRingDevice = { deviceId, start -> sendRing(deviceId, start) }
                     )
                 }
+            }
+        }
+    }
+
+    /** Sends `device.ring` (`start`/`stop`) to [deviceId]. */
+    private fun sendRing(deviceId: String, start: Boolean) {
+        val transport = boundService?.transportManager() ?: return
+        val envelope = Envelope(
+            type = MessageType.DEVICE_RING,
+            senderId = IdentityKeyStore.getInstance(applicationContext).deviceId,
+            recipientId = deviceId,
+            payload = dev.vmd1.gossip.features.find.RingManager.payload(if (start) "start" else "stop")
+        )
+        lifecycleScope.launch {
+            runCatching { transport.send(envelope) }.onFailure {
+                android.widget.Toast.makeText(this@MainActivity, "Couldn't reach that device", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -279,6 +298,11 @@ class MainActivity : ComponentActivity() {
      *  ([dev.vmd1.gossip.features.hotspot.HotspotAutoConnect.disconnect]) once this device
      *  no longer needs it, rather than holding the connection open forever. Only one at
      *  a time, matching [requestHotspot] only ever having one request in flight. */
+    /** The hotspot state the phone itself just confirmed over GATT, per device (state, time ms). The BLE
+     *  advertisement bit and the mesh report both lag a real toggle by several seconds, so the icon
+     *  trusts this until they catch up — see [PairedDevicesScreen]. */
+    private val hotspotOverrides = androidx.compose.runtime.mutableStateMapOf<String, Pair<Boolean, Long>>()
+
     private var activeHotspotConnection: android.net.ConnectivityManager.NetworkCallback? = null
 
     /** Sends a signed `hotspot.toggle_request` to [deviceId] over BLE GATT, and on a
@@ -306,6 +330,7 @@ class MainActivity : ComponentActivity() {
                     android.widget.Toast.makeText(this@MainActivity, "Hotspot request failed: ${result.reason}", android.widget.Toast.LENGTH_LONG).show()
                 }
                 is dev.vmd1.gossip.features.hotspot.HotspotGattClient.Result.Success -> {
+                    hotspotOverrides[deviceId] = result.enabled to System.currentTimeMillis()
                     if (!enable) {
                         val message = if (!result.enabled) "Hotspot turned off" else "That device kept its hotspot on"
                         android.widget.Toast.makeText(this@MainActivity, message, android.widget.Toast.LENGTH_SHORT).show()
@@ -408,7 +433,10 @@ fun ConnectHomeScreen(
     onSetProvideHotspotEnabled: (Boolean) -> Unit = {},
     hotspotStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.hotspot.HotspotState>>? = { null },
     bleHotspotOnStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>>? = { null },
-    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
+    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
+    hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
+    batteryStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.battery.BatteryState>>? = { null },
+    onRingDevice: (deviceId: String, start: Boolean) -> Unit = { _, _ -> }
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
@@ -577,6 +605,7 @@ fun ConnectHomeScreen(
             val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.hotspot.HotspotState>()) })
             val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
+            val batteryStates by (batteryStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.battery.BatteryState>()) })
 
             PairedDevicesScreen(
                 devices = devices,
@@ -586,6 +615,9 @@ fun ConnectHomeScreen(
                 hotspotStates = hotspotStates,
                 bleHotspotOnStates = bleHotspotOnStates,
                 onRequestHotspot = onRequestHotspot,
+                hotspotOverrides = hotspotOverrides,
+                batteryStates = batteryStates,
+                onRingDevice = onRingDevice,
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls

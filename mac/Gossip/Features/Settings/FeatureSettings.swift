@@ -6,7 +6,7 @@ import Combine
 /// for it are never sent and incoming ones are dropped (see `isMessageAllowed`), plus local
 /// triggers that don't go through messages (e.g. Lock-on-Leave's BLE trigger) are skipped.
 enum Feature: String, CaseIterable, Identifiable {
-    case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot
+    case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot, findDevice, battery
 
     var id: String { rawValue }
 
@@ -19,6 +19,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .screenMirroring: return "Screen mirroring"
         case .lockOnLeave: return "Lock on leave"
         case .hotspot: return "Instant Hotspot"
+        case .findDevice: return "Find my device"
+        case .battery: return "Battery sync"
         }
     }
 
@@ -31,6 +33,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .screenMirroring: return "Mirror and control your phone's screen, with audio."
         case .lockOnLeave: return "Lock this Mac when your phone walks out of range."
         case .hotspot: return "Join your phone's hotspot from this Mac with one click."
+        case .findDevice: return "Let paired devices make this Mac ring so you can find it, and ring theirs."
+        case .battery: return "Share this Mac's battery level and get low-battery alerts for paired devices."
         }
     }
 
@@ -46,6 +50,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .screenMirroring: return []
         case .lockOnLeave: return ["lock_on_leave."]
         case .hotspot: return ["hotspot."]
+        case .findDevice: return ["device."]
+        case .battery: return ["battery."]
         }
     }
 }

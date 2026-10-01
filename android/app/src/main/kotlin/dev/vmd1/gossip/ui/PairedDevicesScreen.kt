@@ -41,7 +41,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import dev.vmd1.gossip.crypto.TrustedDevice
+import dev.vmd1.gossip.features.battery.BatteryState
+import dev.vmd1.gossip.features.battery.BatterySyncManager
 import dev.vmd1.gossip.features.hotspot.HotspotState
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Battery2Bar
+import androidx.compose.material.icons.filled.Battery3Bar
+import androidx.compose.material.icons.filled.Battery4Bar
+import androidx.compose.material.icons.filled.Battery5Bar
+import androidx.compose.material.icons.filled.Battery6Bar
+import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.foundation.layout.size
 import dev.vmd1.gossip.protocol.DeviceType
 
 /** Icon shown in place of the old plain-text device-type subtitle. */
@@ -51,6 +63,20 @@ private val DeviceType.icon: ImageVector
         DeviceType.ANDROID_PHONE -> Icons.Default.PhoneAndroid
         DeviceType.ANDROID_TABLET -> Icons.Default.TabletMac
     }
+
+private const val HOTSPOT_OVERRIDE_MS = 30_000L
+
+/** Battery glyph for a reported level: charging bolt, low-battery alert, else a level-matched bar icon. */
+private fun batteryIcon(b: BatteryState): ImageVector = when {
+    b.isCharging -> Icons.Default.BatteryChargingFull
+    b.level <= BatterySyncManager.LOW_THRESHOLD -> Icons.Default.BatteryAlert
+    b.level >= 95 -> Icons.Default.BatteryFull
+    b.level >= 80 -> Icons.Default.Battery6Bar
+    b.level >= 65 -> Icons.Default.Battery5Bar
+    b.level >= 50 -> Icons.Default.Battery4Bar
+    b.level >= 35 -> Icons.Default.Battery3Bar
+    else -> Icons.Default.Battery2Bar
+}
 
 /** Lists trusted devices from the `TrustedDevices` table, each with a "Forget" action
  *  that revokes trust (see [dev.vmd1.gossip.crypto.TrustedDevicesStore.revoke]) and a
@@ -67,7 +93,10 @@ fun PairedDevicesScreen(
     onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
     hotspotStates: Map<String, HotspotState> = emptyMap(),
     bleHotspotOnStates: Map<String, Boolean> = emptyMap(),
-    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
+    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
+    hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
+    batteryStates: Map<String, BatteryState> = emptyMap(),
+    onRingDevice: (deviceId: String, start: Boolean) -> Unit = { _, _ -> }
 ) {
     Column {
         Text("Paired devices", style = MaterialTheme.typography.titleMedium)
@@ -89,6 +118,17 @@ fun PairedDevicesScreen(
                             modifier = Modifier.padding(end = 8.dp)
                         )
                         Text(device.deviceName)
+                        batteryStates[device.deviceId]?.let { b ->
+                            val low = b.level <= BatterySyncManager.LOW_THRESHOLD && !b.isCharging
+                            val tint = if (low) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                            Icon(
+                                imageVector = batteryIcon(b),
+                                contentDescription = "Battery ${b.level}%" + if (b.isCharging) ", charging" else "",
+                                tint = tint,
+                                modifier = Modifier.padding(start = 8.dp).size(18.dp)
+                            )
+                            Text("${b.level}%", style = MaterialTheme.typography.bodySmall, color = tint)
+                        }
                         if (device.deviceId in nearbyDeviceIds) {
                             Icon(
                                 imageVector = Icons.Default.Bluetooth,
@@ -103,6 +143,24 @@ fun PairedDevicesScreen(
                     // in the middle of the row instead of keeping it against the right
                     // edge next to the settings button.
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        var confirmRing by remember(device.deviceId) { mutableStateOf(false) }
+                        IconButton(onClick = { confirmRing = true }) {
+                            Icon(Icons.Default.NotificationsActive, contentDescription = "Ring ${device.deviceName}")
+                        }
+                        if (confirmRing) {
+                            AlertDialog(
+                                onDismissRequest = { confirmRing = false },
+                                title = { Text("Ring ${device.deviceName}?") },
+                                text = { Text("It will play a loud alarm, even if silenced, until stopped or after 30 seconds.") },
+                                confirmButton = { TextButton(onClick = { onRingDevice(device.deviceId, true); confirmRing = false }) { Text("Ring") } },
+                                dismissButton = {
+                                    Row {
+                                        TextButton(onClick = { onRingDevice(device.deviceId, false); confirmRing = false }) { Text("Stop ringing") }
+                                        TextButton(onClick = { confirmRing = false }) { Text("Cancel") }
+                                    }
+                                }
+                            )
+                        }
                         if (device.deviceType == DeviceType.ANDROID_PHONE) {
                             // Prefer the BLE-observed on/off bit when nearby — it stays
                             // live even with no mesh connection to this device at all,
@@ -113,11 +171,17 @@ fun PairedDevicesScreen(
                             // `enabled` bit in when both sources exist.
                             val bleOn = if (device.deviceId in nearbyDeviceIds) bleHotspotOnStates[device.deviceId] else null
                             val meshState = hotspotStates[device.deviceId]
-                            val state = when {
+                            val underlying = when {
                                 bleOn != null && meshState != null -> meshState.copy(enabled = bleOn)
                                 bleOn != null -> HotspotState(enabled = bleOn)
                                 else -> meshState
                             }
+                            // Both sources lag a real toggle by several seconds; trust what the phone
+                            // itself just confirmed over GATT until they agree (or 30s pass).
+                            val override = hotspotOverrides[device.deviceId]
+                            val state = if (override != null && System.currentTimeMillis() - override.second < HOTSPOT_OVERRIDE_MS &&
+                                underlying?.enabled != override.first
+                            ) HotspotState(override.first, if (override.first) underlying?.ssid else null) else underlying
                             state?.let { s ->
                                 IconButton(onClick = { onRequestHotspot(device.deviceId, !s.enabled) }) {
                                     Icon(

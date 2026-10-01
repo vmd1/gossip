@@ -31,6 +31,11 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     private var sharedSecretKey: SymmetricKey?
     private var pendingRequest: HotspotGattProtocol.ToggleRequestPayload?
     private var pendingPeripheralIdentifier: UUID?
+    /// macOS caches a peripheral's GATT table across connections; if the phone's table changed
+    /// since (its service handles move whenever the app restarts) the filtered discovery can
+    /// return the service with no characteristics. One unfiltered re-discovery is attempted
+    /// before giving up.
+    private var retriedUnfilteredDiscovery = false
 
     init(identity: IdentityKeyStore = .shared, trustedDevices: TrustedDevicesStore = .shared) {
         self.identity = identity
@@ -104,6 +109,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
 
     private func settle(_ result: Result) {
         guard let completion else { return }
+        BLEProximityMonitor.debugLog("GattClient: settle \(result)")
         self.completion = nil
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil
@@ -111,6 +117,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
             centralManager.cancelPeripheralConnection(peripheral)
         }
         peripheral = nil
+        retriedUnfilteredDiscovery = false
         requestCharacteristic = nil
         responseCharacteristic = nil
         outboundQueue = []
@@ -128,6 +135,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        BLEProximityMonitor.debugLog("GattClient: didConnect \(peripheral.identifier)")
         peripheral.discoverServices([HotspotGattProtocol.serviceUUID])
     }
 
@@ -144,6 +152,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     // MARK: - CBPeripheralDelegate
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        BLEProximityMonitor.debugLog("GattClient: didDiscoverServices error=\(String(describing: error)) services=\(peripheral.services?.map { $0.uuid.uuidString } ?? [])")
         guard let service = peripheral.services?.first(where: { $0.uuid == HotspotGattProtocol.serviceUUID }) else {
             settle(.failed("Hotspot GATT service not found on this device"))
             return
@@ -155,15 +164,21 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let characteristics = service.characteristics else {
-            settle(.failed("No characteristics found on hotspot GATT service"))
+        BLEProximityMonitor.debugLog("GattClient: didDiscoverCharacteristics error=\(String(describing: error)) chars=\(service.characteristics?.map { $0.uuid.uuidString } ?? []) pendingRequest=\(pendingRequest != nil)")
+        let characteristics = service.characteristics ?? []
+        if characteristics.isEmpty, !retriedUnfilteredDiscovery {
+            retriedUnfilteredDiscovery = true
+            BLEProximityMonitor.debugLog("GattClient: empty characteristic list (likely a stale GATT cache) — retrying unfiltered")
+            peripheral.discoverCharacteristics(nil, for: service)
             return
         }
         guard let foundRequestCharacteristic = characteristics.first(where: { $0.uuid == HotspotGattProtocol.requestCharacteristicUUID }),
               let foundResponseCharacteristic = characteristics.first(where: { $0.uuid == HotspotGattProtocol.responseCharacteristicUUID }),
               pendingRequest != nil
         else {
-            settle(.failed("Hotspot GATT characteristics not found on this device"))
+            settle(.failed(characteristics.isEmpty
+                ? "This Mac has a stale Bluetooth cache for the phone — turn Bluetooth off and on, then retry"
+                : "Hotspot GATT characteristics not found on this device"))
             return
         }
         requestCharacteristic = foundRequestCharacteristic

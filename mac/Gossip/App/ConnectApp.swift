@@ -20,6 +20,9 @@ struct ConnectApp: App {
     @StateObject private var bleProximityMonitor: BLEProximityMonitor
     @StateObject private var hotspotStateManager: HotspotStateManager
     private let lockOnLeaveManager: LockOnLeaveManager
+    @StateObject private var ringManager: RingManager
+    @StateObject private var batterySyncManager: BatterySyncManager
+    private let batteryResyncSubscriptions = SubscriptionBox()
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
     /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
@@ -49,6 +52,8 @@ struct ConnectApp: App {
     private let onboardingPairingWindowBox = WindowBox()
 
     init() {
+        // Must come before anything that binds a port, starts BLE or watches the pasteboard.
+        SingleInstanceGuard.exitIfAnotherInstanceIsRunning()
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         let screenMirror = ScreenMirrorController()
@@ -70,6 +75,10 @@ struct ConnectApp: App {
             trustedDevicesStore: TrustedDevicesStore.shared,
             bleProximityMonitor: bleMonitor
         )
+        _ringManager = StateObject(wrappedValue: RingManager(transportManager: transport))
+        let battery = BatterySyncManager(transportManager: transport)
+        _batterySyncManager = StateObject(wrappedValue: battery)
+        battery.start()
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
@@ -163,9 +172,12 @@ struct ConnectApp: App {
         // on *every* connect, including the very first one after a fresh launch — which is
         // exactly the case most likely to happen before the user has ever opened the tray.
         let clipboard = clipboardSyncManager
-        subscriptions.cancellable = transport.$connectionState.sink { [dndSyncManager, clipboard, notificationMirror] state in
+        subscriptions.cancellable = transport.$connectionState.sink { [dndSyncManager, clipboard, notificationMirror, battery] state in
             if case .connected = state {
                 clipboard.start()
+                // Same reasoning as dndSyncManager.reportInitialSyncState: a peer that reconnects
+                // shouldn't wait for the next battery change to learn this Mac's level.
+                battery.reportInitialSyncState()
                 notificationMirror.refreshAuthorizationStatus()
                 dndSyncManager.reportInitialSyncState()
             } else {
@@ -188,6 +200,16 @@ struct ConnectApp: App {
             .sink { [dndSyncManager, transport] _ in
                 if case .connected = transport.connectionState {
                     dndSyncManager.reportInitialSyncState()
+                }
+            }
+
+        // Self-healing backstop for `battery.update` (see BatterySyncManager): re-sends the current
+        // reading every 60s while connected, on top of the change-driven and on-connect sends.
+        batteryResyncSubscriptions.cancellable = Timer.publish(every: 60, on: .main, in: .common)
+            .autoconnect()
+            .sink { [transport, battery] _ in
+                if case .connected = transport.connectionState {
+                    battery.reportInitialSyncState()
                 }
             }
 
@@ -249,6 +271,8 @@ struct ConnectApp: App {
                 rosterGossipManager: rosterGossipManager,
                 bleProximityMonitor: bleProximityMonitor,
                 hotspotStateManager: hotspotStateManager,
+                ringManager: ringManager,
+                batterySyncManager: batterySyncManager,
                 featureSettings: FeatureSettings.shared
             )
         }

@@ -34,7 +34,9 @@ enum class Feature(val title: String, val detail: String, val messagePrefixes: L
         "Lock a paired device when this phone walks out of range, or lock this one when a paired phone does.",
         listOf("lock_on_leave.")
     ),
-    HOTSPOT("Instant Hotspot", "Share this phone's hotspot with paired devices, or request theirs.", listOf("hotspot."));
+    HOTSPOT("Instant Hotspot", "Share this phone's hotspot with paired devices, or request theirs.", listOf("hotspot.")),
+    FIND_DEVICE("Find my device", "Let paired devices make this one ring so you can find it, and ring theirs.", listOf("device.")),
+    BATTERY("Battery sync", "Share this device's battery level and get low-battery alerts for paired devices.", listOf("battery."));
 }
 
 /**

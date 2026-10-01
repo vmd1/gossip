@@ -34,6 +34,8 @@ final class FeatureSettingsTests: XCTestCase {
         XCTAssertEqual(FeatureSettings.feature(forMessageType: "media.nowplaying"), .media)
         XCTAssertEqual(FeatureSettings.feature(forMessageType: "lock_on_leave.config"), .lockOnLeave)
         XCTAssertEqual(FeatureSettings.feature(forMessageType: "hotspot.state_update"), .hotspot)
+        XCTAssertEqual(FeatureSettings.feature(forMessageType: "device.ring"), .findDevice)
+        XCTAssertEqual(FeatureSettings.feature(forMessageType: "battery.update"), .battery)
         for unowned in ["handshake.hello", "presence.heartbeat", "trust.roster_update", "screen.start", "screen.ready"] {
             XCTAssertNil(FeatureSettings.feature(forMessageType: unowned), unowned)
         }
