@@ -7,20 +7,16 @@ end to end on real hardware** (this Mac + Samsung SM-S711B, Android 16): a real
 Mac-originated request over BLE GATT turned the phone's hotspot on, read back its real SSID and
 password via a Shizuku-brokered privileged call, encrypted them, and the Mac decrypted and
 recovered them correctly. See "Status as of this session" below for the full breakdown and the
-live-test transcript. `hotspot.auto_config`/the WAN-reachability probe (auto-hotspot-on-timeout)
-is now also built (build-verified, not yet live-tested) — see its own section below. Not yet
+live-test transcript. The WAN-reachability auto-request (`hotspot.auto_config`) that was once built on top of this has
+since been removed entirely — see "Auto-request removed" below; Instant Hotspot is manual-trigger only. Not yet
 built: UI polish, and live-testing a couple of symmetric paths this session's hardware couldn't
 reach (Android-as-requester, Mac's own auto-connect actually joining a network) — see "Not yet
 built" at the end of this doc.
 
 ## Design decisions made
 
-- **Scope**: both the manual toggle and the auto-hotspot-on-timeout trigger, built together
-  (not staged).
-- **"Offline" for auto-hotspot-on-timeout**: real internet/WAN reachability, not just mesh-peer
-  liveness — needs a small periodic connectivity probe distinct from the existing
-  `connectionState`/heartbeat machinery, which only tracks whether a mesh peer is reachable, not
-  whether *this device* has a working internet path. Not yet implemented.
+- **Scope**: the manual toggle only. An automatic request-on-WAN-loss trigger was built and later
+  removed (see "Auto-request removed" below) — a hotspot is only ever requested by an explicit tap.
 - **GATT request authentication**: sign with the sender's existing Ed25519 identity key
   (`IdentityKeyStore.signingKey`), verified by the recipient against the sender's already-known
   Ed25519 public key — authenticity only, no confidentiality, since "turn hotspot on/off" and its
@@ -366,42 +362,19 @@ just the debug hook) found five more real bugs, all fixed and live-reverified:
    the BLE bit's `enabled` value whenever the peer is currently BLE-nearby (fresher by construction)
    while keeping the mesh report's `ssid` either way.
 
-## WAN-reachability probe + auto-request-hotspot — built
+## Auto-request removed
 
-The last originally-scoped piece: `hotspot.auto_config` (the per-pair auto-request eligibility
-flag) plus the WAN-reachability probe that triggers an automatic `hotspot.toggle_request`, no tap
-needed.
-
-- **Probe**: a raw TCP connect to `1.1.1.1:443` (Cloudflare's resolver — a fixed IP, not a
-  hostname, so this never depends on DNS) every 20s, 5s timeout — `WanReachabilityMonitor.kt`
-  (Android, `java.net.Socket`) / `.swift` (Mac, `NWConnection`). ICMP ping was rejected per the
-  original design note: it needs a permission Android doesn't grant a normal app.
-- **Trigger**: fires once per offline episode (edge-triggered, mirroring
-  `LockOnLeaveManager`'s "once per transition" convention) once both at least 1 minute have
-  elapsed since the last successful probe *and* at least 3 consecutive probes have failed — the
-  consecutive-failure debounce exists so one dropped probe can't trip this alone, same
-  "don't be a hair-trigger" reasoning as `docs/ble-proximity-protocol.md`'s RSSI-loss timeout.
-- **Two separate opt-in settings**, both local-only, never sent over the wire (matching
-  `TrustedDevice.fallbackHost`'s precedent): a global per-device switch
-  (`OnboardingPreferences.autoRequestHotspotEnabled`, home screen/menu-bar toggle, off by
-  default) and a per-trusted-phone eligibility flag (`TrustedDevice.autoHotspotRequestEligible`,
-  a field on that row exactly like `lockOnLeaveEnabled`, toggled in that phone's settings
-  dialog/window). Both must be true for an auto-request to fire against a given phone.
-- **Candidate selection** (`AutoHotspotRequestManager` on both platforms): first nearby,
-  hotspot-available, not-already-on, eligible trusted phone wins — no fancier tiebreak. Mac/
-  Android-tablet use the existing continuous `BLEProximityMonitor.nearbyDeviceIds`; a requesting
-  Android **phone** (which has no continuous central-scan role) runs `startHotspotRequestScan`
-  for a bounded ~8s window instead, mirroring the manual phone-requests-from-phone path, then
-  tears the scan back down.
-- **On success**, the same `HotspotAutoConnect` join used by the manual button runs
-  automatically. **Deliberately no auto-shutoff**: once back online, the manual toggle/icon still
-  controls turning the hotspot off — auto-shutoff has its own false-negative risk (a brief WAN
-  blip yanking a hotspot out from under active use), and wasn't asked for.
-- **Cooldown**: 60s after each attempt (success or failure) before firing again, so a flapping
-  WAN connection can't spam requests; only one request is ever in flight at a time, same as the
-  manual button.
-- Build-verified on both platforms (`./gradlew :app:compileDebugKotlin`, `xcodebuild ... build`);
-  not yet live-tested against a real offline episode on real hardware.
+An earlier iteration added a WAN-reachability probe (a TCP connect to `1.1.1.1:443` every 20 s)
+that automatically sent a `hotspot.toggle_request` after the device had been offline for a while,
+gated by a per-device switch and a per-phone eligibility flag (`TrustedDevice.
+autoHotspotRequestEligible`). It was removed on both platforms by product decision: Instant
+Hotspot is **manual only** (the hotspot icon / "request hotspot" button), and a device never
+requests a hotspot on its own. Removed: `AutoHotspotRequestManager` and `WanReachabilityMonitor`
+(both platforms), the home-screen/menu-bar "Auto-request Instant Hotspot" switch, the per-phone
+eligibility toggle and its stored field, and `OnboardingPreferences.autoRequestHotspotEnabled`.
+Old stored rows that still carry the dropped field load fine (Android's row decoder ignores
+unknown keys; Mac's `Codable` already did). `hotspot.auto_config` was never registered in
+`schema/message-types.md`, so no wire entry needed to change.
 
 ## Not yet built
 
