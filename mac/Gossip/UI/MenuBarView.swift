@@ -12,15 +12,13 @@ struct MenuBarView: View {
     let rosterGossipManager: RosterGossipManager
     @ObservedObject var bleProximityMonitor: BLEProximityMonitor
     @ObservedObject var hotspotStateManager: HotspotStateManager
+    @ObservedObject var featureSettings: FeatureSettings
 
-    @State private var pairingWindow: PairingWindow?
-    @State private var dndSetupWindow: DNDSetupWindow?
+    @State private var settingsWindow: SettingsWindow?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
-    @State private var onboardingWindow: OnboardingWindow?
     @State private var hotspotGattClients: [String: HotspotGattClient] = [:]
     @State private var hotspotStatusMessages: [String: String] = [:]
     @State private var activeHotspotAutoConnect: HotspotAutoConnect?
-    @State private var autoRequestHotspotEnabled: Bool = OnboardingPreferences.autoRequestHotspotEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -37,77 +35,13 @@ struct MenuBarView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if let nowPlaying = mediaControlManager.nowPlaying {
+            if featureSettings.isEnabled(.media), let nowPlaying = mediaControlManager.nowPlaying {
                 Divider()
                 if mediaControlManager.nowPlayingByDevice.count > 1 {
                     mediaDevicePicker
                 }
                 NowPlayingView(nowPlaying: nowPlaying, mediaControlManager: mediaControlManager)
             }
-
-            Divider()
-
-            Button("Pair New Device…") {
-                pairingViewModel.startPairing()
-                let window = PairingWindow(pairingViewModel: pairingViewModel)
-                pairingWindow = window
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-            }
-
-            // Only shown before first-run onboarding completes — after that, DND setup is
-            // reachable via "Run Setup Again…"'s permissions step (which has its own
-            // "Set Up DND Sync…" button), so this standalone entry would just be a
-            // redundant second way to the same window cluttering the everyday menu.
-            if !OnboardingPreferences.isCompleted {
-                Button("Do Not Disturb Sync Setup…") {
-                    let window = DNDSetupWindow()
-                    dndSetupWindow = window
-                    window.makeKeyAndOrderFront(nil)
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-            }
-
-            Button("Run Setup Again…") {
-                let window = OnboardingWindow(
-                    onPairNewDevice: {
-                        pairingViewModel.startPairing()
-                        let pairing = PairingWindow(pairingViewModel: pairingViewModel)
-                        pairingWindow = pairing
-                        pairing.makeKeyAndOrderFront(nil)
-                        NSApp.activate(ignoringOtherApps: true)
-                    },
-                    onOpenDNDSetup: {
-                        let dnd = DNDSetupWindow()
-                        dndSetupWindow = dnd
-                        dnd.makeKeyAndOrderFront(nil)
-                        NSApp.activate(ignoringOtherApps: true)
-                    },
-                    notificationAuthorizationStatus: { notificationMirrorManager.authorizationStatus },
-                    onOpenNotificationSettings: {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                )
-                onboardingWindow = window
-                window.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-            }
-
-            Divider()
-
-            Toggle(
-                "Auto-request Instant Hotspot",
-                isOn: Binding(
-                    get: { autoRequestHotspotEnabled },
-                    set: {
-                        autoRequestHotspotEnabled = $0
-                        OnboardingPreferences.autoRequestHotspotEnabled = $0
-                    }
-                )
-            )
-            .help("When this Mac has no internet for a minute, automatically request a hotspot from a nearby eligible phone (set per-phone in that phone's settings).")
 
             Divider()
 
@@ -132,10 +66,10 @@ struct MenuBarView: View {
                                     .help("Nearby over Bluetooth")
                             }
                             Spacer()
-                            if device.deviceType != .mac {
+                            if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
                                 mirrorButton(for: device)
                             }
-                            if device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
+                            if featureSettings.isEnabled(.hotspot), device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
                                 hotspotButton(for: device, state: state)
                             }
                             deviceSettingsMenu(for: device)
@@ -150,6 +84,23 @@ struct MenuBarView: View {
             }
 
             Divider()
+
+            Divider()
+
+            Button("Settings…") {
+                if let existing = settingsWindow, existing.isVisible {
+                    existing.makeKeyAndOrderFront(nil)
+                } else {
+                    let window = SettingsWindow(
+                        featureSettings: featureSettings,
+                        pairingViewModel: pairingViewModel,
+                        notificationMirrorManager: notificationMirrorManager
+                    )
+                    settingsWindow = window
+                    window.makeKeyAndOrderFront(nil)
+                }
+                NSApp.activate(ignoringOtherApps: true)
+            }
 
             Button("Quit Gossip") {
                 NSApplication.shared.terminate(nil)

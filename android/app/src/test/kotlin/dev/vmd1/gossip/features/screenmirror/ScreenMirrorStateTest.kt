@@ -31,6 +31,7 @@ class ScreenMirrorStateTest {
     private val sessions = CopyOnWriteArrayList<FakeSession>()
     private var shizuku = true
     private var failStart = false
+    private var screenEnabled = true
 
     private fun state() = ScreenMirrorState(
         selfId = "phone",
@@ -39,6 +40,7 @@ class ScreenMirrorStateTest {
         send = { sent.add(it) },
         sessionFactory = { id, _, _ -> FakeSession(id, failStart).also { sessions.add(it) } },
         warn = { _, _ -> },
+        isEnabled = { screenEnabled },
     )
 
     private fun env(type: String, sessionId: String? = null) = Envelope(
@@ -151,5 +153,22 @@ class ScreenMirrorStateTest {
         s.onScreenStop(env(MessageType.SCREEN_STOP)) // no sessionId: must not end the active session
         assertTrue(s.isMirroring.value)
         assertEquals(0, sessions[0].closed)
+    }
+
+    @Test fun featureTurnedOffRefusesWithoutLaunchingAnything() {
+        screenEnabled = false
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "a"))
+        awaitSent(1)
+        assertEquals(MessageType.SCREEN_ERROR, sent[0].type)
+        assertEquals("feature_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals("mac", sent[0].recipientId)
+        assertEquals(0, sessions.size)
+        assertFalse(s.isMirroring.value)
+
+        screenEnabled = true // turning it back on lets the same viewer try again
+        s.onScreenStart(env(MessageType.SCREEN_START, "a"))
+        awaitSent(2)
+        assertEquals(MessageType.SCREEN_READY, sent[1].type)
     }
 }

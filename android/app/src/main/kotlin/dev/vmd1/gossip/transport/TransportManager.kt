@@ -76,7 +76,9 @@ class TransportManager(
     private val trustedDevicesStore: TrustedDevicesStore,
     val messageRouter: MessageRouter,
     private val deviceName: String = Build.MODEL ?: "Android device",
-    private val deviceType: DeviceType = DeviceType.ANDROID_PHONE
+    private val deviceType: DeviceType = DeviceType.ANDROID_PHONE,
+    /** Per-device feature toggles: sends for a feature turned off on this device are silently skipped. */
+    private val isMessageAllowed: (type: String) -> Boolean = { true }
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -289,6 +291,7 @@ class TransportManager(
      *  broadcast that somehow finds its way back around the mesh) is dropped rather than
      *  re-delivered back to whoever just sent it. */
     suspend fun send(envelope: Envelope) = withContext(Dispatchers.IO) {
+        if (!isMessageAllowed(envelope.type)) return@withContext
         recordSeen(envelope.id)
         val targets = forwardTargets(envelope, arrivedFrom = null)
         if (targets.isEmpty()) throw IllegalStateException("Not connected")
@@ -319,6 +322,7 @@ class TransportManager(
      *  connection to any of those targets receive it via each target's own relay (see
      *  [handleReceivedEnvelope]), not directly from here. */
     suspend fun send(envelope: Envelope, rawFollowup: ByteArray) = withContext(Dispatchers.IO) {
+        if (!isMessageAllowed(envelope.type)) return@withContext
         recordSeen(envelope.id)
         val targets = forwardTargets(envelope, arrivedFrom = null)
         if (targets.isEmpty()) throw IllegalStateException("Not connected")

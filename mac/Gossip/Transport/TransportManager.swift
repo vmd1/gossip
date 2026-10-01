@@ -82,6 +82,8 @@ final class TransportManager: ObservableObject {
     }
 
     let router = MessageRouter()
+    /// Per-device feature toggles: sends for a disabled feature are silently skipped (see `FeatureSettings`).
+    var featureSettings: FeatureSettings = .shared
 
     private let discovery = LocalDiscovery()
     private let identity = IdentityKeyStore.shared
@@ -734,6 +736,7 @@ final class TransportManager: ObservableObject {
     /// somehow finds its way back around the mesh) is dropped rather than
     /// re-delivered to whoever just sent it.
     func send(envelope: Envelope) throws {
+        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
         recordSeen(envelope.id)
         let targets = forwardTargets(for: envelope, arrivedFrom: nil)
         guard !targets.isEmpty else { throw SendError.notConnected }
@@ -783,6 +786,7 @@ final class TransportManager: ObservableObject {
     /// with no direct connection to any of those targets receive it via each target's
     /// own relay (see `handleReceivedEnvelope`), not directly from here.
     func send(_ envelope: Envelope, withRawFollowup rawData: Data) throws {
+        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
         recordSeen(envelope.id)
         let targets = forwardTargets(for: envelope, arrivedFrom: nil)
         guard !targets.isEmpty else { throw SendError.notConnected }

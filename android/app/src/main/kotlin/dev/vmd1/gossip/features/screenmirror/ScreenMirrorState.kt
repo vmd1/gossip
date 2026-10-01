@@ -42,6 +42,8 @@ class ScreenMirrorState(
     private val send: (Envelope) -> Unit,
     private val sessionFactory: (sessionId: String, options: ScrcpyServerSession.Options, onEnded: () -> Unit) -> ScreenSession,
     private val logReadyToken: Boolean = false,
+    /** Screen mirroring turned off on this device: refuse with `screen.error feature_disabled`. */
+    private val isEnabled: () -> Boolean = { true },
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
 ) {
     private class Active(val sessionId: String, val requester: String) {
@@ -64,6 +66,17 @@ class ScreenMirrorState(
 
     internal fun onScreenStart(envelope: Envelope) {
         val sessionId = envelope.payload.str("sessionId") ?: return
+        if (!isEnabled()) {
+            send(
+                Envelope(
+                    type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = envelope.senderId,
+                    payload = buildJsonObject {
+                        put("sessionId", JsonPrimitive(sessionId)); put("reason", JsonPrimitive("feature_disabled"))
+                    }
+                )
+            )
+            return
+        }
         val options = parseOptions(envelope.payload)
         val entry: Active
         synchronized(lock) {

@@ -112,7 +112,8 @@ final class ClipboardSyncManager: ObservableObject {
     private func pollPasteboard() {
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != lastChangeCount else { return }
-        lastChangeCount = pasteboard.changeCount
+        lastChangeCount = pasteboard.changeCount // also while disabled, so re-enabling doesn't send a stale copy
+        guard FeatureSettings.shared.isEnabled(.clipboard) else { return }
         sendCurrentPasteboardContentIfNeeded()
     }
 
