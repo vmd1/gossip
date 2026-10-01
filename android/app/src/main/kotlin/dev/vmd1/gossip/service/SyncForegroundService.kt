@@ -57,6 +57,8 @@ class SyncForegroundService : Service() {
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
+    private lateinit var ringManager: dev.vmd1.gossip.features.find.RingManager
+    private lateinit var batterySyncManager: dev.vmd1.gossip.features.battery.BatterySyncManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -197,6 +199,35 @@ class SyncForegroundService : Service() {
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.LOCK_ON_LEAVE) }
         )
         lockOnLeaveManager.start()
+
+        // Find my device: rings on `device.ring`; a notification with a Stop action silences it.
+        ringManager = dev.vmd1.gossip.features.find.RingManager(
+            messageRouter = messageRouter,
+            ringer = dev.vmd1.gossip.features.find.AlarmRinger(applicationContext),
+            scope = serviceScope,
+            onRingingChanged = { ringing -> showRingNotification(ringing) }
+        )
+        ringManager.start()
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) { ringManager.stopRinging() }
+            },
+            IntentFilter(ACTION_STOP_RING),
+            android.content.Context.RECEIVER_NOT_EXPORTED
+        )
+
+        // Battery sync: broadcasts this device's level (reconciled on connect + every 60s), tracks
+        // peers' levels for the paired-devices list, alerts when a peer runs low.
+        batterySyncManager = dev.vmd1.gossip.features.battery.BatterySyncManager(
+            context = applicationContext,
+            deviceId = identity.deviceId,
+            messageRouter = messageRouter,
+            send = { envelope -> transportManager.send(envelope) },
+            scope = serviceScope,
+            onLowBattery = { senderId, level -> showLowBatteryNotification(senderId, level) },
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.BATTERY) }
+        )
+        batterySyncManager.start()
 
         // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
         // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
@@ -368,6 +399,9 @@ class SyncForegroundService : Service() {
                     // to any race) shouldn't have to wait for this phone's *next*
                     // hotspot toggle to learn its current state.
                     hotspotStateManager.periodicResync()
+                    // Same reasoning for battery.update: a reconnecting peer shouldn't wait
+                    // for the next 1% level change to learn this device's battery.
+                    batterySyncManager.reportInitialSyncState()
                 } else {
                     clipboardSyncManager.stop()
                 }
@@ -379,6 +413,60 @@ class SyncForegroundService : Service() {
         runRosterResyncLoop()
         runMediaResyncLoop()
         runHotspotStateResyncLoop()
+        runBatteryResyncLoop()
+    }
+
+    /** Self-healing backstop for `battery.update`, on top of the event-driven publish (a local
+     *  battery change) and the on-connect resend: re-sends the current reading every 60s while
+     *  connected, so a dropped or mis-timed report never leaves peers stale. */
+    private fun runBatteryResyncLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(DND_RESYNC_INTERVAL_MS)
+                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
+                    batterySyncManager.periodicResync()
+                }
+            }
+        }
+    }
+
+    private fun showRingNotification(ringing: Boolean) {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (!ringing) { manager.cancel(RING_NOTIFICATION_ID); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(RING_CHANNEL_ID, "Find my device", NotificationManager.IMPORTANCE_HIGH))
+        }
+        val stop = android.app.PendingIntent.getBroadcast(
+            this, 0, Intent(ACTION_STOP_RING).setPackage(packageName),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val n = NotificationCompat.Builder(this, RING_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("Gossip is ringing this device")
+            .setContentText("A paired device asked this one to ring.")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
+            .setContentIntent(stop)
+            .build()
+        runCatching { manager.notify(RING_NOTIFICATION_ID, n) }
+    }
+
+    private fun showLowBatteryNotification(senderId: String, level: Int) {
+        val name = TrustedDevicesStore.getInstance(applicationContext).allDevices()
+            .firstOrNull { it.deviceId == senderId }?.deviceName ?: "A paired device"
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(BATTERY_CHANNEL_ID, "Low battery on paired devices", NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        val n = NotificationCompat.Builder(this, BATTERY_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("$name battery low")
+            .setContentText("$name is at $level% and not charging.")
+            .setAutoCancel(true)
+            .build()
+        runCatching { manager.notify(BATTERY_NOTIFICATION_BASE + (senderId.hashCode() and 0xFFFF), n) }
     }
 
     /** Self-healing backstop for `hotspot.state_update`, on top of the event-driven
@@ -493,6 +581,8 @@ class SyncForegroundService : Service() {
         bleProximityMonitor.stop()
         hotspotStateManager.stop()
         lockOnLeaveManager.stop()
+        ringManager.shutdown()
+        batterySyncManager.stop()
         transportManager.shutdown()
         if (TransportManagerHolder.instance === transportManager) {
             TransportManagerHolder.instance = null
@@ -513,6 +603,8 @@ class SyncForegroundService : Service() {
     fun bleProximityMonitor(): BLEProximityMonitor = bleProximityMonitor
 
     fun hotspotStateManager(): dev.vmd1.gossip.features.hotspot.HotspotStateManager = hotspotStateManager
+
+    fun batterySyncManager(): dev.vmd1.gossip.features.battery.BatterySyncManager = batterySyncManager
 
     /** Exposed so the home screen can show a "your screen is being mirrored" indicator —
      *  see [dev.vmd1.gossip.features.screenmirror.ScreenMirrorState]'s own doc comment, which
@@ -562,6 +654,11 @@ class SyncForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "connect_sync"
+        private const val ACTION_STOP_RING = "dev.vmd1.gossip.STOP_RING"
+        private const val RING_CHANNEL_ID = "gossip_find_device"
+        private const val RING_NOTIFICATION_ID = 1002
+        private const val BATTERY_CHANNEL_ID = "gossip_battery_low"
+        private const val BATTERY_NOTIFICATION_BASE = 6000
         /** Not private: [dev.vmd1.gossip.features.notifications.NotificationListenerImpl]
          *  needs this to specifically exclude the persistent "Gossip is running"
          *  notification from mirroring, without excluding every notification this
