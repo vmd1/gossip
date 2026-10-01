@@ -1,103 +1,175 @@
-> **Direction change (2026-09-30):** the plan is no longer a custom capture server we write and
-> `adb push`. Instead, bundle the upstream **scrcpy server** jar (Genymobile/scrcpy, Apache 2.0,
-> pinned to one version) in the Android app and launch it on the phone via **Shizuku** (already a
-> Gossip prerequisite for Instant Hotspot and clipboard read) with `app_process` and `CLASSPATH`
-> pointing at the jar. The Gossip Android app connects to the server's local socket and bridges its
-> video and control streams to the viewing device over a WebSocket, so the viewer needs no `adb` or
-> `scrcpy` and implements only the client side of scrcpy's protocol. See "On-device screen
-> mirroring" in `ROADMAP.md`. The findings below (the `MediaProjection` consent-dialog
-> result, `app_process`/dalvik-cache behavior) still apply, and the scrcpy-style `CLASSPATH` launch
-> they say is untested is now the first thing to verify from a Shizuku process.
+# On-device screen capture (scrcpy server via Shizuku)
 
-# On-device capture server (fast-follow, not implemented in this unit)
+**Status (2026-10-01): Android side implemented and verified on Android 16 and Android 12
+emulators. Mac viewer not built; nothing here has run on real hardware.**
 
-This directory is a placeholder for scrcpy-style approach (a) from the Wave 2
-"Screen mirroring via ADB/scrcpy" unit: a small Java/Kotlin class, `adb push`-ed
-to the device and run via `adb shell CLASSPATH=/data/local/tmp/screen-server.jar
-app_process / com.connect.screenserver.Server`, that captures the display with
-`MediaCodec` H.264 encoding and streams the raw elementary stream back over a
-socket that the Mac `adb forward`s to a local TCP port — exactly scrcpy's own
-architecture (Genymobile/scrcpy, Apache 2.0).
+Gossip bundles the upstream **scrcpy server** (Genymobile/scrcpy v4.1, Apache 2.0,
+`app/src/main/assets/scrcpy-server-v4.1.jar`, SHA-256
+`deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae`, matches the release's
+`SHA256SUMS.txt`), launches it at shell UID through **Shizuku's `newProcess`**, and bridges its
+video + control streams to one viewer over an authenticated **WebSocket**. The viewer needs no
+`adb`/`scrcpy`. Protocol: `screen.start`/`stop`/`ready`/`error` in `schema/message-types.md`.
 
-**This unit shipped with approach (b) instead** (`adb exec-out screenrecord
---output-format=h264 -`, see `mac/Gossip/Features/ScreenMirror/ADBClient.swift`).
-Approach (a) is the better long-term architecture — lower latency, no
-`screenrecord` 3-minute/`--time-limit` quirks, and a socket stream instead of
-re-spawning a process — but a correct capture server is substantial work on
-its own (packaging a `CLASSPATH`-runnable jar, driving `MediaCodec`'s
-async/Surface-input API by hand, framing the output for the forwarded socket,
-handling `app_process`'s dalvik-cache permission quirks on newer non-rooted
-Android — see below) and was judged too large to also land, verified, within
-this unit's scope. Tracking it here rather than as a stub implementation so
-the next unit that picks this up starts from real findings, not a half-built
-server nobody has run.
+The existing `adb exec-out screenrecord` pipeline (`mac/.../ScreenMirror/ADBClient.swift`,
+"approach (b)") is untouched and **remains the working fallback** until a Mac viewer exists.
 
-## Why approach (b) was chosen for v1
-
-`adb exec-out screenrecord --output-format=h264 -` was verified working
-end-to-end against a real device (Samsung SM-S711B, Android Platform Tools
-37.0.1) with no code to write or push:
+## Architecture (and why it isn't the one we planned)
 
 ```
-$ adb exec-out screenrecord --output-format=h264 --time-limit=3 - > test.h264
-$ ffprobe -show_streams test.h264
-codec_name=h264, profile=High, width=1080, height=2340, pix_fmt=yuv420p, avg_frame_rate=25/1
+Mac viewer ──WebSocket(token)──▶ ScreenBridge (Gossip app, untrusted_app UID)
+                                      │ Shizuku binder stdio  (framed: video / control / device-msg)
+                                      ▼
+                           ShellRelay  (app_process from Gossip's own APK, shell UID)
+                                      │ abstract unix socket scrcpy_<scid>   (shell→shell: allowed)
+                                      ▼
+                           scrcpy Server (app_process from the jar, shell UID)  ── MediaCodec H.264
 ```
 
-2.2MB of valid Annex-B H.264 for 3 seconds, matching the device's real `wm
-size` (1080x2340). That's a legitimate, if higher-latency and higher-overhead,
-capture mechanism — `screenrecord` is designed for bug-report recording, not
-low-latency interactive mirroring, so it has more encoder start-up latency and
-a default 180s cap (lifted here via `--time-limit 0`) than a purpose-built
-capture server would.
+The plan was "app connects to the server's local socket". **That does not work**: SELinux denies
+it, in both directions (details below), so a tiny shell-UID relay (`ShellRelay.java`, plain Java,
+no Kotlin stdlib, loaded from the app's own `base.apk`, so no extra artifact) dials the socket
+and multiplexes it over Shizuku's stdio, which *is* a private binder pipe to the app. Loopback TCP
+would have been simpler but any app on the phone could connect to it and mirror/inject.
 
-## Important finding: `app_process` needs write access to `/data/dalvik-cache`
+## What was verified, in the order the spike was run
 
-While investigating approach (a) on the connected test device, a plain
+Environment: AVDs `a16` (`system-images;android-36;google_apis;arm64-v8a`) and `a12`
+(`android-32;google_apis;arm64-v8a`), Pixel 6 profile, emulator 37.2.12, run headless
+(`-no-window -gpu swiftshader_indirect`). **arm64, not x86_64** — the dev machine is an Apple
+Silicon Mac, where x86_64 images don't run accelerated. Gossip built with
+`./gradlew :app:assembleDebug` (unchanged toolchain) and installed as the real app.
 
+### 1. Bare `app_process` is a red herring — confirmed on both
 ```
 $ adb shell app_process --help
-Error changing dalvik-cache ownership : Permission denied
+Error changing dalvik-cache ownership : Permission denied          # Android 16 AND Android 12
 ```
 
-failed immediately — `app_process` invoked bare over `adb shell` tries to
-touch `/data/dalvik-cache` and fails without additional setup on this
-(non-rooted) device/Android version. scrcpy's actual server launch avoids this
-specific failure mode by invoking `app_process` with an explicit `CLASSPATH`
-pointing at a pushed jar in `/data/local/tmp` rather than bare, plus a
-`-Djava.class.path=...` per its own launch script — that path was not
-attempted here due to time, so it remains untested rather than confirmed
-broken. Whoever picks up approach (a) should start by reproducing scrcpy's
-exact `app_process` invocation (see `Genymobile/scrcpy`'s `Server.java`
-launch path in `SCRCPY_SERVER_PATH`/`local/tmp` handling) rather than a bare
-`app_process --help` sanity check, which is a red herring for this failure
-mode.
+### 2. scrcpy's real launch via raw `adb shell` — works on both
+```
+$ adb push scrcpy-server-v4.1 /data/local/tmp/scrcpy-server.jar
+$ adb shell CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server \
+      4.1 scid=00000001 tunnel_forward=true audio=false control=true cleanup=false max_size=1280
+[server] INFO: Device: [Google] google sdk_gphone64_arm64 (Android 16)    # / (Android 12)
+$ adb forward tcp:27183 localabstract:scrcpy_00000001   # then connect video + control sockets
+```
+So the "Permission denied" `/data/dalvik-cache` failure is specific to *bare* `app_process`; an
+explicit `CLASSPATH` launch is fine. The server only starts streaming once **both** the video and
+control sockets are connected. First video connection yields: 1 dummy byte, 64-byte device name,
+`h264` codec id, then a session packet, then packets.
 
-## Important finding: the MediaProjection consent dialog
+### 3. Shizuku mainline works — no fork needed (both versions)
+Activation on both emulators (no wireless debugging needed; Shizuku 13.6.0 no longer writes
+`start.sh`, it execs its native starter directly):
+```
+$ P=$(adb shell pm path moe.shizuku.privileged.api | sed 's/package://; s|/base.apk||')
+$ adb shell "$P/lib/arm64/libshizuku.so"
+info: starting server...  info: shizuku_server pid is 5465  info: shizuku_starter exit with 0
+$ adb shell ps -A | grep shizuku_server    →  shell ... shizuku_server
+```
+**Build used: mainline `RikkaApps/Shizuku` v13.6.0 (`shizuku-v13.6.0.r1086.2650830c-release.apk`)
+on both Android 16 and Android 12; the server reports "Version 13.5, adb".** Gossip's own
+dependency is `dev.rikka.shizuku:api/provider:13.1.5` (unchanged). Gossip's existing onboarding
+"Shizuku → Grant" button produced the normal "Allow Gossip to access Shizuku?" dialog on both.
+Caveat: the brief warned mainline has Android 16 bugs. None showed up for what this feature
+uses (`newProcess` + stdio); I did **not** re-test the other Shizuku consumers (Instant Hotspot's
+tethering AIDL, clipboard binder) here, so that warning may still apply to them. No Android
+16 fork was evaluated because nothing forced it. Shizuku must be re-activated after every
+emulator/phone reboot (not tested across a reboot).
 
-This unit's task brief flagged a specific risk worth resolving either way:
-does ADB-mediated capture (whether via `screenrecord` or a `scrcpy`-style
-server) trigger Android's normal `MediaProjection` "Start recording or
-casting?" consent dialog?
+### 4. Launching via Shizuku `newProcess` from inside Gossip — works, but the socket is blocked
+`ShizukuShell.exec` reflects into `Shizuku.newProcess` (made private in API 13; same as every
+consumer). The jar is streamed into `sh -c 'cat > /data/local/tmp/...'` over stdin, so the app
+needs no storage permission. The server launched fine at shell UID (`Device:` line in logcat).
+Then the app tried to connect to its socket:
+```
+java.io.IOException: Permission denied   at LocalSocketImpl.connectLocal
+avc: denied { connectto } for path=@scrcpy_2a5bb225 scontext=u:r:untrusted_app:s0 tcontext=u:r:shell:s0 tclass=unix_stream_socket permissive=0
+```
+Reverse mode (`tunnel_forward=false`, app listens, server dials in) fails the other way:
+```
+avc: denied { connectto } scontext=u:r:shell:s0 tcontext=u:r:untrusted_app:s0:... tclass=unix_stream_socket
+```
+Both captured on **Android 16**. On Android 12 I did not separately reproduce the denial (the relay
+design was already in place and works there); I'm not claiming it from evidence.
 
-**Empirical answer from this session: no.** `adb exec-out screenrecord
---output-format=h264 -t 3 -` captured the phone's screen and produced valid
-H.264 output with **no on-device dialog, prompt, or visible UI change** during
-capture — confirmed by running it and observing the device screen was
-untouched by any system dialog. `screenrecord` is a `system`/`shell`-privileged
-binary; captures invoked through it (and, by the same mechanism, through
-`adb shell`-launched code generally) run with capture privileges the OS
-already grants to the shell/system UID, not as a third-party app calling
-`MediaProjectionManager.createScreenCaptureIntent()` from application code —
-which is what triggers the per-session consent dialog for a normal app.
+### 5. Via the relay: valid H.264 + control injection — both versions
+`ScreenBridge` is driven by `ws_test_client.py` (stdlib only, in this directory), which stands in
+for the unbuilt Mac viewer. Real output, final build:
+```
+# Android 16                                          # Android 12
+screen.ready after 1.1s: port=36561                    screen.ready after 1.1s: port=39531
+wrong token rejected: True                             wrong token rejected: True
+stream header: {codec h264, 576x1280, sdk_gphone64…}   stream header: {codec h264, 576x1280, sdk_gphone64…}
+second viewer refused: True                            second viewer refused: True
+wakefulness before: Awake                              wakefulness before: Awake
+wakefulness after POWER: Asleep                        wakefulness after POWER: Asleep
+wakefulness after POWER #2: Awake                      wakefulness after POWER #2: Awake
+video: 50 packets, 216556 B, key frames=1              video: 48 packets, 403968 B, key frames=1
+leftover shell app_process after stop: none            leftover shell app_process after stop: none
+$ ffprobe -show_streams bridge16.h264                  $ ffprobe -show_streams bridge12.h264
+codec_name=h264 profile=Constrained Baseline           codec_name=h264 profile=Constrained Baseline
+width=576 height=1280 pix_fmt=yuv420p                  width=576 height=1280 pix_fmt=yuv420p
+```
+(1080x2400 screen, `max_size=1280` → 576x1280.) The control channel is real: POWER key
+injected through the WebSocket → scrcpy control socket toggled `mWakefulness`
+Awake→Asleep→Awake, read back with `dumpsys power`. The late-attach path works too: the
+server starts at `screen.start`, the viewer attaches later, and the bridge replays the cached
+config packet and sends scrcpy `RESET_VIDEO` (control type 17), yielding a key frame even though
+the emulator's screen is static (`key frames=1`).
 
-This is consistent with (and confirms, for this specific device/OS revision)
-the premise behind risk #2 in the project's risk list: ADB-mediated capture
-avoids the consent-dialog UX problem a "normal" in-app screen-mirroring
-feature would have. It does **not** by itself prove a scrcpy-style
-`MediaProjection`-based server invoked via `app_process` would behave
-identically — that path was not reached (blocked by the dalvik-cache issue
-above) — but `screenrecord`'s behavior is strong evidence for the same
-conclusion, since it exercises the same "shell-privileged capture, no app-side
-consent" trust boundary that scrcpy's own approach relies on. No project risk
-needs walking back based on what was actually tested.
+### 6. No MediaProjection consent dialog — confirmed for the scrcpy server (both versions)
+During a live capture: screenshot of the Android 16 screen showed the plain launcher (no
+"Start recording or casting?" dialog), `dumpsys media_projection` listed no projections, no
+consent window, and both shell processes were running. Same `dumpsys media_projection` result
+(empty) on Android 12 during a session. This closes the open point from the screenrecord-era
+finding: a scrcpy-style server at shell UID needs no consent either.
+
+### 7. Teardown / leaks
+`force-stop` of Gossip mid-session: both shell-UID processes were gone within 4 s (relay exits on
+stdin EOF → closes sockets → server exits). Viewer disconnect and `screen.stop` also clear them
+(`leftover shell app_process after stop: none` above). Unit tests (`ScreenMirrorStateTest`, 9
+cases, JVM) cover start/stop idempotency, duplicate/late/out-of-order messages, supersede,
+Shizuku-unavailable and capture-failure replies; the full suite is 64 tests, 0 failures. Writing
+the failure-path test found and fixed a real bug (`screen.error` swallowed because
+`close()`'s `onEnded` cleared the session before `fail()` ran).
+
+## scrcpy 4.1 stream format notes (differs from older docs — verified empirically)
+Video socket: `u8 dummy` (forward tunnel only) · `64B device name` · `4B codec id ("h264")`, then
+a sequence of either **session packets** (`u32 0x80000000`, `u32 width`, `u32 height`; a new one
+is sent on rotation/`RESET_VIDEO`) or **media packets** (`u64 pts/flags`, `u32 size`, payload).
+Observed flags: config (SPS/PPS) = bit 62 (`0x4000…`), key frame = bit 61 (`0x2000…`). The
+bridge re-frames these into WebSocket messages (`ScreenBridge.kt` doc comment). Because
+scrcpy's wire format isn't a stable API, the jar is pinned and must not be auto-updated; a
+version bump means re-verifying this section.
+
+## What is NOT proven / open
+- **Emulator only, not real hardware.** SurfaceFlinger/virtual-display/encoder behavior on a
+  real phone (vendor encoders, DRM/secure layers, rotation, HDR, display cutouts) can differ;
+  the emulator uses the software `c2.android.avc.encoder` and a static screen, so sustained
+  motion, bitrate behavior, and latency were **not** measured. The "first video at +4.5s" the test
+  client prints includes its own wrong-token/second-viewer test steps; it is not a latency number.
+  (`screen.ready` itself arrives ~1.1 s after `screen.start`.)
+- **Mac viewer not built** (scrcpy protocol client, H.264 decode/render, input mapping), so the
+  full Mac↔Android path and the `screen.start`-over-the-mesh exchange were exercised only via a
+  debug broadcast that dispatches the envelope locally; `screen.ready` was read from logcat
+  (debug builds log the token), not received over Noise by a real peer.
+- **Video is not encrypted on the WebSocket.** Auth is a 256-bit per-session token delivered
+  inside the Noise-encrypted mesh, constant-time compared, single viewer; but the WebSocket
+  payload (screen contents + control) is plaintext on the LAN. Reusing the Noise trust
+  end-to-end (Noise-over-WebSocket, or an AEAD key derived from the Noise session and delivered
+  in `screen.ready`) was out of scope for one pass and is the main follow-up before shipping.
+  The listener also binds all interfaces (any LAN host can *connect* — only the token gates it).
+- Shizuku must be running (re-activate after reboot) and granted; otherwise `screen.error
+  shizuku_unavailable`. Not tested: reboot persistence, Shizuku killed mid-session, Android
+  13–15, multi-display, `max_size` rotation mid-stream (a session packet is forwarded but I did
+  not rotate the emulator), a slow viewer (writes block the video thread; no frame dropping yet).
+- `/data/local/tmp/gossip-scrcpy-server.jar` is left on the device (733 KB, overwritten each
+  session); not cleaned up.
+- If this approach fails on a real device, approach (b) (`screenrecord`) remains the fallback.
+
+## Earlier findings still valid (screenrecord era, real Samsung SM-S711B, platform-tools 37.0.1)
+`adb exec-out screenrecord --output-format=h264 --time-limit=3 -` → valid Annex-B H.264,
+`codec_name=h264, profile=High, width=1080, height=2340, pix_fmt=yuv420p`, no on-device
+dialog. That shipped path is higher-latency (encoder start-up, process respawn, 3-minute cap
+lifted via `--time-limit 0`).

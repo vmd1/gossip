@@ -34,6 +34,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
+import dev.vmd1.gossip.protocol.Envelope
+import dev.vmd1.gossip.protocol.MessageType
 import kotlinx.coroutines.launch
 
 /**
@@ -45,7 +47,7 @@ import kotlinx.coroutines.launch
 class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
-    val screenMirrorState = ScreenMirrorState()
+    lateinit var screenMirrorState: ScreenMirrorState
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
@@ -65,6 +67,16 @@ class SyncForegroundService : Service() {
         val trustedDevices = TrustedDevicesStore.getInstance(applicationContext)
         val messageRouter = MessageRouter()
         val deviceType = detectDeviceType(applicationContext)
+        screenMirrorState = ScreenMirrorState(
+            selfId = identity.deviceId,
+            scope = serviceScope,
+            shizukuReady = { shizukuManager?.state?.value == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED },
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
+            sessionFactory = { sessionId, options, onEnded ->
+                dev.vmd1.gossip.features.screenmirror.ScreenBridge(applicationContext, sessionId, options, onEnded)
+            },
+            logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        )
         screenMirrorState.register(messageRouter)
         transportManager = TransportManager(
             context = applicationContext,
@@ -246,6 +258,34 @@ class SyncForegroundService : Service() {
             IntentFilter("dev.vmd1.gossip.DEBUG_REQUEST_SHIZUKU"),
             android.content.Context.RECEIVER_EXPORTED
         )
+
+        // TEMPORARY debug hooks (registered only in debuggable builds): inject a screen.start /
+        // screen.stop envelope as if from a paired viewer, so the capture bridge can be exercised on
+        // an emulator with no Mac paired. `screen.ready`'s token is logged under tag ScreenMirror.
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val start = intent.action == "dev.vmd1.gossip.DEBUG_SCREEN_START"
+                        val payload = kotlinx.serialization.json.buildJsonObject {
+                            intent.getStringExtra("sessionId")?.let { put("sessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                            for (k in listOf("maxSize", "bitRate", "maxFps")) {
+                                if (intent.hasExtra(k)) put(k, kotlinx.serialization.json.JsonPrimitive(intent.getIntExtra(k, 0)))
+                            }
+                        }
+                        val env = Envelope(
+                            type = if (start) MessageType.SCREEN_START else MessageType.SCREEN_STOP,
+                            senderId = "debug-viewer", recipientId = identity.deviceId, payload = payload
+                        )
+                        messageRouter.dispatch(env)
+                    }
+                },
+                IntentFilter().apply {
+                    addAction("dev.vmd1.gossip.DEBUG_SCREEN_START"); addAction("dev.vmd1.gossip.DEBUG_SCREEN_STOP")
+                },
+                android.content.Context.RECEIVER_EXPORTED
+            )
+        }
 
         // TEMPORARY debug hooks to verify ShizukuClipboardReader's background read works —
         // remove once this has real test coverage.
