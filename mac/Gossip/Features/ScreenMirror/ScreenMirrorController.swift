@@ -92,7 +92,12 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     private func handle(_ envelope: Envelope) {
-        guard let s = session, envelope.payload["sessionId"]?.stringValue == s.id, envelope.senderId == s.deviceId else { return }
+        guard let s = session else { return }
+        guard envelope.payload["sessionId"]?.stringValue == s.id, envelope.senderId == s.deviceId else {
+            NSLog("Gossip: ignoring \(envelope.type) (session/sender mismatch: sender=\(envelope.senderId) expected=\(s.deviceId))")
+            return
+        }
+        NSLog("Gossip: received \(envelope.type) for session \(s.id)")
         switch envelope.type {
         case "screen.ready":
             // Idempotent: the phone re-sends `screen.ready` for every duplicate start we send.
@@ -137,6 +142,7 @@ final class ScreenMirrorController: ObservableObject {
     // MARK: - Bridge connection
 
     private func connect(_ s: Session, host: String, port: UInt16, token: String) {
+        NSLog("Gossip: connecting to screen bridge ws://\(host):\(port)")
         guard let client = ScreenBridgeClient(host: host, port: port, token: token) else {
             return fail(s, "The phone sent an invalid screen-mirroring port.")
         }
