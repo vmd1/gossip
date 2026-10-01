@@ -29,10 +29,12 @@ interface ScreenSession : Closeable {
  *
  * **Viewer wire format** (WebSocket, port from `screen.ready`):
  * - viewer → bridge, first message: the session `token` (text). Anything else closes with 1008.
- * - bridge → viewer, text: `{"codec","width","height","deviceName"}` once, right after auth.
+ * - bridge → viewer, text: `{"codec","width","height","deviceName","audio"}` once, right after auth;
+ *   `audio` is `null` or `{"codec":"raw","sampleRate":48000,"channels":2,"format":"s16le"}`.
  * - bridge → viewer, binary, first byte = kind: `0x00` video packet (`u64 BE pts/flags`, then
  *   Annex-B H.264; flags bit 62 = config/SPS+PPS, bit 61 = key frame), `0x01` size change
- *   (`u32 BE width`, `u32 BE height`), `0x02` raw scrcpy device-message bytes (control socket).
+ *   (`u32 BE width`, `u32 BE height`), `0x02` raw scrcpy device-message bytes (control socket),
+ *   `0x03` audio packet (`u64 BE pts/flags`, then interleaved s16le PCM) — only when `audio` is non-null.
  * - viewer → bridge, binary after auth: raw scrcpy control messages (inject touch/key/scroll...),
  *   forwarded verbatim to the server's control socket.
  * On attach the bridge replays the cached size + config packet and sends scrcpy `RESET_VIDEO`
@@ -75,6 +77,7 @@ class ScreenBridge(
         }
         thread("scr-video") { videoLoop(s) }
         thread("scr-devmsg") { deviceMessageLoop(s) }
+        if (s.audio != null) thread("scr-audio") { audioLoop(s) }
         thread("scr-accept") { acceptLoop(l, s) }
         return ScreenSession.Ready(l.localPort, token, s.width, s.height, s.codec)
     }
@@ -93,6 +96,18 @@ class ScreenBridge(
             if (!ended.get()) Log.i(TAG, "[$sessionId] video stream ended: $e")
         }
         end()
+    }
+
+    private fun audioLoop(s: ScrcpyServerSession) {
+        try {
+            while (!ended.get()) {
+                val (hdr, pcm) = s.readAudioPacket()
+                val msg = ByteBuffer.allocate(1 + 8 + pcm.size).put(KIND_AUDIO).putLong(hdr).put(pcm).array()
+                synchronized(lock) { send(msg) } // dropped when no viewer is attached: PCM needs no replay
+            }
+        } catch (e: Exception) {
+            if (!ended.get()) Log.i(TAG, "[$sessionId] audio stream ended: $e")
+        }
     }
 
     private fun deviceMessageLoop(s: ScrcpyServerSession) {
@@ -148,7 +163,12 @@ class ScreenBridge(
         synchronized(lock) {
             ws.sendText(
                 JSONObject().put("codec", s.codec).put("width", s.width).put("height", s.height)
-                    .put("deviceName", s.deviceName).toString()
+                    .put("deviceName", s.deviceName)
+                    .put("audio", s.audio?.let {
+                        JSONObject().put("codec", it.codec).put("sampleRate", it.sampleRate)
+                            .put("channels", it.channels).put("format", "s16le")
+                    } ?: JSONObject.NULL)
+                    .toString()
             )
             latestSize?.let { ws.sendBinary(it) }
             latestConfig?.let { ws.sendBinary(it) }
@@ -194,6 +214,7 @@ class ScreenBridge(
         const val KIND_VIDEO: Byte = 0x00
         const val KIND_SIZE: Byte = 0x01
         const val KIND_DEVICE_MSG: Byte = 0x02
+        const val KIND_AUDIO: Byte = 0x03
         private const val FLAG_CONFIG = 1L shl 62
         private const val CONTROL_RESET_VIDEO: Byte = 17
         const val ATTACH_TIMEOUT_MS = 30_000L

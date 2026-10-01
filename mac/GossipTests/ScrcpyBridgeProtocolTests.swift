@@ -16,6 +16,8 @@ final class ScrcpyBridgeProtocolTests: XCTestCase {
     func testParsesSizeAndDeviceMessageAndRejectsGarbage() {
         XCTAssertEqual(BridgeMessage.parse(Data([0x01, 0, 0, 2, 0x40, 0, 0, 5, 0])), .size(width: 576, height: 1280))
         XCTAssertEqual(BridgeMessage.parse(Data([0x02, 9, 8])), .deviceMessage(Data([9, 8])))
+        XCTAssertEqual(BridgeMessage.parse(Data([0x03, 0, 0, 0, 0, 0, 0, 0, 1, 0xAA, 0xBB, 0xCC, 0xDD])), .audio(Data([0xAA, 0xBB, 0xCC, 0xDD])))
+        XCTAssertNil(BridgeMessage.parse(Data([0x03, 0, 0, 0, 0, 0, 0, 0, 1]))) // no payload
         XCTAssertNil(BridgeMessage.parse(Data()))
         XCTAssertNil(BridgeMessage.parse(Data([0x00, 1, 2]))) // truncated pts
         XCTAssertNil(BridgeMessage.parse(Data([0x01, 1, 2, 3])))
@@ -32,6 +34,12 @@ final class ScrcpyBridgeProtocolTests: XCTestCase {
         XCTAssertEqual(BridgeStreamHeader.parse(Data(json.utf8)),
                        BridgeStreamHeader(codec: "h264", width: 576, height: 1280, deviceName: "SM-S711B"))
         XCTAssertNil(BridgeStreamHeader.parse(Data("nope".utf8)))
+        let withAudio = #"{"codec":"h264","width":1,"height":2,"deviceName":"x","audio":{"codec":"raw","sampleRate":48000,"channels":2,"format":"s16le"}}"#
+        XCTAssertEqual(BridgeStreamHeader.parse(Data(withAudio.utf8))?.audio, .init(sampleRate: 48000, channels: 2))
+        let nullAudio = #"{"codec":"h264","width":1,"height":2,"deviceName":"x","audio":null}"#
+        XCTAssertNil(BridgeStreamHeader.parse(Data(nullAudio.utf8))?.audio)
+        let opus = #"{"codec":"h264","width":1,"height":2,"audio":{"codec":"opus","sampleRate":48000,"channels":2,"format":"s16le"}}"#
+        XCTAssertNil(BridgeStreamHeader.parse(Data(opus.utf8))?.audio) // only raw PCM is supported
     }
 
     // MARK: scrcpy control encoding (layouts verified against the real 4.1 server)

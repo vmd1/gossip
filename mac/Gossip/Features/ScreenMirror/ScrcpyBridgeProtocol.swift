@@ -15,6 +15,8 @@ enum BridgeMessage: Equatable {
     case size(width: Int, height: Int)
     /// `0x02`: raw scrcpy device-message bytes (clipboard etc.). Currently ignored by the viewer.
     case deviceMessage(Data)
+    /// `0x03`: `u64 BE pts/flags` then interleaved signed-16-bit little-endian PCM (only when the header announced audio).
+    case audio(Data)
 
     static let configFlag: UInt64 = 1 << 62
     static let keyFrameFlag: UInt64 = 1 << 61
@@ -32,6 +34,9 @@ enum BridgeMessage: Equatable {
             return .size(width: w, height: h)
         case 0x02:
             return .deviceMessage(Data(body))
+        case 0x03:
+            guard body.count > 8 else { return nil }
+            return .audio(Data(body.dropFirst(8)))
         default:
             return nil
         }
@@ -40,16 +45,24 @@ enum BridgeMessage: Equatable {
 
 /// The text header the bridge sends right after the token is accepted.
 struct BridgeStreamHeader: Equatable {
+    struct Audio: Equatable { let sampleRate: Int; let channels: Int }
     let codec: String
     let width: Int
     let height: Int
     let deviceName: String
+    /// Present only when the phone is capturing audio (`raw` s16le PCM).
+    var audio: Audio? = nil
 
     static func parse(_ text: Data) -> BridgeStreamHeader? {
         guard let obj = (try? JSONSerialization.jsonObject(with: text)) as? [String: Any],
               let codec = obj["codec"] as? String,
               let width = obj["width"] as? Int, let height = obj["height"] as? Int else { return nil }
-        return BridgeStreamHeader(codec: codec, width: width, height: height, deviceName: obj["deviceName"] as? String ?? "")
+        var audio: Audio?
+        if let a = obj["audio"] as? [String: Any], a["codec"] as? String == "raw", a["format"] as? String == "s16le",
+           let rate = a["sampleRate"] as? Int, let ch = a["channels"] as? Int, rate > 0, (1...2).contains(ch) {
+            audio = Audio(sampleRate: rate, channels: ch)
+        }
+        return BridgeStreamHeader(codec: codec, width: width, height: height, deviceName: obj["deviceName"] as? String ?? "", audio: audio)
     }
 }
 
@@ -108,6 +121,9 @@ enum ScrcpyControl {
         var d = Data([1]); d.appendBE(UInt32(bytes.count)); d.append(contentsOf: bytes)
         return d
     }
+
+    /// `EXPAND_NOTIFICATION_PANEL` (type 5).
+    static let expandNotifications = Data([5])
 
     /// `RESET_VIDEO` (type 17): server re-emits size + config + a key frame.
     static let resetVideo = Data([17])

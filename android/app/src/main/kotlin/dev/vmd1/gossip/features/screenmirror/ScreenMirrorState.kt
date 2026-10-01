@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -167,6 +168,7 @@ class ScreenMirrorState(
             maxSize = (p.int("maxSize") ?: d.maxSize).coerceIn(320, 2560),
             videoBitRate = (p.int("bitRate") ?: d.videoBitRate).coerceIn(500_000, 20_000_000),
             maxFps = (p.int("maxFps") ?: d.maxFps).coerceIn(1, 60),
+            audio = p["audio"]?.jsonPrimitive?.booleanOrNull ?: d.audio,
         )
     }
 

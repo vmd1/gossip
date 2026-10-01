@@ -40,6 +40,7 @@ final class ScreenMirrorController: ObservableObject {
         var retryTimer: Timer?
         var client: ScreenBridgeClient?
         var window: ScreenMirrorWindow?
+        var audioPlayer: ScreenAudioPlayer?
         init(deviceId: String, deviceName: String, transport: TransportManager) {
             self.deviceId = deviceId; self.deviceName = deviceName; self.transport = transport
         }
@@ -126,7 +127,7 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     private func sendStart(_ s: Session) {
-        send(type: "screen.start", for: s, extra: ["maxSize": .number(1600), "bitRate": .number(8_000_000), "maxFps": .number(60)])
+        send(type: "screen.start", for: s, extra: ["maxSize": .number(1600), "bitRate": .number(8_000_000), "maxFps": .number(60), "audio": .bool(true)])
     }
 
     private func send(type: String, for s: Session, extra: [String: JSONValue] = [:]) {
@@ -148,6 +149,7 @@ final class ScreenMirrorController: ObservableObject {
         }
         s.client = client
         var feeder: H264SampleFeeder?
+        var audioPlayer: ScreenAudioPlayer?
         client.onEvent = { [weak self, weak s, weak client] event in
             switch event {
             case .header(let header):
@@ -172,6 +174,10 @@ final class ScreenMirrorController: ObservableObject {
                     let f = H264SampleFeeder(layer: window.content.displayLayer)
                     f.onNeedsKeyFrame = { [weak client] in client?.sendControl(ScrcpyControl.resetVideo) }
                     feeder = f
+                    if let audio = header.audio {
+                        audioPlayer = ScreenAudioPlayer(sampleRate: audio.sampleRate, channels: audio.channels)
+                        s.audioPlayer = audioPlayer
+                    }
                     s.retryTimer?.invalidate(); s.retryTimer = nil
                     self.state = .mirroring
                     NSApp.activate(ignoringOtherApps: true)
@@ -181,6 +187,8 @@ final class ScreenMirrorController: ObservableObject {
                 feeder?.handle(flags: flags, payload: payload)
             case .message(.size(let w, let h)):
                 DispatchQueue.main.async { s?.window?.updateVideoSize(CGSize(width: w, height: h)) }
+            case .message(.audio(let pcm)):
+                audioPlayer?.enqueue(pcm: pcm)
             case .message(.deviceMessage):
                 break
             case .closed(let error):
@@ -211,6 +219,7 @@ final class ScreenMirrorController: ObservableObject {
         session = nil
         s.retryTimer?.invalidate()
         s.client?.close()
+        s.audioPlayer?.stop()
         if let window = s.window {
             window.onClose = nil
             window.close()

@@ -263,6 +263,29 @@ class SyncForegroundService : Service() {
         // screen.stop envelope as if from a paired viewer, so the capture bridge can be exercised on
         // an emulator with no Mac paired. `screen.ready`'s token is logged under tag ScreenMirror.
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            // Plays a 2 s 440 Hz tone on the media stream so audio capture can be verified without
+            // needing a music app: `am broadcast -a dev.vmd1.gossip.DEBUG_PLAY_TONE`.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        Thread {
+                            val rate = 48_000
+                            val samples = ShortArray(rate * 2) { (Math.sin(2 * Math.PI * 440 * it / rate) * 8000).toInt().toShort() }
+                            val track = android.media.AudioTrack.Builder()
+                                .setAudioAttributes(android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
+                                .setAudioFormat(android.media.AudioFormat.Builder()
+                                    .setSampleRate(rate).setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
+                                .setBufferSizeInBytes(samples.size * 2).build()
+                            track.write(samples, 0, samples.size); track.play()
+                            Thread.sleep(2300); track.release()
+                        }.start()
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_PLAY_TONE"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
                     override fun onReceive(ctx: android.content.Context, intent: Intent) {
@@ -272,6 +295,7 @@ class SyncForegroundService : Service() {
                             for (k in listOf("maxSize", "bitRate", "maxFps")) {
                                 if (intent.hasExtra(k)) put(k, kotlinx.serialization.json.JsonPrimitive(intent.getIntExtra(k, 0)))
                             }
+                            if (intent.hasExtra("audio")) put("audio", kotlinx.serialization.json.JsonPrimitive(intent.getBooleanExtra("audio", false)))
                         }
                         val env = Envelope(
                             type = if (start) MessageType.SCREEN_START else MessageType.SCREEN_STOP,

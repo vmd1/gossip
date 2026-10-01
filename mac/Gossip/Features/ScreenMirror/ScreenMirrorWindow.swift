@@ -108,6 +108,13 @@ final class MirrorContentView: NSView {
     /// Current encoded size; touch positions are reported against this.
     var videoSize = CGSize(width: 1, height: 1)
     var sendControl: ((Data) -> Void)?
+    /// Sends already-encoded control bytes for context-menu / shortcut actions.
+    var menuActions: ((Data) -> Void)?
+    var onHover: ((Bool) -> Void)?
+    private var tracking: NSTrackingArea?
+    private var dragging = false
+    /// Height of the strip at the top that moves the window instead of touching the phone.
+    private static let dragStripHeight: CGFloat = 26
     private var lastPoint: (x: Int, y: Int, w: Int, h: Int)?
 
     override var acceptsFirstResponder: Bool { true }
@@ -148,9 +155,62 @@ final class MirrorContentView: NSView {
         sendControl?(ScrcpyControl.touch(action, x: p.x, y: p.y, width: p.w, height: p.h))
     }
 
-    override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); touch(.down, event) }
-    override func mouseDragged(with event: NSEvent) { touch(.move, event) }
-    override func mouseUp(with event: NSEvent) { touch(.up, event) }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        if convert(event.locationInWindow, from: nil).y < Self.dragStripHeight {
+            dragging = true // the thin top strip drags the window, like the native mirroring window
+            window?.performDrag(with: event)
+            return
+        }
+        dragging = false
+        touch(.down, event)
+    }
+    override func mouseDragged(with event: NSEvent) { if !dragging { touch(.move, event) } }
+    override func mouseUp(with event: NSEvent) { if !dragging { touch(.up, event) }; dragging = false }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        for (title, key, data) in Self.actions {
+            let item = NSMenuItem(title: title, action: #selector(runMenuAction(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = .command
+            item.target = self
+            item.representedObject = data
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func runMenuAction(_ item: NSMenuItem) {
+        if let data = item.representedObject as? Data { menuActions?(data) }
+    }
+
+    private static let actions: [(String, String, Data)] = [
+        ("Home", "1", ScrcpyControl.keyPress(ScrcpyControl.Key.home)),
+        ("App Switcher", "2", ScrcpyControl.keyPress(ScrcpyControl.Key.appSwitch)),
+        ("Notifications", "3", ScrcpyControl.expandNotifications),
+        ("Back", "[", ScrcpyControl.keyPress(ScrcpyControl.Key.back)),
+    ]
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              let key = event.charactersIgnoringModifiers,
+              let action = Self.actions.first(where: { $0.1 == key }) else { return super.performKeyEquivalent(with: event) }
+        menuActions?(action.2)
+        return true
+    }
 
     override func scrollWheel(with event: NSEvent) {
         guard let p = devicePoint(event) else { return }
@@ -179,36 +239,45 @@ final class MirrorContentView: NSView {
     }
 }
 
-/// Window showing one device's mirrored screen. Closing it ends the session (`onClose`).
-final class ScreenMirrorWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
+/// Window showing one device's mirrored screen, styled like the native iPhone Mirroring window:
+/// no visible title bar or toolbar, content runs edge to edge, the traffic lights appear only
+/// while the pointer is over the window, and the window is dragged by a thin strip at the top.
+/// Back / Home / Recents / Notifications live on right-click and ⌘1 / ⌘2 / ⌘[ / ⌘3.
+/// Closing it ends the session (`onClose`).
+final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
     let content = MirrorContentView(frame: .zero)
     var onClose: (() -> Void)?
     var sendControl: ((Data) -> Void)? {
         didSet { content.sendControl = sendControl }
     }
 
-    private static let itemBack = NSToolbarItem.Identifier("gossip.back")
-    private static let itemHome = NSToolbarItem.Identifier("gossip.home")
-    private static let itemRecents = NSToolbarItem.Identifier("gossip.recents")
-
     init(deviceName: String, videoSize: CGSize) {
         let initial = Self.fittedSize(for: videoSize)
         super.init(
             contentRect: NSRect(origin: .zero, size: initial),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
-        title = deviceName.isEmpty ? "Mirroring" : "\(deviceName) — Mirroring"
+        title = deviceName.isEmpty ? "Mirroring" : deviceName // still used by Mission Control / Dock
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
+        backgroundColor = .black
         isReleasedWhenClosed = false
+        isMovableByWindowBackground = false // content handles touches; the top strip drags (see MirrorContentView)
         delegate = self
         contentView = content
         content.videoSize = videoSize
+        content.menuActions = { [weak self] in self?.sendControl?($0) }
+        content.onHover = { [weak self] inside in self?.setTrafficLights(visible: inside) }
         contentAspectRatio = videoSize
-        let toolbar = NSToolbar(identifier: "gossip.mirror")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        self.toolbar = toolbar
+        setTrafficLights(visible: false)
         center()
+    }
+
+    private func setTrafficLights(visible: Bool) {
+        for kind: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            standardWindowButton(kind)?.animator().alphaValue = visible ? 1 : 0
+        }
     }
 
     /// Called on the main thread when the phone reports a new encoded size (e.g. rotation).
@@ -232,34 +301,4 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate, NSToolbarDelegate {
         onClose = nil
         handler?()
     }
-
-    // MARK: Toolbar (Back / Home / Recents)
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.itemBack, Self.itemHome, Self.itemRecents, .flexibleSpace]
-    }
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.itemBack, Self.itemHome, Self.itemRecents]
-    }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        let spec: [NSToolbarItem.Identifier: (String, String, Selector)] = [
-            Self.itemBack: ("chevron.backward", "Back", #selector(pressBack)),
-            Self.itemHome: ("circle", "Home", #selector(pressHome)),
-            Self.itemRecents: ("square.on.square", "Recents", #selector(pressRecents)),
-        ]
-        guard let (symbol, label, action) = spec[id] else { return nil }
-        let item = NSToolbarItem(itemIdentifier: id)
-        item.label = label
-        item.toolTip = label
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        item.target = self
-        item.action = action
-        return item
-    }
-
-    @objc private func pressBack() { sendControl?(ScrcpyControl.keyPress(ScrcpyControl.Key.back)) }
-    @objc private func pressHome() { sendControl?(ScrcpyControl.keyPress(ScrcpyControl.Key.home)) }
-    @objc private func pressRecents() { sendControl?(ScrcpyControl.keyPress(ScrcpyControl.Key.appSwitch)) }
 }
