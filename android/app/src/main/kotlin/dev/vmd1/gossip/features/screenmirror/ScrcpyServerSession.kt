@@ -31,7 +31,13 @@ class ScrcpyServerSession private constructor(
     height: Int,
     private val videoIn: DataInputStream,
     private val deviceMsgIn: InputStream,
+    private val audioIn: DataInputStream?,
+    /** Audio format when the server is capturing audio, else `null` (disabled, unsupported or errored). */
+    val audio: AudioFormat?,
 ) : Closeable {
+    /** Raw PCM as produced by scrcpy's `audio_codec=raw`: signed 16-bit little-endian, interleaved. */
+    data class AudioFormat(val codec: String = "raw", val sampleRate: Int = 48_000, val channels: Int = 2)
+
     private val relayOut = DataOutputStream(relayProcess.outputStream.buffered(8 * 1024))
     @Volatile private var closed = false
 
@@ -60,6 +66,17 @@ class ScrcpyServerSession private constructor(
         require(size in 0..MAX_PACKET) { "implausible video packet size $size" }
         val buf = ByteArray(size)
         videoIn.readFully(buf)
+        return pts to buf
+    }
+
+    /** Reads one audio packet (ptsAndFlags, PCM payload). Blocks. Only valid when [audio] != null. */
+    fun readAudioPacket(): Pair<Long, ByteArray> {
+        val input = checkNotNull(audioIn) { "audio not enabled" }
+        val pts = input.readLong()
+        val size = input.readInt()
+        require(size in 0..MAX_PACKET) { "implausible audio packet size $size" }
+        val buf = ByteArray(size)
+        input.readFully(buf)
         return pts to buf
     }
 
@@ -92,6 +109,7 @@ class ScrcpyServerSession private constructor(
         val maxSize: Int = 1280,
         val videoBitRate: Int = 4_000_000,
         val maxFps: Int = 30,
+        val audio: Boolean = false,
     )
 
     companion object {
@@ -102,6 +120,7 @@ class ScrcpyServerSession private constructor(
         private const val MAX_PACKET = 16 * 1024 * 1024
         private const val DEVICE_NAME_LEN = 64
         private const val PIPE_SIZE = 1 shl 20
+        private const val AUDIO_ID_RAW = 0x00726177 // "\0raw"
 
         /**
          * Pushes the jar (streamed into a shell-UID `cat > file` — no storage permission
@@ -113,11 +132,12 @@ class ScrcpyServerSession private constructor(
             val scid = "%08x".format(SecureRandom().nextInt() and 0x7fffffff)
             val socketName = "scrcpy_$scid"
             val serverCmd = "CLASSPATH=$REMOTE_JAR exec app_process / com.genymobile.scrcpy.Server " +
-                "$SCRCPY_VERSION scid=$scid log_level=info tunnel_forward=true audio=false " +
+                "$SCRCPY_VERSION scid=$scid log_level=info tunnel_forward=true " +
+                (if (options.audio) "audio=true audio_codec=raw " else "audio=false ") +
                 "control=true cleanup=false max_size=${options.maxSize} " +
                 "video_bit_rate=${options.videoBitRate} max_fps=${options.maxFps}"
             val relayCmd = "CLASSPATH=${context.applicationInfo.sourceDir} exec app_process / " +
-                "${ShellRelay::class.java.name} $socketName"
+                "${ShellRelay::class.java.name} $socketName ${if (options.audio) 1 else 0}"
             val server = ShizukuShell.exec("sh", "-c", serverCmd)
             drainLogs(server, "server")
             val relay = ShizukuShell.exec("sh", "-c", relayCmd)
@@ -128,6 +148,8 @@ class ScrcpyServerSession private constructor(
                 val videoPipeIn = PipedInputStream(videoPipeOut, PIPE_SIZE)
                 val devPipeOut = PipedOutputStream()
                 val devPipeIn = PipedInputStream(devPipeOut, PIPE_SIZE)
+                val audioPipeOut = PipedOutputStream()
+                val audioPipeIn = PipedInputStream(audioPipeOut, PIPE_SIZE)
                 Thread({
                     val input = DataInputStream(relay.inputStream.buffered(64 * 1024))
                     try {
@@ -143,12 +165,14 @@ class ScrcpyServerSession private constructor(
                                 // without it, frames stalled for up to a second after an idle moment.
                                 ShellRelay.VIDEO -> videoPipeOut.write(buf).also { videoPipeOut.flush() }
                                 ShellRelay.DEVICE_MSG -> devPipeOut.write(buf).also { devPipeOut.flush() }
+                                ShellRelay.AUDIO -> audioPipeOut.write(buf).also { audioPipeOut.flush() }
                             }
                         }
                     } catch (_: IOException) {
                     } finally {
                         runCatching { videoPipeOut.close() }
                         runCatching { devPipeOut.close() }
+                        runCatching { audioPipeOut.close() }
                     }
                 }, "scrcpy-demux").apply { isDaemon = true }.start()
 
@@ -164,7 +188,17 @@ class ScrcpyServerSession private constructor(
                     byteArrayOf((codecId shr 24).toByte(), (codecId shr 16).toByte(), (codecId shr 8).toByte(), codecId.toByte())
                 )
                 Log.i(TAG, "scrcpy stream open: device='$name' codec=$codec ${w}x$h")
-                return ScrcpyServerSession(server, relay, name, codec, w, h, input, devPipeIn)
+                var audioInput: DataInputStream? = null
+                var audioFormat: AudioFormat? = null
+                if (options.audio) {
+                    // First 4 bytes of the audio stream: codec id ("raw\0"), or 0 = audio disabled
+                    // server-side, 1 = audio configuration error (both leave us video-only).
+                    audioInput = DataInputStream(audioPipeIn.buffered(64 * 1024))
+                    val audioId = audioInput.readInt()
+                    if (audioId == AUDIO_ID_RAW) audioFormat = AudioFormat()
+                    else Log.w(TAG, "scrcpy audio unavailable (codec id 0x${audioId.toString(16)}); continuing video-only")
+                }
+                return ScrcpyServerSession(server, relay, name, codec, w, h, input, devPipeIn, audioInput, audioFormat)
             } catch (t: Throwable) {
                 runCatching { relay.destroy() }
                 runCatching { server.destroy() }

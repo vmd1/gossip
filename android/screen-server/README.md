@@ -213,3 +213,19 @@ that sends an input that changes the screen and times the video packets that fol
   `vendor.rtc-ext-enc-low-latency.enable:int=1` gave ~50 packets / ~102 ms p90 gaps in repeated
   runs, same as default (one outlier run was noise), so they are not set.
 
+## Audio (added 2026-10-01)
+`screen.start{audio:true}` makes the phone run the scrcpy server with `audio=true audio_codec=raw`
+(device audio captured at shell UID, played only on the Mac — the phone's speaker is muted for the
+session, scrcpy's default) and the relay opens a third socket (order: video, audio, control). Raw
+48 kHz stereo s16le PCM (~192 KB/s) was chosen over Opus so the Mac needs no codec; it is
+plaintext on the LAN like the video. scrcpy sends the raw codec id as `0x00726177`; `0`/`1` mean
+audio disabled/error and the session continues video-only (`audio: null` in the header).
+- **Verified on the real phone (Samsung SM-S711B, Android 16):** a debug-only 440 Hz tone
+  (`am broadcast -a dev.vmd1.gossip.DEBUG_PLAY_TONE`) arrived through the bridge as 213 packets /
+  4.54 s of PCM; the loudest 1 s window had 880 zero-crossings/s (= 440 Hz), left == right, ~half the
+  100 ms blocks silent (the tone is 2 s of a 4.5 s capture).
+- **Mac playback** (`ScreenAudioPlayer`: `AVAudioEngine`, ~60 ms prebuffer, drops audio rather than
+  lagging past ~250 ms): built and unit-tested for message/header parsing only; whether it sounds
+  right (glitches, drift, lip-sync with video) is not verified by me. Apps that opt out of audio
+  capture (`allowAudioPlaybackCapture=false`) or DRM audio will be silent. Android 11+ only.
+
