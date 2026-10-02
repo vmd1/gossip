@@ -477,6 +477,11 @@ struct PairingSheetView: View {
     /// could interact with it.
     var onDismiss: () -> Void
 
+    private var failureReason: String? {
+        if case .failed(let reason) = pairingViewModel.state { return reason }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             switch pairingViewModel.state {
@@ -520,6 +525,15 @@ struct PairingSheetView: View {
                     onDismiss()
                 }
             }
+        }
+        // A failure message doesn't linger: 10 seconds after pairing fails, the sheet closes itself.
+        // (`.task(id:)` restarts — cancelling the sleep — whenever the failure text changes or clears.)
+        .task(id: failureReason) {
+            guard failureReason != nil else { return }
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, failureReason != nil else { return }
+            pairingViewModel.reset()
+            onDismiss()
         }
         .padding(24)
         .frame(width: 320)

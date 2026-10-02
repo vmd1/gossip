@@ -33,9 +33,17 @@ final class HotspotStateManager: ObservableObject {
         }
     }
 
+    /// `MessageRouter` calls handlers on the transport's network queue, and `hotspotStateBySenderId`
+    /// is `@Published` and observed by the menu-bar UI — publishing it off the main thread makes
+    /// SwiftUI rebuild the `MenuBarExtra` status item on that background thread, which AppKit
+    /// aborts on (`NSStatusItem setVisible:`). This was a real, recurring crash: it hit when a
+    /// burst of `hotspot.state_update` resyncs arrived right after a wake/reconnect. Always hop to main.
     private func handleStateUpdate(_ envelope: Envelope) {
         guard let enabled = envelope.payload["enabled"]?.boolValue else { return }
         let ssid = envelope.payload["ssid"]?.stringValue
-        hotspotStateBySenderId[envelope.senderId] = HotspotState(enabled: enabled, ssid: ssid)
+        let sender = envelope.senderId
+        DispatchQueue.main.async { [weak self] in
+            self?.hotspotStateBySenderId[sender] = HotspotState(enabled: enabled, ssid: ssid)
+        }
     }
 }

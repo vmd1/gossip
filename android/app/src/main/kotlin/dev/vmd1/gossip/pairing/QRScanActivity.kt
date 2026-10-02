@@ -120,6 +120,8 @@ class QRScanActivity : ComponentActivity() {
                     is PairingUiState.Success -> "Paired with ${state.deviceName}"
                     is PairingUiState.Failed -> "Pairing failed: ${state.reason}"
                 }
+                // Back to ready after a failure cleared itself: allow scanning again.
+                if (state is PairingUiState.Idle) handledScan.set(false)
                 if (state is PairingUiState.Success) {
                     setResult(RESULT_OK)
                     finish()
