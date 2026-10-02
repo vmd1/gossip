@@ -40,8 +40,13 @@ device next to your Mac's display and push the cursor off that edge. It needs:
 
 - **Mac:** *Accessibility* and *Input Monitoring* (System Settings → Privacy & Security; the Settings pane has
   buttons that open them). macOS ties these grants to the app's code signature, so a build signed ad hoc loses
-  them on every update. For local builds run `mac/scripts/create-signing-cert.sh` once (creates a self-signed
-  "Gossip Local Dev" code-signing certificate and `mac/Config/Signing.local.xcconfig`), then `xcodegen generate`.
+  them on every update. Releases and local builds are therefore signed with one stable self-signed identity,
+  `gossip.vmd1.dev` (not a paid Developer ID, so Gatekeeper still blocks a downloaded copy until you choose
+  "Open Anyway" in System Settings → Privacy & Security). For local builds run `mac/scripts/create-signing-cert.sh`
+  once (creates the key in `~/.gossip-signing/`, imports it into your login keychain and writes
+  `mac/Config/Signing.local.xcconfig`), then `xcodegen generate`. Back up `~/.gossip-signing/`: losing the key means
+  every user re-grants once. The release workflow signs with the same key, kept in the `release` GitHub
+  environment (restricted to `main`; load it with `mac/scripts/set-ci-signing-secrets.sh`). Never commit the key.
   Gossip is not sandboxed (a sandboxed app cannot capture input), which also means a Mac that used an older,
   sandboxed build gets a new identity: choose "Forget" for the old Mac on each Android device and pair again.
 - **Android device:** Shizuku running (the virtual mouse and keyboard are created at shell privilege). The

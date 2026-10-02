@@ -19,3 +19,8 @@ __pycache__/
 
 # Local code-signing config written by mac/scripts/create-signing-cert.sh
 mac/Config/Signing.local.xcconfig
+
+# Signing keys must never be committed (see mac/scripts/create-signing-cert.sh)
+*.p12
+*.pfx
+*.password
