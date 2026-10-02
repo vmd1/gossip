@@ -39,6 +39,7 @@ class ControlBridge(
     private val onEnded: () -> Unit,
     private val backendFactory: (write: (ByteArray) -> Unit) -> InputBackend = { UhidInputBackend(it) },
     private val serverFactory: (Context) -> ScrcpyServerSession = { ScrcpyServerSession.openControlOnly(it) },
+    private val cursorLocator: CursorLocator = CursorLocator(),
 ) : ControlSessionHandle {
     private val cipher = ControlCipher(secret, sessionId, deviceSide = true)
     private val sendLock = Any()
@@ -49,6 +50,7 @@ class ControlBridge(
     private var backend: InputBackend? = null
     private var lastInfo: ControlDisplayInfo? = null
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "ctl-input").apply { isDaemon = true } }
+    private val cursorExec = Executors.newSingleThreadExecutor { r -> Thread(r, "ctl-cursor").apply { isDaemon = true } }
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -139,9 +141,15 @@ class ControlBridge(
     private fun handle(frame: ControlFrame) {
         when (frame) {
             ControlFrame.Ping -> sendFrame(ControlFrame.Pong)
-            is ControlFrame.Hello, is ControlFrame.HelloAck, is ControlFrame.DisplayInfo, is ControlFrame.Error, ControlFrame.Pong -> Unit
+            is ControlFrame.Hello, is ControlFrame.HelloAck, is ControlFrame.DisplayInfo, is ControlFrame.Error, ControlFrame.Pong, is ControlFrame.CursorPos -> Unit
             // Input is applied in order on one worker, so a slow `enter` (device creation) never reorders later frames.
-            is ControlFrame.Enter -> run { it.enter(frame.edge, frame.position, currentDisplayInfo()) }
+            is ControlFrame.Enter -> run {
+                it.enter(frame.edge, frame.position, currentDisplayInfo())
+                // The pointer is stationary at an exactly-known spot right now: measure the cursor image's hotspot
+                // offset once, here on the input worker so no queued move shifts the pointer during the read.
+                if (!cursorLocator.calibrated) it.entryPoint?.let { p -> cursorLocator.calibrate(p) }
+            }
+            is ControlFrame.CursorQuery -> answerCursorQuery(frame.token)
             ControlFrame.Leave -> run { it.leave() }
             is ControlFrame.MouseMove -> run { it.mouseMove(frame.dx, frame.dy) }
             is ControlFrame.Buttons -> run { it.buttons(frame.mask) }
@@ -149,6 +157,21 @@ class ControlBridge(
             is ControlFrame.Key -> run { it.key(frame.usage, frame.down, frame.modifiers) }
             is ControlFrame.Text -> run { it.text(frame.text) }
         }
+    }
+
+    /** Reads the real cursor off the input path (a read takes ~100 ms) and answers the Mac. No answer if unreadable. */
+    private fun answerCursorQuery(token: Int) {
+        val b = backend ?: return
+        try {
+            cursorExec.execute {
+                if (ended.get()) return@execute
+                val before = b.movesApplied
+                val pos = cursorLocator.position() ?: return@execute
+                val after = b.movesApplied
+                // The read lands somewhere inside the window, so report the middle of it.
+                sendFrame(ControlFrame.CursorPos(token, Math.round(pos.first), Math.round(pos.second), before + (after - before) / 2))
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {}
     }
 
     private fun run(block: (InputBackend) -> Unit) {
@@ -168,6 +191,7 @@ class ControlBridge(
     /** Idempotent teardown: removes the virtual devices, closes the Mac, the listener and the scrcpy server. */
     fun end() {
         if (!ended.compareAndSet(false, true)) return
+        cursorExec.shutdownNow()
         runCatching { worker.execute { runCatching { backend?.close() } ; worker.shutdown() } }
         mainHandler.post { runCatching { displayManager.unregisterDisplayListener(displayListener) } }
         runCatching { ws?.close(1001) }

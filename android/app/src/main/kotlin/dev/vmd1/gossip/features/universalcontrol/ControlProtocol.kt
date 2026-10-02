@@ -39,11 +39,16 @@ sealed class ControlFrame {
     data class Key(val usage: Int, val down: Boolean, val modifiers: Int) : ControlFrame()
     data class Text(val text: String) : ControlFrame()
     object Ping : ControlFrame() { override fun toString() = "Ping" }
+    /** Asks for the real cursor position; answered with [CursorPos] carrying the same [token]. */
+    data class CursorQuery(val token: Int) : ControlFrame()
     // device -> Mac
     data class HelloAck(val info: ControlDisplayInfo) : ControlFrame()
     data class DisplayInfo(val info: ControlDisplayInfo) : ControlFrame()
     data class Error(val reason: String) : ControlFrame()
     object Pong : ControlFrame() { override fun toString() = "Pong" }
+    /** The real cursor position in this display's logical pixels, and how many `MouseMove`s had been applied since
+     *  the last `Enter` when it was read ([applied], unsigned 32-bit). */
+    data class CursorPos(val token: Int, val x: Int, val y: Int, val applied: Long) : ControlFrame()
 
     fun encode(): ByteArray {
         val out = java.io.ByteArrayOutputStream()
@@ -63,10 +68,12 @@ sealed class ControlFrame {
             is Key -> { u8(KIND_KEY); u16(usage); u8(if (down) 1 else 0); u8(modifiers) }
             is Text -> { u8(KIND_TEXT); out.write(text.toByteArray(Charsets.UTF_8)) }
             Ping -> u8(KIND_PING)
+            is CursorQuery -> { u8(KIND_CURSOR_QUERY); u8(token) }
             is HelloAck -> { u8(KIND_HELLO_ACK); display(info) }
             is DisplayInfo -> { u8(KIND_DISPLAY_INFO); display(info) }
             is Error -> { u8(KIND_ERROR); out.write(reason.toByteArray(Charsets.UTF_8)) }
             Pong -> u8(KIND_PONG)
+            is CursorPos -> { u8(KIND_CURSOR_POS); u8(token); u16(x.coerceIn(0, 65535)); u16(y.coerceIn(0, 65535)); u16((applied ushr 16).toInt()); u16(applied.toInt()) }
         }
         return out.toByteArray()
     }
@@ -81,10 +88,12 @@ sealed class ControlFrame {
         const val KIND_KEY = 0x15
         const val KIND_TEXT = 0x16
         const val KIND_PING = 0x17
+        const val KIND_CURSOR_QUERY = 0x18
         const val KIND_HELLO_ACK = 0x81
         const val KIND_DISPLAY_INFO = 0x82
         const val KIND_ERROR = 0x84
         const val KIND_PONG = 0x85
+        const val KIND_CURSOR_POS = 0x86
 
         /** Returns null for an unknown kind or a malformed payload (the caller ignores it). */
         fun decode(data: ByteArray): ControlFrame? {
@@ -110,10 +119,12 @@ sealed class ControlFrame {
                     }
                     KIND_TEXT -> Text(String(rest(), Charsets.UTF_8))
                     KIND_PING -> if (b.hasRemaining()) null else Ping
+                    KIND_CURSOR_QUERY -> if (b.remaining() != 1) null else CursorQuery(u8())
                     KIND_HELLO_ACK -> display()?.let { HelloAck(it) }
                     KIND_DISPLAY_INFO -> display()?.let { DisplayInfo(it) }
                     KIND_ERROR -> Error(String(rest(), Charsets.UTF_8))
                     KIND_PONG -> if (b.hasRemaining()) null else Pong
+                    KIND_CURSOR_POS -> if (b.remaining() != 9) null else CursorPos(u8(), u16(), u16(), (u16().toLong() shl 16) or u16().toLong())
                     else -> null
                 }
             } catch (_: java.nio.BufferUnderflowException) { null }

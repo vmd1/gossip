@@ -71,11 +71,16 @@ enum ControlFrame: Equatable {
     case key(usage: UInt16, down: Bool, modifiers: UInt8)
     case text(String)
     case ping
+    /// Asks the device where its real cursor is; answered with `cursorPos` carrying the same `token`.
+    case cursorQuery(token: UInt8)
     // device -> Mac
     case helloAck(ControlDisplayInfo)
     case displayInfo(ControlDisplayInfo)
     case error(String)
     case pong
+    /// The device's real cursor position in its own logical pixels, and how many `mouseMove` frames it had
+    /// applied (since the last `enter`) when it was read, so the Mac can compare it with the model at that moment.
+    case cursorPos(token: UInt8, x: UInt16, y: UInt16, applied: UInt32)
 
     enum Kind {
         static let hello: UInt8 = 0x01
@@ -87,10 +92,12 @@ enum ControlFrame: Equatable {
         static let key: UInt8 = 0x15
         static let text: UInt8 = 0x16
         static let ping: UInt8 = 0x17
+        static let cursorQuery: UInt8 = 0x18
         static let helloAck: UInt8 = 0x81
         static let displayInfo: UInt8 = 0x82
         static let error: UInt8 = 0x84
         static let pong: UInt8 = 0x85
+        static let cursorPos: UInt8 = 0x86
     }
 
     func encoded() -> Data {
@@ -105,10 +112,12 @@ enum ControlFrame: Equatable {
         case .key(let usage, let down, let mods): w.u8(Kind.key); w.u16(usage); w.u8(down ? 1 : 0); w.u8(mods)
         case .text(let s): w.u8(Kind.text); w.bytes(Data(s.utf8))
         case .ping: w.u8(Kind.ping)
+        case .cursorQuery(let t): w.u8(Kind.cursorQuery); w.u8(t)
         case .helloAck(let d): w.u8(Kind.helloAck); w.display(d)
         case .displayInfo(let d): w.u8(Kind.displayInfo); w.display(d)
         case .error(let s): w.u8(Kind.error); w.bytes(Data(s.utf8))
         case .pong: w.u8(Kind.pong)
+        case .cursorPos(let t, let x, let y, let n): w.u8(Kind.cursorPos); w.u8(t); w.u16(x); w.u16(y); w.u32(n)
         }
         return w.data
     }
@@ -136,10 +145,16 @@ enum ControlFrame: Equatable {
             return .key(usage: u, down: d == 1, modifiers: m)
         case Kind.text: return r.rest().flatMap { String(data: $0, encoding: .utf8) }.map { .text($0) }
         case Kind.ping: return r.isAtEnd ? .ping : nil
+        case Kind.cursorQuery:
+            guard let t = r.u8(), r.isAtEnd else { return nil }
+            return .cursorQuery(token: t)
         case Kind.helloAck: return r.display().map { .helloAck($0) }
         case Kind.displayInfo: return r.display().map { .displayInfo($0) }
         case Kind.error: return r.rest().flatMap { String(data: $0, encoding: .utf8) }.map { .error($0) }
         case Kind.pong: return r.isAtEnd ? .pong : nil
+        case Kind.cursorPos:
+            guard let t = r.u8(), let x = r.u16(), let y = r.u16(), let n = r.u32(), r.isAtEnd else { return nil }
+            return .cursorPos(token: t, x: x, y: y, applied: n)
         default: return nil
         }
     }
@@ -224,6 +239,7 @@ struct ByteWriter {
     mutating func u8(_ v: UInt8) { data.append(v) }
     mutating func u16(_ v: UInt16) { data.append(UInt8(v >> 8)); data.append(UInt8(v & 0xff)) }
     mutating func i16(_ v: Int16) { u16(UInt16(bitPattern: v)) }
+    mutating func u32(_ v: UInt32) { u16(UInt16(v >> 16)); u16(UInt16(v & 0xffff)) }
     mutating func bytes(_ d: Data) { data.append(d) }
     mutating func display(_ d: ControlDisplayInfo) {
         u16(UInt16(clamping: d.width)); u16(UInt16(clamping: d.height))
@@ -246,6 +262,10 @@ struct ByteReader {
         return UInt16(a) << 8 | UInt16(b)
     }
     mutating func i16() -> Int16? { u16().map { Int16(bitPattern: $0) } }
+    mutating func u32() -> UInt32? {
+        guard let a = u16(), let b = u16() else { return nil }
+        return UInt32(a) << 16 | UInt32(b)
+    }
     mutating func rest() -> Data? {
         defer { index = data.endIndex }
         return Data(data[index...])

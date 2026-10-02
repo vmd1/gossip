@@ -171,6 +171,64 @@ final class UniversalControlManagerTests: XCTestCase {
         XCTAssertEqual(manager.layout.devices["B"]?.x ?? 0, 2240, accuracy: 0.01, "snapped")
     }
 
+    // MARK: Closed-loop cursor correction
+
+    private var fakeNow: TimeInterval = 100
+    private func moveRemote(_ dx: CGFloat, times: Int = 1, advance: TimeInterval = 0.2) {
+        for _ in 0..<times {
+            fakeNow += advance
+            _ = manager.handle(.mouseMoved(delta: CGPoint(x: dx, y: 0), location: .zero))
+        }
+    }
+    private func queries(_ id: String = "A") -> [UInt8] {
+        sessions[id]!.frames.compactMap { if case .cursorQuery(let t) = $0 { return t } else { return nil } }
+    }
+    private func movesSent(_ id: String = "A") -> UInt32 {
+        UInt32(sessions[id]!.frames.filter { if case .mouseMove = $0 { return true } else { return false } }.count)
+    }
+
+    func testDeviceIsOnlyAskedForItsCursorNearAnExitEdge() {
+        manager.clock = { [unowned self] in self.fakeNow }
+        makeReady("A", "B")
+        pushIntoA()
+        XCTAssertTrue(queries().isEmpty, "just entered: the position is exactly known")
+        moveRemote(10, times: 6)                       // ~90 points into A: still near the Mac-facing edge
+        XCTAssertFalse(queries().isEmpty)
+        moveRemote(10, times: 20)                      // on into the middle of A, far from both exit edges
+        let inMiddle = queries().count
+        moveRemote(1, times: 10)                       // jiggling in the middle asks for nothing
+        XCTAssertEqual(queries().count, inMiddle)
+    }
+
+    func testReplyCorrectsTheModelSoHandoverHappensAtTheRealEdge() {
+        manager.clock = { [unowned self] in self.fakeNow }
+        makeReady("A", "B")
+        pushIntoA()
+        moveRemote(10, times: 10)                      // model: ~150 points in (10 x 1.5 x 10), near the left edge
+        guard let token = queries().last else { return XCTFail("no query") }
+        // The device says its real cursor is only 30 device pixels (20 points) in: the model had run far ahead.
+        sessions["A"]!.onCursorReport?(token, 30, 300, movesSent())
+        let leaves = { self.sessions["A"]!.frames.filter { $0 == .leave }.count }
+        XCTAssertEqual(leaves(), 0)
+        // 20 points from the edge: two moves of -10 (x 1.5 = 15 points each) reach it. Uncorrected, the model
+        // (150 points in) would need ten.
+        moveRemote(-10, times: 3)
+        XCTAssertEqual(leaves(), 1, "handed back to the Mac at the real edge")
+    }
+
+    func testStaleOrUnsolicitedRepliesAreIgnored() {
+        manager.clock = { [unowned self] in self.fakeNow }
+        makeReady("A", "B")
+        pushIntoA()
+        sessions["A"]!.onCursorReport?(42, 3000, 3000, 0)         // no query outstanding
+        moveRemote(10, times: 6)
+        guard let token = queries().last else { return XCTFail("no query") }
+        sessions["A"]!.onCursorReport?(token &+ 1, 0, 0, movesSent()) // wrong token
+        sessions["A"]!.onCursorReport?(token, 0, 0, movesSent() + 500) // a move count we never sent
+        moveRemote(-1, times: 2)
+        XCTAssertEqual(sessions["A"]!.frames.filter { $0 == .leave }.count, 0, "nothing corrected the model")
+    }
+
     func testMessagePrefixAndFeatureToggle() {
         XCTAssertEqual(FeatureSettings.feature(forMessageType: "control.ready"), .universalControl)
         var enabled = true

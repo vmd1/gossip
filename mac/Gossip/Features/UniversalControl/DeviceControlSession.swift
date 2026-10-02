@@ -17,6 +17,8 @@ protocol ControlSession: AnyObject {
     var displayInfo: ControlDisplayInfo? { get }
     var onChange: (() -> Void)? { get set }
     var onDisplayInfo: ((ControlDisplayInfo) -> Void)? { get set }
+    /// The device answered a `cursorQuery`: (token, x, y in device pixels, moves applied). Called on main.
+    var onCursorReport: ((_ token: UInt8, _ x: UInt16, _ y: UInt16, _ applied: UInt32) -> Void)? { get set }
     func start()
     func stop()
     func send(_ frame: ControlFrame)
@@ -77,6 +79,7 @@ final class DeviceControlSession: ControlSession {
 
     var onChange: (() -> Void)?
     var onDisplayInfo: ((ControlDisplayInfo) -> Void)?
+    var onCursorReport: ((UInt8, UInt16, UInt16, UInt32) -> Void)?
 
     var state: State { lock.lock(); defer { lock.unlock() }; return _state }
     var displayInfo: ControlDisplayInfo? { lock.lock(); defer { lock.unlock() }; return _displayInfo }
@@ -234,6 +237,8 @@ final class DeviceControlSession: ControlSession {
             case .displayInfo(let info):
                 lock.lock(); _displayInfo = info; lock.unlock()
                 onDisplayInfo?(info)
+            case .cursorPos(let token, let x, let y, let applied):
+                onCursorReport?(token, x, y, applied)
             case .error(let reason):
                 fail(reason)
             default:

@@ -152,6 +152,32 @@ struct PointerRouter {
         return actions
     }
 
+    // MARK: Closed-loop correction
+
+    /// Whether the modelled cursor is within `margin` points of an edge of the device it is on that leads to
+    /// another screen — the only place an inaccurate model matters (that is where it decides to hand over).
+    func isNearExitEdge(margin: Double) -> Bool {
+        guard case .remote(let id, let pos) = state, let r = layout.rect(of: .device(id)) else { return false }
+        let m = min(margin, r.width / 2, r.height / 2)
+        let candidates: [(ControlEdge, Double, Double)] = [
+            (.left, pos.x - r.minX, pos.y), (.right, r.maxX - pos.x, pos.y),
+            (.top, pos.y - r.minY, pos.x), (.bottom, r.maxY - pos.y, pos.x),
+        ]
+        for (edge, distance, along) in candidates where distance <= m {
+            if layout.neighbor(of: .device(id), through: edge, along: along) != nil { return true }
+        }
+        return false
+    }
+
+    /// The device told us where its real cursor is: move the model by `offset` (real minus modelled at that
+    /// moment), staying inside the device. Never triggers a hand-over by itself; the next movement does.
+    mutating func shiftRemotePosition(by offset: CGVector) {
+        guard case .remote(let id, let pos) = state, let r = layout.rect(of: .device(id)) else { return }
+        state = .remote(deviceId: id, position: CGPoint(x: min(max(pos.x + offset.dx, r.minX), r.maxX),
+                                                        y: min(max(pos.y + offset.dy, r.minY), r.maxY)))
+        resetPush()
+    }
+
     // MARK: Helpers
 
     private mutating func enterDevice(_ deviceId: String, from exitEdge: ControlEdge, alongLayout along: Double) -> [Action] {

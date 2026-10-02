@@ -80,6 +80,24 @@ case "smooth":
     pause(0.5)
     marker("smooth-stop")
     client.send(.leave); pause(0.6)
+case "hold":
+    // Enter and park the pointer 300 px right of the left edge, 200 px down, then wait so state can be inspected.
+    client.send(.enter(edge: .left, position: 20000)); pause(1.2)
+    marker("moving")
+    for _ in 0..<30 { client.send(.mouseMove(dx: 10, dy: 0)); pause(0.016) }
+    pause(0.3); marker("parked")
+    pause(25)
+    client.send(.leave); pause(0.6)
+case "locate":
+    // Closed-loop check: ask the device where its cursor really is, at rest and after fast and slow motion.
+    // run-tablet-e2e.sh compares each answer with the position Android itself delivered to the probe activity.
+    client.send(.enter(edge: .left, position: 20000)); pause(1.5)
+    marker("query-entry"); client.send(.cursorQuery(token: 1)); pause(1.0)
+    for _ in 0..<40 { client.send(.mouseMove(dx: 30, dy: 0)); pause(0.012) }       // fast: heavily accelerated
+    pause(0.4); marker("query-after-fast"); client.send(.cursorQuery(token: 2)); pause(1.0)
+    for _ in 0..<40 { client.send(.mouseMove(dx: -4, dy: 3)); pause(0.016) }        // slow: not accelerated
+    pause(0.4); marker("query-after-slow"); client.send(.cursorQuery(token: 3)); pause(1.0)
+    client.send(.leave); pause(0.6)
 case "idle":
     marker("idle"); pause(5)
 default: print("unknown scenario"); exit(2)

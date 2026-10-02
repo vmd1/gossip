@@ -98,6 +98,26 @@ final class UniversalControlManager: ObservableObject {
     private var running = false
     private var reconcileTimer: Timer?
 
+    // Closed-loop cursor correction (all guarded by `lock`). Android accelerates a relative mouse by an amount
+    // that depends on timing, so the modelled position drifts from the real one. While the model says the cursor
+    // is near an exit edge, the device is asked where its real cursor is and the model is corrected by the
+    // difference, measured against the model as it was when the device read it (`moveHistory`, indexed by how
+    // many `mouseMove` frames had been applied).
+    private var sentMoves = 0
+    private var moveHistory: [CGPoint] = []
+    private var historyBase = 0
+    private var entryModel: CGPoint?
+    private var queryToken: UInt8 = 0
+    private var outstandingQuery: (token: UInt8, at: TimeInterval)?
+    private var lastQueryAt: TimeInterval = -1
+    private var movedSinceQuery: Double = 0
+    /// Injected so tests can drive time.
+    var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    static let queryInterval: TimeInterval = 0.15
+    static let queryTimeout: TimeInterval = 0.5
+    static let queryMargin: Double = 0.3      // fraction of the device size counted as "near an exit edge"
+    static let queryMinMovement: Double = 40  // layout points moved since the last query before asking again
+
     init(
         mesh: ControlMesh,
         makeSession: @escaping SessionFactory,
@@ -160,6 +180,7 @@ final class UniversalControlManager: ObservableObject {
         let s = makeSession(id)
         s.onChange = { [weak self] in DispatchQueue.main.async { self?.sessionChanged(id) } }
         s.onDisplayInfo = { [weak self] info in DispatchQueue.main.async { self?.applyDisplayInfo(id, info) } }
+        s.onCursorReport = { [weak self] token, x, y, applied in self?.handleCursorReport(deviceId: id, token: token, x: x, y: y, applied: applied) }
         sessions[id] = s
         s.start()
         sessionStates[id] = s.state
@@ -168,7 +189,7 @@ final class UniversalControlManager: ObservableObject {
     private func removeSession(_ id: String) {
         guard let s = sessions.removeValue(forKey: id) else { return }
         applyActions(withLock: { $0.deviceBecameUnavailable(id) })
-        s.onChange = nil; s.onDisplayInfo = nil
+        s.onChange = nil; s.onDisplayInfo = nil; s.onCursorReport = nil
         s.stop()
         sessionStates[id] = nil
     }
@@ -263,6 +284,7 @@ final class UniversalControlManager: ObservableObject {
         case .mouseMoved(let delta, let location):
             if wasRemote {
                 actions = router.remoteMoved(delta: delta)
+                movedSinceQuery += Double(abs(delta.x) + abs(delta.y))
             } else {
                 actions = router.macMoved(delta: delta, location: location)
                 // The move that crosses is swallowed so the Mac cursor doesn't also move.
@@ -298,9 +320,59 @@ final class UniversalControlManager: ObservableObject {
         }
 
         let sideEffects = perform(actions)
+        if wasRemote, case .mouseMoved = event { queryCursorIfNeeded() }
         lock.unlock()
         sideEffects()
         return disposition
+    }
+
+    /// Caller holds `lock`.
+    private func queryCursorIfNeeded() {
+        guard case .remote(let id, _) = router.state,
+              movedSinceQuery >= Self.queryMinMovement,
+              let rect = layout.rect(of: .device(id)),
+              router.isNearExitEdge(margin: Self.queryMargin * Double(min(rect.width, rect.height))) else { return }
+        let now = clock()
+        if let o = outstandingQuery, now - o.at < Self.queryTimeout { return }
+        guard now - lastQueryAt >= Self.queryInterval else { return }
+        queryToken &+= 1
+        outstandingQuery = (queryToken, now)
+        lastQueryAt = now
+        movedSinceQuery = 0
+        transmit(.cursorQuery(token: queryToken), to: id)
+    }
+
+    /// The device's answer (main thread). Corrects the model by how far it had drifted at the moment of the read.
+    func handleCursorReport(deviceId id: String, token: UInt8, x: UInt16, y: UInt16, applied: UInt32) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let o = outstandingQuery, o.token == token else { return }
+        outstandingQuery = nil
+        guard case .remote(let remoteId, _) = router.state, remoteId == id,
+              let rect = router.layout.rect(of: .device(id)),
+              let modelThen = positionAfter(moves: Int(applied)) else { return }
+        let ppp = ControlLayout.defaultPixelsPerPoint
+        let real = CGPoint(x: rect.minX + Double(x) / ppp, y: rect.minY + Double(y) / ppp)
+        let offset = CGVector(dx: real.x - modelThen.x, dy: real.y - modelThen.y)
+        router.shiftRemotePosition(by: offset)
+        // Everything the model computed from the measured moment on carries the same error.
+        let first = max(Int(applied) - historyBase, 0)
+        if first < moveHistory.count {
+            for i in first..<moveHistory.count { moveHistory[i] = CGPoint(x: moveHistory[i].x + offset.dx, y: moveHistory[i].y + offset.dy) }
+        }
+    }
+
+    private func positionAfter(moves n: Int) -> CGPoint? {
+        if n == 0 { return entryModel }
+        let i = n - 1 - historyBase
+        return moveHistory.indices.contains(i) ? moveHistory[i] : nil
+    }
+
+    private func recordSentMove() {
+        guard case .remote(_, let pos) = router.state else { return }
+        sentMoves += 1
+        moveHistory.append(pos)
+        if moveHistory.count > 4096 { moveHistory.removeFirst(2048); historyBase += 2048 }
     }
 
     private func handleKey(keyCode: UInt16, down: Bool, characters: String?, flags: ControlModifierFlags, to id: String) {
@@ -344,6 +416,8 @@ final class UniversalControlManager: ObservableObject {
             switch action {
             case .enter(let id, let edge, let fraction):
                 buttonMask = 0; moveRemainder = .zero
+                sentMoves = 0; moveHistory.removeAll(); historyBase = 0; movedSinceQuery = 0; outstandingQuery = nil
+                if case .remote(_, let pos) = router.state { entryModel = pos }
                 transmit(.enter(edge: edge, position: UInt16(max(0, min(1, fraction)) * 65535)), to: id)
                 if !cursorFrozen {
                     cursorFrozen = true
@@ -366,6 +440,7 @@ final class UniversalControlManager: ObservableObject {
                 while rx != 0 || ry != 0 { // a frame carries Int16
                     let cx = max(-32000, min(32000, rx)), cy = max(-32000, min(32000, ry))
                     transmit(.mouseMove(dx: Int16(cx), dy: Int16(cy)), to: id)
+                    recordSentMove()
                     rx -= cx; ry -= cy
                 }
             case .warpMacCursor(let point):

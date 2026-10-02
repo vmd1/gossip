@@ -12,6 +12,10 @@ interface InputBackend {
     /** The cursor left: release anything held and remove the virtual devices (so the cursor disappears). Idempotent. */
     fun leave()
     fun mouseMove(dx: Int, dy: Int)
+    /** `MouseMove`s applied since the last [enter]; reported alongside the real cursor position. */
+    val movesApplied: Long get() = 0
+    /** Display-pixel position the pointer was put at by the last [enter] (exact), or null before any enter. */
+    val entryPoint: Pair<Int, Int>? get() = null
     fun buttons(mask: Int)
     fun scroll(dx: Int, dy: Int)
     fun key(usage: Int, down: Boolean, modifiers: Int)
@@ -50,6 +54,10 @@ class UhidInputBackend(
     private var heldModifiers = 0
     private var wheelRemainderY = 0
     private var wheelRemainderX = 0
+    private val moves = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var entered: Pair<Int, Int>? = null
+    override val movesApplied: Long get() = moves.get()
+    override val entryPoint: Pair<Int, Int>? get() = entered
 
     override fun enter(edge: ControlEdge, position: Int, display: ControlDisplayInfo) {
         if (!created) {
@@ -68,6 +76,8 @@ class UhidInputBackend(
         val y = when (edge) { ControlEdge.TOP -> 0; ControlEdge.BOTTOM -> display.height - 1; else -> (frac * (display.height - 1)).toInt() }
         if (x != 0 || y != 0) write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(0, x, y)))
         sleep(ACCEL_SETTLE_MS)
+        moves.set(0)
+        entered = Pair(x, y)
     }
 
     override fun leave() {
@@ -90,6 +100,7 @@ class UhidInputBackend(
         if (!created) return
         if (dx == 0 && dy == 0) return
         write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(buttonMask, dx, dy)))
+        moves.incrementAndGet()
     }
 
     override fun buttons(mask: Int) {

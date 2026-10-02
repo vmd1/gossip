@@ -16,8 +16,17 @@ final class ControlProtocolTests: XCTestCase {
             .buttons(0x1f), .scroll(dx: -1, dy: 1), .key(usage: 0xE7, down: false, modifiers: 0xff), .text("日本語 ✓"), .ping,
             .helloAck(ControlDisplayInfo(width: 2000, height: 1200, rotation: 3, backend: 1)),
             .displayInfo(ControlDisplayInfo(width: 1, height: 2, rotation: 0, backend: 0)), .error("nope"), .pong,
+            .cursorQuery(token: 255), .cursorPos(token: 7, x: 65535, y: 0, applied: 4_000_000_000),
         ]
         for f in frames { XCTAssertEqual(ControlFrame.decode(f.encoded()), f, "\(f)") }
+    }
+
+    func testCursorFramesHaveTheAgreedBytes() {
+        // The same bytes are asserted in ControlProtocolTest.kt.
+        XCTAssertEqual(hex(ControlFrame.cursorQuery(token: 9).encoded()), "1809")
+        XCTAssertEqual(hex(ControlFrame.cursorPos(token: 7, x: 0x0102, y: 0x0304, applied: 0x0506_0708).encoded()), "860701020304" + "05060708")
+        XCTAssertNil(ControlFrame.decode(Data([ControlFrame.Kind.cursorPos, 1, 0, 0, 0, 0, 0, 0]))) // truncated
+        XCTAssertNil(ControlFrame.decode(Data([ControlFrame.Kind.cursorQuery])))
     }
 
     func testMalformedFramesAreRejected() {

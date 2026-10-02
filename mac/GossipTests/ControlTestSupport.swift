@@ -22,6 +22,7 @@ final class FakeControlSession: ControlSession {
     private var _frames: [ControlFrame] = []
     var onChange: (() -> Void)?
     var onDisplayInfo: ((ControlDisplayInfo) -> Void)?
+    var onCursorReport: ((UInt8, UInt16, UInt16, UInt32) -> Void)?
     var displayInfo: ControlDisplayInfo? { ControlDisplayInfo(width: 2000, height: 1200, rotation: 0, backend: 0) }
     var state: DeviceControlSession.State { lock.lock(); defer { lock.unlock() }; return _state }
     var frames: [ControlFrame] { lock.lock(); defer { lock.unlock() }; return _frames }

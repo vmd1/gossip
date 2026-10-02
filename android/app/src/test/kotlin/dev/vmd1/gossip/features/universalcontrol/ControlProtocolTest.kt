@@ -97,4 +97,17 @@ class ControlProtocolTest {
         assertNull(ControlFrame.decode(byteArrayOf(0x15, 0, 4, 2, 0)))  // key "down" must be 0 or 1
         assertNull(ControlFrame.decode(byteArrayOf(0x10, 9, 0, 0)))     // unknown edge
     }
+
+    private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+
+    @Test fun cursorFramesHaveTheAgreedBytes() {
+        // The same bytes are asserted in ControlProtocolTests.swift.
+        assertEquals("1809", hex(ControlFrame.CursorQuery(9).encode()))
+        assertEquals("86070102030405060708", hex(ControlFrame.CursorPos(7, 0x0102, 0x0304, 0x05060708L).encode()))
+        for (f in listOf(ControlFrame.CursorQuery(255), ControlFrame.CursorPos(7, 65535, 0, 4_000_000_000L))) {
+            assertEquals(f, ControlFrame.decode(f.encode()))
+        }
+        assertNull(ControlFrame.decode(byteArrayOf(0x86.toByte(), 1, 0, 0, 0, 0, 0, 0))) // truncated
+        assertNull(ControlFrame.decode(byteArrayOf(0x18)))
+    }
 }
