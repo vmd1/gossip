@@ -47,10 +47,11 @@ for scenario in ${SCENARIOS[@]}; do
   "${ADB[@]}" shell am start -n dev.vmd1.gossip/.debug.InputProbeActivity >/dev/null; sleep 1.5
   SID="e2e-$scenario-$RANDOM"
   PORT=$(start_session "$SID") || { fail "session did not become ready (is Shizuku running?)"; continue; }
-  "${ADB[@]}" forward tcp:"$PORT" tcp:"$PORT" >/dev/null
+  # UC_HOST=<device LAN ip> connects directly over Wi-Fi like the Mac app does (no adb tunnel jitter).
+  if [ -z "${UC_HOST:-}" ]; then "${ADB[@]}" forward tcp:"$PORT" tcp:"$PORT" >/dev/null; fi
   check "no virtual devices before entering" '[ "$(devices)" = "0" ]'
   "${ADB[@]}" logcat -c
-  "$DRIVER" 127.0.0.1 "$PORT" "$SID" "$SECRET_HEX" "$scenario" | tee "$OUT/$scenario.driver.log" &
+  "$DRIVER" "${UC_HOST:-127.0.0.1}" "$PORT" "$SID" "$SECRET_HEX" "$scenario" | tee "$OUT/$scenario.driver.log" &
   DRV=$!
   if [ "$scenario" = basic ]; then
     sleep 3; check "mouse + keyboard exist while the cursor is on the device" '[ "$(devices)" -ge 2 ]'

@@ -66,6 +66,20 @@ case "drift":
         marker("stop \(label)")
         client.send(.leave); pause(0.6)
     }
+case "smooth":
+    // Constant-velocity motion at 250 Hz (3 px per frame), paced by absolute deadlines, so any irregularity in
+    // what the device reports is the device/transport, not the sender.
+    client.send(.enter(edge: .left, position: 32768)); pause(1.2)
+    marker("smooth-start")
+    let period = 0.004, start = Date()
+    for i in 0..<750 {
+        client.send(.mouseMove(dx: 3, dy: 0))
+        let wait = start.addingTimeInterval(Double(i + 1) * period).timeIntervalSinceNow
+        if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+    }
+    pause(0.5)
+    marker("smooth-stop")
+    client.send(.leave); pause(0.6)
 case "idle":
     marker("idle"); pause(5)
 default: print("unknown scenario"); exit(2)
