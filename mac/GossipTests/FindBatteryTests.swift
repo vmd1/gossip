@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import Gossip
 
 private final class FakeRinger: Ringer {
@@ -120,5 +121,27 @@ final class BatterySyncManagerTests: XCTestCase {
         let m = BatterySyncManager(transportManager: TransportManager(), readBattery: { nil }, onLowBattery: { _, _ in })
         m.handleUpdate(Envelope(type: "battery.update", senderId: "a", payload: .object(["level": .number(5)])))
         XCTAssertTrue(m.batteryBySenderId.isEmpty)
+    }
+}
+
+final class HotspotStateManagerThreadingTests: XCTestCase {
+    /// Regression: a `hotspot.state_update` arrives on the transport's background queue; publishing
+    /// the state there crashed the app (AppKit aborts when the menu-bar item is rebuilt off-main).
+    func testStateUpdateFromBackgroundQueueIsPublishedOnMainThread() {
+        let transport = TransportManager()
+        let manager = HotspotStateManager(transportManager: transport)
+        let published = expectation(description: "published")
+        var publishedOnMain: Bool?
+        let cancellable = manager.$hotspotStateBySenderId.dropFirst().sink { _ in
+            publishedOnMain = Thread.isMainThread
+            published.fulfill()
+        }
+        let envelope = Envelope(type: "hotspot.state_update", senderId: "phone", broadcast: true,
+                                payload: .object(["enabled": .bool(true), "ssid": .string("net")]))
+        DispatchQueue.global().async { transport.router.route(envelope) }
+        wait(for: [published], timeout: 2)
+        XCTAssertEqual(publishedOnMain, true)
+        XCTAssertEqual(manager.hotspotStateBySenderId["phone"]?.enabled, true)
+        cancellable.cancel()
     }
 }
