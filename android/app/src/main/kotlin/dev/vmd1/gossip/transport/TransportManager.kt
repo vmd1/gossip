@@ -107,6 +107,28 @@ class TransportManager(
     private val _connectedDeviceIds = MutableStateFlow<Set<String>>(emptySet())
     val connectedDeviceIds: StateFlow<Set<String>> = _connectedDeviceIds.asStateFlow()
 
+    /** When each device (other than us) was last heard from, by any message — directly or relayed. */
+    private val lastHeard = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val _meshReachableDeviceIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Devices we have no direct connection to but that were heard from recently via the mesh
+     *  ([DeviceConnectivity.MESH_TTL_MS]). Expiry is re-evaluated every 15s and on connection changes. */
+    val meshReachableDeviceIds: StateFlow<Set<String>> = _meshReachableDeviceIds.asStateFlow()
+
+    private fun refreshMeshReachable() {
+        _meshReachableDeviceIds.value = DeviceConnectivity.meshReachable(
+            lastHeard = lastHeard, directIds = _connectedDeviceIds.value,
+            selfId = identityKeyStore.deviceId, now = System.currentTimeMillis()
+        )
+    }
+
+    private val meshExpiryJob = scope.launch {
+        while (true) {
+            kotlinx.coroutines.delay(15_000)
+            refreshMeshReachable()
+        }
+    }
+
     /** Device ID of whichever peer most recently finished connecting. Backs
      *  [currentRemoteDeviceId] — a "primary peer" convenience for callers (pairing flow,
      *  notification/media targeting) that haven't yet been generalized to pick a specific
@@ -544,6 +566,11 @@ class TransportManager(
      *  would desync a downstream hop's own "next frame is raw" expectation if some other
      *  message interleaved in between. */
     private suspend fun handleReceivedEnvelope(envelope: Envelope, arrivedFrom: String) {
+        // Any message from a device — even one relayed through another — proves it is reachable.
+        if (envelope.senderId != identityKeyStore.deviceId) {
+            val first = lastHeard.put(envelope.senderId, System.currentTimeMillis()) == null
+            if (first || envelope.senderId !in _meshReachableDeviceIds.value) refreshMeshReachable()
+        }
         if (!recordSeen(envelope.id)) {
             // Already processed/forwarded this one — but if it carries a raw follow-up,
             // that frame is still physically coming next on this connection and must be
@@ -627,6 +654,7 @@ class TransportManager(
     private fun recomputeConnectionState() {
         val ids = peers.keys.toSet()
         _connectedDeviceIds.value = ids
+        refreshMeshReachable()
         _connectionState.value = when {
             ids.isNotEmpty() -> ConnectionState.CONNECTED
             inFlightHandshakes.get() > 0 -> ConnectionState.HANDSHAKING

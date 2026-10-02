@@ -55,6 +55,8 @@ import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.foundation.layout.size
 import dev.vmd1.gossip.protocol.DeviceType
+import dev.vmd1.gossip.transport.Connectivity
+import dev.vmd1.gossip.transport.DeviceConnectivity
 
 /** Icon shown in place of the old plain-text device-type subtitle. */
 private val DeviceType.icon: ImageVector
@@ -118,6 +120,8 @@ fun PairedDevicesScreen(
     bleHotspotOnStates: Map<String, Boolean> = emptyMap(),
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
     hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
+    directDeviceIds: Set<String> = emptySet(),
+    meshDeviceIds: Set<String> = emptySet(),
     batteryStates: Map<String, BatteryState> = emptyMap(),
     ringingPeers: Set<String> = emptySet(),
     onToggleRing: (deviceId: String) -> Unit = {}
@@ -137,9 +141,20 @@ fun PairedDevicesScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        // Green = connected directly, blue = reachable over the mesh, grey = not connected.
+                        val connectivity = DeviceConnectivity.classify(device.deviceId, directDeviceIds, meshDeviceIds)
                         Icon(
                             imageVector = device.deviceType.icon,
-                            contentDescription = device.deviceType.wireValue,
+                            contentDescription = device.deviceType.wireValue + when (connectivity) {
+                                Connectivity.DIRECT -> ", connected"
+                                Connectivity.MESH -> ", connected through another device"
+                                Connectivity.NONE -> ", not connected"
+                            },
+                            tint = when (connectivity) {
+                                Connectivity.DIRECT -> androidx.compose.ui.graphics.Color(0xFF34C759)
+                                Connectivity.MESH -> androidx.compose.ui.graphics.Color(0xFF0A84FF)
+                                Connectivity.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             modifier = Modifier.padding(end = 8.dp)
                         )
                         Text(device.deviceName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)

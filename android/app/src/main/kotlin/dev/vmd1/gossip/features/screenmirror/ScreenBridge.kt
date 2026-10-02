@@ -54,6 +54,7 @@ class ScreenBridge(
     private val token: String = ByteArray(32).also { SecureRandom().nextBytes(it) }
         .let { Base64.encodeToString(it, Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING) }
     private val ended = AtomicBoolean(false)
+    @Volatile private var viewerAttached = false
     private val lock = Any()
     private var session: ScrcpyServerSession? = null
     private var listener: ServerSocket? = null
@@ -160,6 +161,7 @@ class ScreenBridge(
     }
 
     private fun attach(ws: WebSocketConnection, s: ScrcpyServerSession) {
+        viewerAttached = true
         synchronized(lock) {
             ws.sendText(
                 JSONObject().put("codec", s.codec).put("width", s.width).put("height", s.height)
@@ -198,6 +200,9 @@ class ScreenBridge(
         runCatching { listener?.close() }
         runCatching { session?.close() }
         Log.i(TAG, "[$sessionId] ended")
+        // A session someone was actually watching leaves the screen lit; put it to sleep. Sessions that
+        // never got a viewer (failed start, attach timeout) must not touch the screen.
+        if (viewerAttached) ScreenOff.sleep()
         onEnded()
     }
 

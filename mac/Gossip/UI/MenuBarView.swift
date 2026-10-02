@@ -62,9 +62,14 @@ struct MenuBarView: View {
                 ForEach(trustedDevicesStore.devices) { device in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 8) {
+                            // Green = connected directly, blue = reachable over the mesh, grey = not connected.
+                            let connectivity = DeviceConnectivity.classify(
+                                device.deviceId, directIds: transportManager.connectedDeviceIds, meshIds: transportManager.meshReachableDeviceIds
+                            )
                             Image(systemName: device.deviceType.symbolName)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Self.color(for: connectivity))
                                 .frame(width: 18)
+                                .help(Self.description(of: connectivity))
                             Text(device.deviceName)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -279,6 +284,22 @@ struct MenuBarView: View {
             .lineLimit(1)
             .padding(.leading, 26)
             .help(battery.map { $0.isCharging ? "Charging" : "On battery" } ?? "")
+        }
+    }
+
+    static func color(for connectivity: Connectivity) -> Color {
+        switch connectivity {
+        case .direct: return .green
+        case .mesh: return .blue
+        case .none: return .secondary
+        }
+    }
+
+    static func description(of connectivity: Connectivity) -> String {
+        switch connectivity {
+        case .direct: return "Connected"
+        case .mesh: return "Connected through another device"
+        case .none: return "Not connected"
         }
     }
 

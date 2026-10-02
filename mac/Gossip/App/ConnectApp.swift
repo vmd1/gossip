@@ -23,6 +23,7 @@ struct ConnectApp: App {
     @StateObject private var ringManager: RingManager
     @StateObject private var batterySyncManager: BatterySyncManager
     private let batteryResyncSubscriptions = SubscriptionBox()
+    private let deviceMirroringWindowBox = DeviceMirroringWindowBox()
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
     /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
@@ -90,6 +91,12 @@ struct ConnectApp: App {
         transport.start()
         notificationMirror.requestAuthorizationIfNeeded()
 
+        // Keep the "Device Mirroring" launcher app (embedded in this app) installed next to Gossip.
+        if LauncherPreference.autoInstall {
+            BLEProximityMonitor.debugLog("Device Mirroring launcher status: \(LauncherInstaller().status())")
+            LauncherSetup.ensureInstalled()
+        }
+
         // First-run onboarding (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 2). Same
         // "must not depend on the menu-bar tray ever being opened" reasoning as
         // `transport.start()` above — shown unconditionally here, not from
@@ -130,9 +137,21 @@ struct ConnectApp: App {
         // silently dropped by `AppDelegate.application(_:open:)`'s `onOpenURLs?(urls)`
         // no-op on `nil` until the user opened the menu bar tray at least once after
         // launch.
-        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport] urls in
+        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport, battery, deviceMirroringWindowBox] urls in
             for url in urls {
-                if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
+                if url.host == "mirror" {
+                    // Sent by the "Device Mirroring" launcher app: show the device-list window.
+                    BLEProximityMonitor.debugLog("opening the Device Mirroring window (\(url.absoluteString))")
+                    deviceMirroringWindowBox.show {
+                        DeviceMirroringView(
+                            trustedDevicesStore: TrustedDevicesStore.shared,
+                            transportManager: transport,
+                            screenMirrorController: screenMirror,
+                            batterySyncManager: battery,
+                            featureSettings: FeatureSettings.shared
+                        )
+                    }
+                } else if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
                     // TEMPORARY debug hook: `open connect://debug-mirror` starts on-device mirroring of
                     // the first connected trusted Android device without clicking the tray (remove
                     // once there's UI-driven test coverage); `debug-stop-mirror` ends it.

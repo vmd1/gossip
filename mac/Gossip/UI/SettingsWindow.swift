@@ -76,6 +76,9 @@ private struct SettingsView: View {
     let onOpenDNDSetup: () -> Void
     let onRunSetupAgain: () -> Void
 
+    @State private var launcherEnabled = LauncherPreference.autoInstall
+    @State private var launcherMessage: String?
+
     var body: some View {
         Form {
             Section {
@@ -97,6 +100,33 @@ private struct SettingsView: View {
             } footer: {
                 Text("Turning a feature off stops this Mac from sending or receiving it at all. Your other devices keep their own settings.")
                     .font(.caption)
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { launcherEnabled },
+                    set: { on in
+                        LauncherPreference.autoInstall = on
+                        launcherEnabled = on
+                        if on {
+                            LauncherSetup.ensureInstalled()
+                            if case .notApplicable(let reason) = LauncherInstaller().status() { launcherMessage = reason } else { launcherMessage = nil }
+                        } else {
+                            launcherMessage = "To remove it, delete “Device Mirroring” from your Applications folder."
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Device Mirroring app")
+                        Text("Keeps a “Device Mirroring” app next to Gossip so you can open the device list from Spotlight or Launchpad.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let launcherMessage {
+                    Text(launcherMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Apps")
             }
 
             Section("Devices & setup") {

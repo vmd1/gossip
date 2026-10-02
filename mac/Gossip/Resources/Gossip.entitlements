@@ -12,5 +12,14 @@
 	<true/>
 	<key>com.apple.security.personal-information.location</key>
 	<true/>
+	<!-- Read-only: lets Gossip see whether the "Device Mirroring" launcher is installed (LauncherInstaller.status()). The copy itself is done by the non-sandboxed launcher. -->
+	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+	<array>
+		<string>/Applications/</string>
+	</array>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/Applications/</string>
+	</array>
 </dict>
 </plist>
