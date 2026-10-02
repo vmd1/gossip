@@ -28,6 +28,28 @@ Prebuilt binaries are attached to every [GitHub Release](https://github.com/vmd1
   "install unknown apps" for whichever app you downloaded it with). It's debug-signed, not a Play
   Store build, so Android will warn about an unverified app — expected for a side-loaded build.
 
+The first time Gossip runs from `/Applications` (or `~/Applications`) it also adds a small **Device Mirroring**
+app next to itself, so you can open the list of paired phones and tablets and start mirroring from Spotlight or
+Launchpad. It ships inside `Gossip.app`, so there is nothing extra to download; turn it off under Gossip's
+Settings → Apps (deleting the app from Applications removes it).
+
+### Universal Control (Mac mouse and keyboard on your Android devices)
+
+Turn it on under Settings → Universal Control on both devices, then **Arrange Devices…** to place each
+device next to your Mac's display and push the cursor off that edge. It needs:
+
+- **Mac:** *Accessibility* and *Input Monitoring* (System Settings → Privacy & Security; the Settings pane has
+  buttons that open them). macOS ties these grants to the app's code signature, so a build signed ad hoc loses
+  them on every update. For local builds run `mac/scripts/create-signing-cert.sh` once (creates a self-signed
+  "Gossip Local Dev" code-signing certificate and `mac/Config/Signing.local.xcconfig`), then `xcodegen generate`.
+  Gossip is not sandboxed (a sandboxed app cannot capture input), which also means a Mac that used an older,
+  sandboxed build gets a new identity: choose "Forget" for the old Mac on each Android device and pair again.
+- **Android device:** Shizuku running (the virtual mouse and keyboard are created at shell privilege). The
+  device must be directly connected to the Mac over the LAN (a device reachable only through the mesh, shown
+  with a blue icon, cannot be controlled).
+- Emergency exit: Control-Option-Command-Esc returns the cursor to the Mac. Password fields hide keystrokes
+  from every app on macOS ("secure input"), so typing into them from the Mac does not work.
+
 To pair the two: open Gossip on the Mac, click the menu bar icon, and choose **Pair New Device…**
 to show a QR code. On Android, tap **Pair New Device** and scan it. Once paired, either device can
 also generate its own QR (**Show QR to Pair**, Android) for pairing directly with another Android

@@ -78,11 +78,26 @@ class ShowQrViewModel(
     fun rejectTrust() {
         pendingConfirmation?.complete(false)
         pendingConfirmation = null
-        _uiState.value = ShowQrUiState.Failed("Pairing rejected")
+        failWith("Pairing rejected")
     }
 
     fun reset() {
+        failureClearJob?.cancel()
         _uiState.value = ShowQrUiState.Idle
+    }
+
+    private var failureClearJob: kotlinx.coroutines.Job? = null
+
+    /** Shows a failure, then goes back to showing the QR by itself after [ERROR_LIFETIME_MS] (what
+     *  "Try again" does) so a stale error never lingers. */
+    private fun failWith(reason: String) {
+        val failed = ShowQrUiState.Failed(reason)
+        _uiState.value = failed
+        failureClearJob?.cancel()
+        failureClearJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(ERROR_LIFETIME_MS)
+            if (_uiState.value === failed) startShowingQr()
+        }
     }
 
     /** Called from [TransportManager]'s own connection-handling coroutine — suspends
@@ -98,10 +113,10 @@ class ShowQrViewModel(
                 val connected = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
                     transportManager.connectedDeviceIds.first { it.contains(peer.deviceId) }
                 }
-                _uiState.value = if (connected != null) {
-                    ShowQrUiState.Success(peer.deviceName)
+                if (connected != null) {
+                    _uiState.value = ShowQrUiState.Success(peer.deviceName)
                 } else {
-                    ShowQrUiState.Failed("Connection did not complete")
+                    failWith("Connection did not complete")
                 }
             }
         }
@@ -118,6 +133,7 @@ class ShowQrViewModel(
 
     companion object {
         private const val HANDSHAKE_TIMEOUT_MS = 15_000L
+        private const val ERROR_LIFETIME_MS = 10_000L
     }
 }
 

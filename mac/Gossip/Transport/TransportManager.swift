@@ -37,6 +37,24 @@ final class TransportManager: ObservableObject {
     /// existing `.sink`s that just want to know "connected to anything or not".
     @Published private(set) var connectedDeviceIds: Set<String> = []
 
+    /// Devices we have no direct connection to but heard from recently via the mesh
+    /// (`DeviceConnectivity.meshTTL`). Main thread. Re-evaluated every 15s and on connection changes.
+    @Published private(set) var meshReachableDeviceIds: Set<String> = []
+    private var lastHeard: [String: Date] = [:]
+    private var meshExpiryTimer: Timer?
+
+    private func noteHeard(from senderId: String) {
+        lastHeard[senderId] = Date()
+        refreshMeshReachable()
+    }
+
+    private func refreshMeshReachable() {
+        let reachable = DeviceConnectivity.meshReachable(
+            lastHeard: lastHeard, directIds: connectedDeviceIds, selfId: identity.deviceId, now: Date()
+        )
+        if reachable != meshReachableDeviceIds { meshReachableDeviceIds = reachable }
+    }
+
     /// Fired for every successfully decoded, post-handshake envelope this
     /// device is the intended recipient of (directly addressed, or broadcast).
     /// Not fired for envelopes merely being relayed through this device. For an
@@ -109,6 +127,13 @@ final class TransportManager: ObservableObject {
         /// heartbeats) — see `startHeartbeatMonitoring`'s doc for why this exists.
         var lastReceivedAt: Date = .distantPast
         var heartbeatTimer: Timer?
+        /// Transport frames received while the handshake is finished but the peer is
+        /// still awaiting the user's trust confirmation (so `deviceId` is nil). The
+        /// initiator treats the connection as live once it reads `handshake.ack` and
+        /// immediately sends its roster/initial syncs. Noise nonces are implicit
+        /// counters, so dropping those frames undecrypted would desync the session for
+        /// good; they're held here and decrypted in order at promotion.
+        var queuedFrames = PendingFrameQueue()
         /// Serializes every `session.encrypt(...)` + `sendFramed(...)` pair for
         /// *this* peer's Noise session. `NoiseCipherState`'s nonce counter is
         /// mutable, unsynchronized state — concurrent encrypts on the same
@@ -167,6 +192,8 @@ final class TransportManager: ObservableObject {
     /// ephemeral port — which left the previous listener's port stale
     /// everywhere it had already been advertised/discovered.
     private var hasStarted = false
+    private var redialTimer: Timer?
+    private static let redialInterval: TimeInterval = 10
 
     /// Starts advertising this Mac on the local network and browsing for
     /// peers. Automatically dials every discovered peer that is already
@@ -208,10 +235,25 @@ final class TransportManager: ObservableObject {
             }
         }
         discovery.startBrowsing()
+
+        meshExpiryTimer?.invalidate()
+        meshExpiryTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.refreshMeshReachable()
+        }
+
+        // Self-healing redial: a peer that drops while its Bonjour advertisement stays visible produces
+        // no new browse result, so nothing would ever dial it again. Re-offer the visible peers
+        // periodically; `handleDiscoveredPeers` skips anything already connected or being dialled.
+        redialTimer?.invalidate()
+        redialTimer = Timer.scheduledTimer(withTimeInterval: Self.redialInterval, repeats: true) { [weak self] _ in
+            self?.discovery.redeliverPeers()
+        }
     }
 
     func stop() {
         hasStarted = false
+        redialTimer?.invalidate()
+        redialTimer = nil
         discovery.stopAdvertising()
         discovery.stopBrowsing()
         for (deviceId, peer) in peers {
@@ -536,29 +578,34 @@ final class TransportManager: ObservableObject {
             trustedConnectedHandlers.forEach { $0(peer) }
             sendPresence(online: true)
             startHeartbeatMonitoring(for: pending)
+            replayQueuedFrames(for: pending)
         } else if let onUntrustedHandshake {
             onUntrustedHandshake(peer, publicKey) { [weak self] confirmed in
-                guard let self else { return }
-                if confirmed {
-                    self.trustedDevices.addDevice(
-                        deviceId: peer.deviceId,
-                        publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
-                        deviceName: peer.deviceName,
-                        deviceType: peer.deviceType,
-                        signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
-                    )
-                    self.promote(pending, peer: peer)
-                    // Freshly-confirmed pairing reaches the same "connected" outcome
-                    // as reconnecting to an already-trusted device — fire the same
-                    // callbacks so PairingViewModel's state machine actually advances
-                    // to `.paired` instead of being stuck at `.confirmingTrust`
-                    // forever once the user taps Confirm.
-                    self.trustedConnectedHandlers.forEach { $0(peer) }
-                    self.newDevicePairedHandlers.forEach { $0(peer) }
-                    self.sendPresence(online: true)
-                    self.startHeartbeatMonitoring(for: pending)
-                } else {
-                    self.teardownAny(pending)
+                // The UI answers on the main thread; peers/Noise state live on `queue`.
+                self?.queue.async { [weak self] in
+                    guard let self else { return }
+                    if confirmed {
+                        self.trustedDevices.addDevice(
+                            deviceId: peer.deviceId,
+                            publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
+                            deviceName: peer.deviceName,
+                            deviceType: peer.deviceType,
+                            signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
+                        )
+                        self.promote(pending, peer: peer)
+                        // Freshly-confirmed pairing reaches the same "connected" outcome
+                        // as reconnecting to an already-trusted device — fire the same
+                        // callbacks so PairingViewModel's state machine actually advances
+                        // to `.paired` instead of being stuck at `.confirmingTrust`
+                        // forever once the user taps Confirm.
+                        self.trustedConnectedHandlers.forEach { $0(peer) }
+                        self.newDevicePairedHandlers.forEach { $0(peer) }
+                        self.sendPresence(online: true)
+                        self.startHeartbeatMonitoring(for: pending)
+                        self.replayQueuedFrames(for: pending)
+                    } else {
+                        self.teardownAny(pending)
+                    }
                 }
             }
         } else {
@@ -583,6 +630,26 @@ final class TransportManager: ObservableObject {
     }
 
     private func handleTransportFrame(_ payload: Data, pending: PeerConnection) {
+        guard pending.deviceId != nil else {
+            // Not promoted yet (awaiting trust confirmation): hold the frame, don't drop it.
+            if !pending.queuedFrames.enqueue(payload) {
+                NSLog("Gossip: too many frames before trust confirmation; closing")
+                teardownAny(pending)
+            }
+            return
+        }
+        processTransportFrame(payload, pending: pending)
+    }
+
+    /// Decrypts and routes the frames queued during the confirmation window, in
+    /// arrival order. Call on `queue` after `promote`.
+    private func replayQueuedFrames(for pending: PeerConnection) {
+        for frame in pending.queuedFrames.drain() {
+            processTransportFrame(frame, pending: pending)
+        }
+    }
+
+    private func processTransportFrame(_ payload: Data, pending: PeerConnection) {
         pending.lastReceivedAt = Date()
         guard let arrivedFrom = pending.deviceId else { return }
         do {
@@ -630,6 +697,11 @@ final class TransportManager: ObservableObject {
     /// downstream hop's own "next frame is raw" expectation if some other
     /// message interleaved in between.
     private func handleReceivedEnvelope(_ envelope: Envelope, arrivedFrom: String) {
+        // Any message from a device — even one relayed through another — proves it is reachable.
+        if envelope.senderId != identity.deviceId {
+            let sender = envelope.senderId
+            DispatchQueue.main.async { [weak self] in self?.noteHeard(from: sender) }
+        }
         guard recordSeen(envelope.id) else {
             // Already processed/forwarded this one — but if it carries a raw
             // follow-up, that frame is still physically coming next on this
@@ -908,10 +980,30 @@ final class TransportManager: ObservableObject {
             guard let self else { return }
             self.connectedDeviceIds = ids
             self.connectionState = newState
+            self.refreshMeshReachable()
         }
     }
 
     private func currentDeviceName() -> String {
         Host.current().localizedName ?? "Mac"
+    }
+}
+
+
+/// Bounded FIFO of still-encrypted transport frames, see `PeerConnection.queuedFrames`.
+struct PendingFrameQueue {
+    static let limit = 256
+    private var frames: [Data] = []
+
+    /// Returns false (frame not stored) once the cap is hit.
+    mutating func enqueue(_ frame: Data) -> Bool {
+        guard frames.count < Self.limit else { return false }
+        frames.append(frame)
+        return true
+    }
+
+    mutating func drain() -> [Data] {
+        defer { frames.removeAll() }
+        return frames
     }
 }

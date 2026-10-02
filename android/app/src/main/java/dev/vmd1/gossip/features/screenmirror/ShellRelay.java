@@ -37,16 +37,19 @@ public final class ShellRelay {
     public static void main(String[] args) throws Exception {
         String name = args[0];
         boolean audioEnabled = args.length > 1 && args[1].equals("1");
+        // Universal Control starts the server with video=false audio=false: the control socket is then the
+        // only (first) one, and it carries the forward-tunnel dummy byte.
+        boolean controlOnly = args.length > 2 && args[2].equals("1");
         // scrcpy accepts its sockets in a fixed order: video, [audio], control.
-        LocalSocket video = connect(name);
-        LocalSocket audio = audioEnabled ? connect(name) : null;
+        LocalSocket video = controlOnly ? null : connect(name);
+        LocalSocket audio = audioEnabled && !controlOnly ? connect(name) : null;
         LocalSocket control = connect(name);
         DataOutputStream out = new DataOutputStream(new java.io.BufferedOutputStream(System.out, 64 * 1024));
         // forward tunnel: server writes one dummy byte on the first socket once both are accepted
-        InputStream vin = video.getInputStream();
+        InputStream vin = controlOnly ? control.getInputStream() : video.getInputStream();
         if (vin.read() < 0) throw new IOException("server closed before dummy byte");
 
-        pump(vin, out, VIDEO, "relay-video");
+        if (!controlOnly) pump(vin, out, VIDEO, "relay-video");
         if (audio != null) pump(audio.getInputStream(), out, AUDIO, "relay-audio");
         pump(control.getInputStream(), out, DEVICE_MSG, "relay-devmsg");
 
@@ -66,7 +69,7 @@ public final class ShellRelay {
             }
         } finally {
             // app went away (stdin EOF): tear everything down so the scrcpy server exits too
-            try { video.close(); } catch (IOException ignored) { }
+            if (video != null) { try { video.close(); } catch (IOException ignored) { } }
             if (audio != null) { try { audio.close(); } catch (IOException ignored) { } }
             try { control.close(); } catch (IOException ignored) { }
             System.exit(0);

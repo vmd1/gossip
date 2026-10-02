@@ -12,13 +12,19 @@ struct MenuBarView: View {
     let rosterGossipManager: RosterGossipManager
     @ObservedObject var bleProximityMonitor: BLEProximityMonitor
     @ObservedObject var hotspotStateManager: HotspotStateManager
+    @ObservedObject var ringManager: RingManager
+    @ObservedObject var batterySyncManager: BatterySyncManager
     @ObservedObject var featureSettings: FeatureSettings
 
     @State private var settingsWindow: SettingsWindow?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
     @State private var hotspotGattClients: [String: HotspotGattClient] = [:]
-    @State private var hotspotStatusMessages: [String: String] = [:]
     @State private var activeHotspotAutoConnect: HotspotAutoConnect?
+    /// The hotspot state the phone itself just confirmed over GATT. The BLE advertisement bit and the
+    /// mesh report both lag a real toggle by several seconds, so the icon trusts this until the
+    /// merged state catches up (or `hotspotOverrideLifetime` passes).
+    @State private var hotspotOverrides: [String: (enabled: Bool, at: Date)] = [:]
+    private static let hotspotOverrideLifetime: TimeInterval = 30
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -55,81 +61,55 @@ struct MenuBarView: View {
             } else {
                 ForEach(trustedDevicesStore.devices) { device in
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack {
+                        HStack(spacing: 8) {
+                            // Green = connected directly, blue = reachable over the mesh, grey = not connected.
+                            let connectivity = DeviceConnectivity.classify(
+                                device.deviceId, directIds: transportManager.connectedDeviceIds, meshIds: transportManager.meshReachableDeviceIds
+                            )
                             Image(systemName: device.deviceType.symbolName)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Self.color(for: connectivity))
                                 .frame(width: 18)
+                                .help(Self.description(of: connectivity))
                             Text(device.deviceName)
-                            if bleProximityMonitor.nearbyDeviceIds.contains(device.deviceId) {
-                                Image(systemName: "dot.radiowaves.left.and.right")
-                                    .foregroundStyle(.blue)
-                                    .help("Nearby over Bluetooth")
-                            }
-                            Spacer()
-                            if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
-                                mirrorButton(for: device)
-                            }
-                            if featureSettings.isEnabled(.hotspot), device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
-                                hotspotButton(for: device, state: state)
-                            }
-                            deviceSettingsMenu(for: device)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer(minLength: 4)
+                            deviceActionButtons(for: device)
                         }
-                        if let status = hotspotStatusMessages[device.deviceId] {
-                            Text(status)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        deviceSubtitleRow(for: device)
                     }
                 }
             }
 
             Divider()
 
-            Button("Settings…") {
-                if let existing = settingsWindow, existing.isVisible {
-                    existing.makeKeyAndOrderFront(nil)
-                } else {
-                    let window = SettingsWindow(
-                        featureSettings: featureSettings,
-                        pairingViewModel: pairingViewModel,
-                        notificationMirrorManager: notificationMirrorManager
-                    )
-                    settingsWindow = window
-                    window.makeKeyAndOrderFront(nil)
+            HStack {
+                Button("Quit Gossip") {
+                    NSApplication.shared.terminate(nil)
                 }
-                NSApp.activate(ignoringOtherApps: true)
-            }
-
-            Button("Quit Gossip") {
-                NSApplication.shared.terminate(nil)
+                Spacer()
+                Button {
+                    if let existing = settingsWindow, existing.isVisible {
+                        existing.makeKeyAndOrderFront(nil)
+                    } else {
+                        let window = SettingsWindow(
+                            featureSettings: featureSettings,
+                            pairingViewModel: pairingViewModel,
+                            notificationMirrorManager: notificationMirrorManager
+                        )
+                        settingsWindow = window
+                        window.makeKeyAndOrderFront(nil)
+                    }
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Settings…")
             }
         }
         .padding(12)
-        .frame(width: 280)
-    }
-
-    /// Per-device "Mirror"/"Stop Mirroring" button shown next to "Forget" in the
-    /// Trusted Devices list, so the user picks *which* Android device to mirror now
-    /// that more than one can be trusted at once — `ScreenMirrorController` only ever
-    /// runs one mirroring session at a time, so every other row's button is disabled
-    /// while one is active.
-    @ViewBuilder
-    private func mirrorButton(for device: TrustedDevice) -> some View {
-        let isThisDevice = screenMirrorController.mirroringDeviceId == device.deviceId
-        switch (screenMirrorController.state, isThisDevice) {
-        case (.idle, _):
-            Button("Mirror") { startMirroring(for: device) }
-                .buttonStyle(.borderless)
-        case (.starting, true):
-            ProgressView().controlSize(.small)
-        case (.mirroring, true):
-            Button("Stop Mirroring") { stopMirroring() }
-                .buttonStyle(.borderless)
-        case (.starting, false), (.mirroring, false):
-            Button("Mirror") {}
-                .buttonStyle(.borderless)
-                .disabled(true)
-        }
+        .frame(width: 300)
     }
 
     /// Merges the two hotspot-state sources: `hotspot.state_update`'s mesh report
@@ -144,6 +124,15 @@ struct MenuBarView: View {
     /// BLE-only or mesh-only state when just one source has data, and to `nil` when
     /// neither does.
     private func mergedHotspotState(for deviceId: String) -> HotspotState? {
+        let underlying = underlyingHotspotState(for: deviceId)
+        if let override = hotspotOverrides[deviceId], Date().timeIntervalSince(override.at) < Self.hotspotOverrideLifetime,
+           underlying?.enabled != override.enabled {
+            return HotspotState(enabled: override.enabled, ssid: override.enabled ? underlying?.ssid : nil)
+        }
+        return underlying
+    }
+
+    private func underlyingHotspotState(for deviceId: String) -> HotspotState? {
         let meshState = hotspotStateManager.hotspotStateBySenderId[deviceId]
         guard bleProximityMonitor.nearbyDeviceIds.contains(deviceId) else { return meshState }
         let bleOn = bleProximityMonitor.isHotspotOn(deviceId: deviceId)
@@ -153,45 +142,13 @@ struct MenuBarView: View {
         return HotspotState(enabled: bleOn, ssid: nil)
     }
 
-    /// Hotspot on/off icon for a trusted phone, driven by `hotspot.state_update` mesh
-    /// reports (`HotspotStateManager`) rather than BLE proximity — shown for every
-    /// trusted phone this Mac has a reported state for, whether or not it's currently
-    /// BLE-nearby (a request only actually works while nearby, per
-    /// `docs/ble-hotspot-protocol.md`, but the on/off indicator itself is a live mesh
-    /// signal, independent of that). Tapping requests the opposite of the currently
-    /// known state. First cut of this feature's UI: status is a plain caption line
-    /// under the row, not a polished progress/retry flow.
-    @ViewBuilder
-    private func hotspotButton(for device: TrustedDevice, state: HotspotState) -> some View {
-        let isInFlight = hotspotGattClients[device.deviceId] != nil
-        Button {
-            requestHotspot(for: device, enable: !state.enabled)
-        } label: {
-            // "personalhotspot.slash" isn't a real SF Symbol (confirmed: only
-            // "personalhotspot" itself exists) — off state is conveyed by tint alone,
-            // same symbol either way.
-            Image(systemName: "personalhotspot")
-        }
-        .buttonStyle(.borderless)
-        // Applied to the `Button` itself, not inside its `label` closure — confirmed
-        // live that a `.foregroundStyle` on the inner `Image` alone is overridden by
-        // `Button`'s own `.borderless` style tinting on macOS and never actually
-        // reflects a state change, even though the underlying data updates correctly.
-        // Explicit `.blue`, not `Color.accentColor` — the system accent color can
-        // itself be set to gray/graphite in System Settings, which would make an
-        // "on" state visually indistinguishable from the "off" `.secondary` state
-        // regardless of this fix.
-        .foregroundStyle(state.enabled ? Color.blue : Color.secondary)
-        .disabled(isInFlight)
-        .help(state.enabled ? "Instant Hotspot is on\(state.ssid.map { " (\($0))" } ?? "") — click to turn off" : "Instant Hotspot is off — click to request")
-    }
-
+    /// Requests `enable` from the phone over BLE GATT, then joins its network on a successful "on".
+    /// Deliberately silent in the UI — the hotspot icon's own state is the feedback — but failures
+    /// are written to the BLE debug log.
     private func requestHotspot(for device: TrustedDevice, enable: Bool) {
         guard let peripheralId = bleProximityMonitor.peripheralIdentifierByDeviceId[device.deviceId] else {
-            hotspotStatusMessages[device.deviceId] = "Device is no longer nearby"
             return
         }
-        hotspotStatusMessages[device.deviceId] = enable ? "Requesting…" : "Requesting off…"
         let client = HotspotGattClient()
         hotspotGattClients[device.deviceId] = client
         client.requestToggle(providerId: device.deviceId, peripheralIdentifier: peripheralId, enable: enable) { result in
@@ -199,57 +156,161 @@ struct MenuBarView: View {
                 hotspotGattClients[device.deviceId] = nil
                 switch result {
                 case .failed(let reason):
-                    hotspotStatusMessages[device.deviceId] = "Failed: \(reason)"
+                    NSLog("Gossip: " + "requestHotspot failed: \(reason)")
                 case .success(let enabled, let ssid, let passphrase):
-                    if !enable {
-                        hotspotStatusMessages[device.deviceId] = enabled ? "That device kept its hotspot on" : "Hotspot turned off"
-                    } else if !enabled {
-                        hotspotStatusMessages[device.deviceId] = "That device declined the request"
-                    } else if let ssid, let passphrase {
-                        hotspotStatusMessages[device.deviceId] = "Connecting to \(ssid)…"
-                        let autoConnect = HotspotAutoConnect()
-                        activeHotspotAutoConnect = autoConnect
-                        autoConnect.connect(ssid: ssid, passphrase: passphrase) { connected in
-                            DispatchQueue.main.async {
-                                hotspotStatusMessages[device.deviceId] = connected ? "Connected to \(ssid)" : "Hotspot on — could not auto-connect, join manually"
-                            }
-                        }
-                    } else {
-                        hotspotStatusMessages[device.deviceId] = "Hotspot on — connect manually"
+                    hotspotOverrides[device.deviceId] = (enabled, Date())
+                    guard enable, enabled, let ssid, let passphrase else { return }
+                    let autoConnect = HotspotAutoConnect()
+                    activeHotspotAutoConnect = autoConnect
+                    autoConnect.connect(ssid: ssid, passphrase: passphrase) { connected in
+                        if !connected { NSLog("Gossip: " + "requestHotspot: could not auto-connect to \(ssid)") }
                     }
                 }
             }
         }
     }
 
-    /// Settings for one specific trusted device that don't need to be visible on the
-    /// home row: fallback-host override and revoking trust today; per-pair BLE-driven
-    /// settings (Lock-on-Leave, auto-hotspot) land here too once built. Kept separate
-    /// from `mirrorButton`, which stays a direct row action since it's used often
-    /// enough to want one click, not two.
-    ///
-    /// Opens a plain `NSWindow` (`DeviceSettingsWindow`) rather than an inline `Menu` —
-    /// a `TextField` inside a `Menu` shown from this app's `MenuBarExtra(.window)`
-    /// panel never gets a chance to take keyboard focus, because the panel resigns key
-    /// and dismisses itself the instant the field is clicked. Previously only the
-    /// fallback-host field got this treatment, with "Forget" left as a plain inline
-    /// menu item — consolidated so the whole per-device settings surface is one
-    /// consistent window instead of half a menu, half a window.
+    /// The row's actions, as compact icons: Ring, Mirror Screen, Instant Hotspot (tinted blue while on,
+    /// as before), and "⋯" for per-device settings. A disabled feature's icon simply doesn't appear.
     @ViewBuilder
-    private func deviceSettingsMenu(for device: TrustedDevice) -> some View {
-        Button {
-            let window = DeviceSettingsWindow(
-                device: device,
-                trustedDevicesStore: trustedDevicesStore,
-                onForget: { rosterGossipManager.revoke(deviceId: device.deviceId) }
-            )
-            deviceSettingsWindow = window
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        } label: {
-            Image(systemName: "ellipsis.circle")
+    private func deviceActionButtons(for device: TrustedDevice) -> some View {
+        HStack(spacing: 8) {
+            if featureSettings.isEnabled(.findDevice) {
+                // Press to ring; blue while it's ringing; press again to stop.
+                let ringing = ringManager.ringingPeers.contains(device.deviceId)
+                Button { ringManager.toggleRing(device.deviceId) } label: { Image(systemName: "bell.and.waves.left.and.right") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(ringing ? Color.blue : Color.secondary)
+                    .help(ringing ? "Stop ringing \(device.deviceName)" : "Ring \(device.deviceName)")
+            }
+            if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
+                mirrorButton(for: device)
+            }
+            if featureSettings.isEnabled(.hotspot), device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
+                hotspotButton(for: device, state: state)
+            }
+            // Per-device settings open a plain NSWindow, not an inline control: a TextField inside
+            // this MenuBarExtra(.window) panel can never take keyboard focus (the panel resigns key
+            // and dismisses itself as soon as the field is clicked).
+            Button {
+                let window = DeviceSettingsWindow(
+                    device: device,
+                    trustedDevicesStore: trustedDevicesStore,
+                    onForget: { rosterGossipManager.revoke(deviceId: device.deviceId) }
+                )
+                deviceSettingsWindow = window
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings for \(device.deviceName)")
         }
-        .buttonStyle(.borderless)
+    }
+
+    /// Mirror Screen icon: spinner while starting, blue while mirroring (click to stop). Only one
+    /// mirroring session runs at a time, so every other row's button is disabled while one is active.
+    @ViewBuilder
+    private func mirrorButton(for device: TrustedDevice) -> some View {
+        let isThisDevice = screenMirrorController.mirroringDeviceId == device.deviceId
+        switch (screenMirrorController.state, isThisDevice) {
+        case (.idle, _):
+            Button { startMirroring(for: device) } label: { Image(systemName: "rectangle.on.rectangle") }
+                .buttonStyle(.borderless)
+                .help("Mirror \(device.deviceName)'s screen")
+        case (.starting, true):
+            ProgressView().controlSize(.small)
+        case (.mirroring, true):
+            Button { stopMirroring() } label: { Image(systemName: "rectangle.on.rectangle") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.blue)
+                .help("Stop mirroring")
+        case (.starting, false), (.mirroring, false):
+            Button {} label: { Image(systemName: "rectangle.on.rectangle") }
+                .buttonStyle(.borderless)
+                .disabled(true)
+        }
+    }
+
+    /// Hotspot on/off icon for a trusted phone, driven by the merged mesh + BLE state. Tapping
+    /// requests the opposite of the currently known state.
+    @ViewBuilder
+    private func hotspotButton(for device: TrustedDevice, state: HotspotState) -> some View {
+        if hotspotGattClients[device.deviceId] != nil {
+            // Request in flight: a spinner, like the screen-mirroring button while it starts.
+            ProgressView().controlSize(.small)
+        } else {
+            Button {
+                requestHotspot(for: device, enable: !state.enabled)
+            } label: {
+                // "personalhotspot.slash" isn't a real SF Symbol — off state is conveyed by tint alone.
+                Image(systemName: "personalhotspot")
+            }
+            .buttonStyle(.borderless)
+            // On the `Button` itself (not the inner `Image`): `.borderless` tinting overrides the latter.
+            // Explicit `.blue`, not `Color.accentColor`, which can be set to gray in System Settings.
+            .foregroundStyle(state.enabled ? Color.blue : Color.secondary)
+            .help(state.enabled ? "Instant Hotspot is on\(state.ssid.map { " (\($0))" } ?? "") — click to turn off" : "Instant Hotspot is off — click to request")
+        }
+    }
+
+    private func lowBattery(_ device: TrustedDevice) -> Bool {
+        guard featureSettings.isEnabled(.battery), let b = batterySyncManager.batteryBySenderId[device.deviceId] else { return false }
+        return b.level <= BatterySyncManager.lowThreshold && !b.isCharging
+    }
+
+    /// One-line status under the name: battery icon + level, then Bluetooth-nearby (hotspot/mirroring state shows on their icons).
+    @ViewBuilder
+    private func deviceSubtitleRow(for device: TrustedDevice) -> some View {
+        let battery = featureSettings.isEnabled(.battery) ? batterySyncManager.batteryBySenderId[device.deviceId] : nil
+        var parts: [String] = []
+        let _ = {
+            if bleProximityMonitor.nearbyDeviceIds.contains(device.deviceId) { parts.append("Nearby") }
+        }()
+        if battery != nil || !parts.isEmpty {
+            HStack(spacing: 4) {
+                if let battery {
+                    Image(systemName: Self.batterySymbol(battery))
+                        .foregroundStyle(lowBattery(device) ? Color.red : (battery.isCharging ? Color.green : Color.secondary))
+                    Text("\(battery.level)%")
+                        .foregroundStyle(lowBattery(device) ? Color.red : Color.secondary)
+                }
+                if battery != nil && !parts.isEmpty { Text("·").foregroundStyle(.secondary) }
+                if !parts.isEmpty { Text(parts.joined(separator: " · ")).foregroundStyle(.secondary) }
+            }
+            .font(.caption)
+            .lineLimit(1)
+            .padding(.leading, 26)
+            .help(battery.map { $0.isCharging ? "Charging" : "On battery" } ?? "")
+        }
+    }
+
+    static func color(for connectivity: Connectivity) -> Color {
+        switch connectivity {
+        case .direct: return .green
+        case .mesh: return .blue
+        case .none: return .secondary
+        }
+    }
+
+    static func description(of connectivity: Connectivity) -> String {
+        switch connectivity {
+        case .direct: return "Connected"
+        case .mesh: return "Connected through another device"
+        case .none: return "Not connected"
+        }
+    }
+
+    static func batterySymbol(_ b: BatteryState) -> String {
+        if b.isCharging { return "battery.100.bolt" }
+        switch b.level {
+        case 88...: return "battery.100"
+        case 63...: return "battery.75"
+        case 38...: return "battery.50"
+        case 13...: return "battery.25"
+        default: return "battery.0"
+        }
     }
 
     /// Starts on-device screen mirroring for `device`: negotiated over the mesh, streamed from the
@@ -332,22 +393,24 @@ struct MenuBarView: View {
     }
 }
 
-/// Editable field for `TrustedDevice.fallbackHost`, committed on Return/focus loss rather
-/// than every keystroke, so a fallback dial attempt never fires against a half-typed
-/// address — matches Android's `PairedDevicesScreen.FallbackHostField`.
+/// Editable field for `TrustedDevice.fallbackHost`. The owner holds the text and saves it; this view
+/// calls `onCommit` on Return and ~0.8s after the user stops typing (so a fallback dial never fires
+/// against a half-typed address on every keystroke, but a value is never lost just because the user
+/// closed the window or clicked Done without pressing Return). Matches Android's
+/// `PairedDevicesScreen.FallbackHostField`.
 struct FallbackHostField: View {
-    let device: TrustedDevice
-    @ObservedObject var trustedDevicesStore: TrustedDevicesStore
-
-    @State private var text: String = ""
+    @Binding var text: String
+    var onCommit: () -> Void
 
     var body: some View {
         TextField("Fallback IP (e.g. Tailscale)", text: $text)
             .textFieldStyle(.roundedBorder)
             .font(.caption)
-            .onAppear { text = device.fallbackHost ?? "" }
-            .onSubmit {
-                trustedDevicesStore.setFallbackHost(deviceId: device.deviceId, fallbackHost: text)
+            .onSubmit { onCommit() }
+            .task(id: text) {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                guard !Task.isCancelled else { return }
+                onCommit()
             }
     }
 }
@@ -436,6 +499,11 @@ struct PairingSheetView: View {
     /// could interact with it.
     var onDismiss: () -> Void
 
+    private var failureReason: String? {
+        if case .failed(let reason) = pairingViewModel.state { return reason }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             switch pairingViewModel.state {
@@ -479,6 +547,15 @@ struct PairingSheetView: View {
                     onDismiss()
                 }
             }
+        }
+        // A failure message doesn't linger: 10 seconds after pairing fails, the sheet closes itself.
+        // (`.task(id:)` restarts — cancelling the sleep — whenever the failure text changes or clears.)
+        .task(id: failureReason) {
+            guard failureReason != nil else { return }
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled, failureReason != nil else { return }
+            pairingViewModel.reset()
+            onDismiss()
         }
         .padding(24)
         .frame(width: 320)

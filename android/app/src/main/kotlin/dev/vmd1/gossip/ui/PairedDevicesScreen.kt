@@ -4,11 +4,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -41,8 +41,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import dev.vmd1.gossip.crypto.TrustedDevice
+import dev.vmd1.gossip.features.battery.BatteryState
+import dev.vmd1.gossip.features.battery.BatterySyncManager
 import dev.vmd1.gossip.features.hotspot.HotspotState
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Battery2Bar
+import androidx.compose.material.icons.filled.Battery3Bar
+import androidx.compose.material.icons.filled.Battery4Bar
+import androidx.compose.material.icons.filled.Battery5Bar
+import androidx.compose.material.icons.filled.Battery6Bar
+import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.foundation.layout.size
 import dev.vmd1.gossip.protocol.DeviceType
+import dev.vmd1.gossip.transport.Connectivity
+import dev.vmd1.gossip.transport.DeviceConnectivity
 
 /** Icon shown in place of the old plain-text device-type subtitle. */
 private val DeviceType.icon: ImageVector
@@ -51,6 +65,43 @@ private val DeviceType.icon: ImageVector
         DeviceType.ANDROID_PHONE -> Icons.Default.PhoneAndroid
         DeviceType.ANDROID_TABLET -> Icons.Default.TabletMac
     }
+
+private const val HOTSPOT_OVERRIDE_MS = 30_000L
+
+/** One line under the device name: battery icon + level, then "Nearby" when in Bluetooth range
+ *  (same layout as the Mac's device rows). Draws nothing when there is neither. */
+@Composable
+private fun DeviceSubtitle(battery: BatteryState?, nearby: Boolean, modifier: Modifier = Modifier) {
+    if (battery == null && !nearby) return
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (battery != null) {
+            val low = battery.level <= BatterySyncManager.LOW_THRESHOLD && !battery.isCharging
+            val tint = if (low) MaterialTheme.colorScheme.error else muted
+            Icon(
+                imageVector = batteryIcon(battery),
+                contentDescription = "Battery ${battery.level}%" + if (battery.isCharging) ", charging" else "",
+                tint = tint,
+                modifier = Modifier.size(16.dp)
+            )
+            Text(" ${battery.level}%", style = MaterialTheme.typography.bodySmall, color = tint)
+        }
+        if (battery != null && nearby) Text("  ·  ", style = MaterialTheme.typography.bodySmall, color = muted)
+        if (nearby) Text("Nearby", style = MaterialTheme.typography.bodySmall, color = muted)
+    }
+}
+
+/** Battery glyph for a reported level: charging bolt, low-battery alert, else a level-matched bar icon. */
+private fun batteryIcon(b: BatteryState): ImageVector = when {
+    b.isCharging -> Icons.Default.BatteryChargingFull
+    b.level <= BatterySyncManager.LOW_THRESHOLD -> Icons.Default.BatteryAlert
+    b.level >= 95 -> Icons.Default.BatteryFull
+    b.level >= 80 -> Icons.Default.Battery6Bar
+    b.level >= 65 -> Icons.Default.Battery5Bar
+    b.level >= 50 -> Icons.Default.Battery4Bar
+    b.level >= 35 -> Icons.Default.Battery3Bar
+    else -> Icons.Default.Battery2Bar
+}
 
 /** Lists trusted devices from the `TrustedDevices` table, each with a "Forget" action
  *  that revokes trust (see [dev.vmd1.gossip.crypto.TrustedDevicesStore.revoke]) and a
@@ -67,35 +118,46 @@ fun PairedDevicesScreen(
     onSetLockOnLeave: (deviceId: String, enabled: Boolean) -> Unit = { _, _ -> },
     hotspotStates: Map<String, HotspotState> = emptyMap(),
     bleHotspotOnStates: Map<String, Boolean> = emptyMap(),
-    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
+    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
+    hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
+    directDeviceIds: Set<String> = emptySet(),
+    meshDeviceIds: Set<String> = emptySet(),
+    batteryStates: Map<String, BatteryState> = emptyMap(),
+    ringingPeers: Set<String> = emptySet(),
+    onToggleRing: (deviceId: String) -> Unit = {}
 ) {
     Column {
         Text("Paired devices", style = MaterialTheme.typography.titleMedium)
         if (devices.isEmpty()) {
-            Text("No devices paired yet.")
+            Text("No devices paired yet. Open Settings to pair one.")
             return
         }
         LazyColumn {
             items(devices, key = { it.deviceId }) { device ->
+                Column {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        // Green = connected directly, blue = reachable over the mesh, grey = not connected.
+                        val connectivity = DeviceConnectivity.classify(device.deviceId, directDeviceIds, meshDeviceIds)
                         Icon(
                             imageVector = device.deviceType.icon,
-                            contentDescription = device.deviceType.wireValue,
+                            contentDescription = device.deviceType.wireValue + when (connectivity) {
+                                Connectivity.DIRECT -> ", connected"
+                                Connectivity.MESH -> ", connected through another device"
+                                Connectivity.NONE -> ", not connected"
+                            },
+                            tint = when (connectivity) {
+                                Connectivity.DIRECT -> androidx.compose.ui.graphics.Color(0xFF34C759)
+                                Connectivity.MESH -> androidx.compose.ui.graphics.Color(0xFF0A84FF)
+                                Connectivity.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(device.deviceName)
-                        if (device.deviceId in nearbyDeviceIds) {
-                            Icon(
-                                imageVector = Icons.Default.Bluetooth,
-                                contentDescription = "Nearby over Bluetooth",
-                                modifier = Modifier.padding(start = 8.dp)
-                            )
-                        }
+                        Text(device.deviceName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     }
                     // Grouped in their own Row (not two more top-level children of the
                     // outer SpaceBetween Row) — real layout bug, confirmed live: with
@@ -103,6 +165,15 @@ fun PairedDevicesScreen(
                     // in the middle of the row instead of keeping it against the right
                     // edge next to the settings button.
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Press to ring; blue while it's ringing; press again to stop.
+                        val ringing = device.deviceId in ringingPeers
+                        IconButton(onClick = { onToggleRing(device.deviceId) }) {
+                            Icon(
+                                Icons.Default.NotificationsActive,
+                                contentDescription = if (ringing) "Stop ringing ${device.deviceName}" else "Ring ${device.deviceName}",
+                                tint = if (ringing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (device.deviceType == DeviceType.ANDROID_PHONE) {
                             // Prefer the BLE-observed on/off bit when nearby — it stays
                             // live even with no mesh connection to this device at all,
@@ -113,11 +184,17 @@ fun PairedDevicesScreen(
                             // `enabled` bit in when both sources exist.
                             val bleOn = if (device.deviceId in nearbyDeviceIds) bleHotspotOnStates[device.deviceId] else null
                             val meshState = hotspotStates[device.deviceId]
-                            val state = when {
+                            val underlying = when {
                                 bleOn != null && meshState != null -> meshState.copy(enabled = bleOn)
                                 bleOn != null -> HotspotState(enabled = bleOn)
                                 else -> meshState
                             }
+                            // Both sources lag a real toggle by several seconds; trust what the phone
+                            // itself just confirmed over GATT until they agree (or 30s pass).
+                            val override = hotspotOverrides[device.deviceId]
+                            val state = if (override != null && System.currentTimeMillis() - override.second < HOTSPOT_OVERRIDE_MS &&
+                                underlying?.enabled != override.first
+                            ) HotspotState(override.first, if (override.first) underlying?.ssid else null) else underlying
                             state?.let { s ->
                                 IconButton(onClick = { onRequestHotspot(device.deviceId, !s.enabled) }) {
                                     Icon(
@@ -140,6 +217,12 @@ fun PairedDevicesScreen(
                             onSetLockOnLeave = onSetLockOnLeave
                         )
                     }
+                }
+                DeviceSubtitle(
+                    battery = batteryStates[device.deviceId],
+                    nearby = device.deviceId in nearbyDeviceIds,
+                    modifier = Modifier.padding(start = 32.dp).offset(y = (-10).dp)
+                )
                 }
             }
         }
@@ -191,8 +274,14 @@ private fun DeviceSettingsDialog(
     onDismiss: () -> Unit
 ) {
     var showForgetConfirmation by remember { mutableStateOf(false) }
+    // Hoisted so Done / tapping outside the dialog also saves it, not just the keyboard's Done key.
+    var fallbackText by remember(device.deviceId) { mutableStateOf(device.fallbackHost.orEmpty()) }
+    fun saveFallback() {
+        if (fallbackText.trim() != device.fallbackHost.orEmpty()) onSetFallbackHost(device.deviceId, fallbackText)
+    }
+    fun commitAndDismiss() { saveFallback(); onDismiss() }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = ::commitAndDismiss) {
         Surface(shape = RoundedCornerShape(16.dp)) {
             Column(
                 modifier = Modifier
@@ -202,7 +291,7 @@ private fun DeviceSettingsDialog(
             ) {
                 Text("${device.deviceName} Settings", style = MaterialTheme.typography.titleMedium)
 
-                FallbackHostField(device = device, onSetFallbackHost = onSetFallbackHost)
+                FallbackHostField(text = fallbackText, onTextChange = { fallbackText = it }, onCommit = ::saveFallback)
 
                 // Per-pair, BLE-driven: lock this specific Mac/tablet when this (phone) device
                 // leaves its BLE range (see docs/ble-proximity-protocol.md / schema/message-
@@ -228,7 +317,7 @@ private fun DeviceSettingsDialog(
                 }
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(onClick = ::commitAndDismiss) {
                         Text("Done")
                     }
                 }
@@ -251,24 +340,29 @@ private fun DeviceSettingsDialog(
     }
 }
 
-/** Editable field for [TrustedDevice.fallbackHost], committed on "Done"/IME action or
- *  focus loss rather than on every keystroke, so a fallback dial attempt never fires
- *  against a half-typed address. */
+/** Editable field for [TrustedDevice.fallbackHost]. The owner holds the text and saves it; this calls
+ *  [onCommit] on the keyboard's Done key and ~0.8s after the user stops typing (so a fallback dial
+ *  never fires against a half-typed address on every keystroke, but a value is never lost just
+ *  because the dialog was closed without pressing the keyboard's Done key). */
 @Composable
 private fun FallbackHostField(
-    device: TrustedDevice,
-    onSetFallbackHost: (deviceId: String, fallbackHost: String?) -> Unit,
+    text: String,
+    onTextChange: (String) -> Unit,
+    onCommit: () -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
-    var text by remember(device.deviceId) { mutableStateOf(device.fallbackHost.orEmpty()) }
+    androidx.compose.runtime.LaunchedEffect(text) {
+        kotlinx.coroutines.delay(800)
+        onCommit()
+    }
     OutlinedTextField(
         value = text,
-        onValueChange = { text = it },
+        onValueChange = onTextChange,
         label = { Text("Fallback IP (e.g. Tailscale)") },
         placeholder = { Text("100.x.x.x") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { onSetFallbackHost(device.deviceId, text) }),
+        keyboardActions = KeyboardActions(onDone = { onCommit() }),
         modifier = modifier
     )
 }

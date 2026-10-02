@@ -17,7 +17,7 @@ enum class Feature(val title: String, val detail: String, val messagePrefixes: L
     DND("Do Not Disturb", "Keep Do Not Disturb in sync with your devices.", listOf("dnd.")),
     NOTIFICATIONS(
         "Notifications",
-        "Share this device's notifications with your paired devices and let them reply.",
+        "Phones share their notifications with your paired devices and let them reply; every device shows the ones it receives.",
         listOf("notification.")
     ),
     MEDIA("Media controls", "Share what's playing and let paired devices control it.", listOf("media.")),
@@ -29,12 +29,22 @@ enum class Feature(val title: String, val detail: String, val messagePrefixes: L
         "Let your paired devices mirror and control this screen (needs Shizuku).",
         emptyList()
     ),
+
+    /** `control.` is gated by [dev.vmd1.gossip.features.universalcontrol.ControlSessionState] itself (a refused
+     *  `control.session_start` still gets a `control.error`), like `screen.`. */
+    UNIVERSAL_CONTROL(
+        "Universal Control",
+        "Let a paired Mac use its mouse and keyboard on this device (needs Shizuku).",
+        emptyList()
+    ),
     LOCK_ON_LEAVE(
         "Lock on leave",
         "Lock a paired device when this phone walks out of range, or lock this one when a paired phone does.",
         listOf("lock_on_leave.")
     ),
-    HOTSPOT("Instant Hotspot", "Share this phone's hotspot with paired devices, or request theirs.", listOf("hotspot."));
+    HOTSPOT("Instant Hotspot", "Share this phone's hotspot with paired devices, or request theirs.", listOf("hotspot.")),
+    FIND_DEVICE("Find my device", "Let paired devices make this one ring so you can find it, and ring theirs.", listOf("device.")),
+    BATTERY("Battery sync", "Share this device's battery level and get low-battery alerts for paired devices.", listOf("battery."));
 }
 
 /**

@@ -206,6 +206,42 @@ class ScrcpyServerSession private constructor(
             }
         }
 
+        /**
+         * Control-only variant for Universal Control: the same server and relay, but `video=false audio=false`,
+         * so nothing is captured or encoded, no mirror window is involved, and the screen is never touched.
+         * Only [writeControl] and [readDeviceMessages] are meaningful on the result.
+         */
+        fun openControlOnly(context: Context): ScrcpyServerSession {
+            pushJar(context)
+            val scid = "%08x".format(SecureRandom().nextInt() and 0x7fffffff)
+            val socketName = "scrcpy_$scid"
+            val serverCmd = "CLASSPATH=$REMOTE_JAR exec app_process / com.genymobile.scrcpy.Server " +
+                "$SCRCPY_VERSION scid=$scid log_level=info tunnel_forward=true video=false audio=false control=true cleanup=false"
+            val relayCmd = "CLASSPATH=${context.applicationInfo.sourceDir} exec app_process / " +
+                "${ShellRelay::class.java.name} $socketName 0 1"
+            val server = ShizukuShell.exec("sh", "-c", serverCmd)
+            drainLogs(server, "server-ctl")
+            val relay = ShizukuShell.exec("sh", "-c", relayCmd)
+            drainStderr(relay, "relay-ctl")
+            val devPipeOut = PipedOutputStream()
+            val devPipeIn = PipedInputStream(devPipeOut, PIPE_SIZE)
+            Thread({
+                val input = DataInputStream(relay.inputStream.buffered(16 * 1024))
+                try {
+                    while (true) {
+                        val channel = input.read()
+                        if (channel < 0) break
+                        val buf = ByteArray(input.readInt()).also { input.readFully(it) }
+                        if (channel == ShellRelay.DEVICE_MSG) devPipeOut.write(buf).also { devPipeOut.flush() }
+                    }
+                } catch (_: IOException) {
+                } finally {
+                    runCatching { devPipeOut.close() }
+                }
+            }, "scrcpy-ctl-demux").apply { isDaemon = true }.start()
+            return ScrcpyServerSession(server, relay, "", "", 0, 0, DataInputStream(java.io.ByteArrayInputStream(ByteArray(0))), devPipeIn, null, null)
+        }
+
         private fun pushJar(context: Context) {
             val p = ShizukuShell.exec("sh", "-c", "cat > $REMOTE_JAR.tmp && chmod 644 $REMOTE_JAR.tmp && mv -f $REMOTE_JAR.tmp $REMOTE_JAR")
             p.outputStream.use { out -> context.assets.open(ASSET).use { it.copyTo(out) } }

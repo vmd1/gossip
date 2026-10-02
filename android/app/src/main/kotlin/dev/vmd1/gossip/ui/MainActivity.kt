@@ -17,7 +17,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -191,9 +195,6 @@ class MainActivity : ComponentActivity() {
                         onRunSetupAgain = {
                             startActivity(Intent(this@MainActivity, OnboardingActivity::class.java))
                         },
-                        onOpenSettings = {
-                            startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
-                        },
                         isNotificationAccessGranted = { isNotificationListenerEnabled(this@MainActivity) },
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -261,7 +262,13 @@ class MainActivity : ComponentActivity() {
                         },
                         hotspotStatesProvider = { boundService?.hotspotStateManager()?.hotspotStateBySenderId },
                         bleHotspotOnStatesProvider = { boundService?.bleProximityMonitor()?.hotspotOnByDeviceId },
-                        onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) }
+                        onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) },
+                        hotspotOverrides = hotspotOverrides,
+                        directDeviceIdsProvider = { boundService?.transportManager()?.connectedDeviceIds },
+                        meshDeviceIdsProvider = { boundService?.transportManager()?.meshReachableDeviceIds },
+                        batteryStatesProvider = { boundService?.batterySyncManager()?.batteryBySenderId },
+                        ringingPeersProvider = { boundService?.ringManager()?.ringingPeers },
+                        onToggleRing = { deviceId -> boundService?.ringManager()?.toggleRing(deviceId) }
                     )
                 }
             }
@@ -279,6 +286,11 @@ class MainActivity : ComponentActivity() {
      *  ([dev.vmd1.gossip.features.hotspot.HotspotAutoConnect.disconnect]) once this device
      *  no longer needs it, rather than holding the connection open forever. Only one at
      *  a time, matching [requestHotspot] only ever having one request in flight. */
+    /** The hotspot state the phone itself just confirmed over GATT, per device (state, time ms). The BLE
+     *  advertisement bit and the mesh report both lag a real toggle by several seconds, so the icon
+     *  trusts this until they catch up — see [PairedDevicesScreen]. */
+    private val hotspotOverrides = androidx.compose.runtime.mutableStateMapOf<String, Pair<Boolean, Long>>()
+
     private var activeHotspotConnection: android.net.ConnectivityManager.NetworkCallback? = null
 
     /** Sends a signed `hotspot.toggle_request` to [deviceId] over BLE GATT, and on a
@@ -306,6 +318,7 @@ class MainActivity : ComponentActivity() {
                     android.widget.Toast.makeText(this@MainActivity, "Hotspot request failed: ${result.reason}", android.widget.Toast.LENGTH_LONG).show()
                 }
                 is dev.vmd1.gossip.features.hotspot.HotspotGattClient.Result.Success -> {
+                    hotspotOverrides[deviceId] = result.enabled to System.currentTimeMillis()
                     if (!enable) {
                         val message = if (!result.enabled) "Hotspot turned off" else "That device kept its hotspot on"
                         android.widget.Toast.makeText(this@MainActivity, message, android.widget.Toast.LENGTH_SHORT).show()
@@ -388,7 +401,6 @@ fun ConnectHomeScreen(
     onPairNewDevice: () -> Unit,
     onShowQrToPair: () -> Unit = {},
     onRunSetupAgain: () -> Unit = {},
-    onOpenSettings: () -> Unit = {},
     isNotificationAccessGranted: () -> Boolean = { true },
     onEnableNotificationAccess: () -> Unit = {},
     onSendTestNotification: () -> Unit = {},
@@ -408,7 +420,13 @@ fun ConnectHomeScreen(
     onSetProvideHotspotEnabled: (Boolean) -> Unit = {},
     hotspotStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.hotspot.HotspotState>>? = { null },
     bleHotspotOnStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>>? = { null },
-    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> }
+    onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
+    hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
+    directDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    meshDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    batteryStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.battery.BatteryState>>? = { null },
+    ringingPeersProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    onToggleRing: (deviceId: String) -> Unit = {}
 ) {
     var devices by remember { mutableStateOf<List<TrustedDevice>>(trustedDevicesStore.allDevices()) }
     val stateFlow = connectionStateProvider()
@@ -437,126 +455,87 @@ fun ConnectHomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text("Gossip", style = MaterialTheme.typography.headlineMedium)
-            Text("Status: ${connectionState.name}")
-
-            Button(onClick = onPairNewDevice) {
-                Text("Pair New Device")
-            }
-
-            Button(onClick = onShowQrToPair) {
-                Text("Show QR to Pair")
-            }
-
-            androidx.compose.material3.TextButton(onClick = onRunSetupAgain) {
-                Text("Run Setup Again")
-            }
-
-            androidx.compose.material3.OutlinedButton(onClick = onOpenSettings) {
-                Text("Settings")
-            }
-
-            if (!notificationAccessGranted) {
-                Text(
-                    "Grant notification access so your Android notifications can be mirrored to your paired devices.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = {
-                    onEnableNotificationAccess()
-                    notificationAccessGranted = isNotificationAccessGranted()
-                }) {
-                    Text("Enable Notification Mirroring")
+    // Everything that isn't the status + paired devices lives under Settings, a menu of sub-pages shown in
+    // place of the home screen. `null` = the home screen; Back steps up one level (see SettingsPage.parent).
+    var settingsPage by remember { mutableStateOf<SettingsPage?>(null) }
+    val isPhone = myDeviceType == DeviceType.ANDROID_PHONE
+    settingsPage?.let { page ->
+        androidx.activity.compose.BackHandler { settingsPage = page.parent }
+        val featureSettings = dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(androidx.compose.ui.platform.LocalContext.current)
+        val forwardSettings = dev.vmd1.gossip.features.notifications.NotificationForwardSettings.getInstance(
+            androidx.compose.ui.platform.LocalContext.current
+        )
+        when (page) {
+            SettingsPage.ROOT -> SettingsPageScaffold("Settings", onBack = { settingsPage = null }) {
+                SettingsMenuRow("Devices & pairing", "Pair a device, show your QR code, run setup again") {
+                    settingsPage = SettingsPage.DEVICES
                 }
-            } else {
-                Text("Notification mirroring is enabled.", style = MaterialTheme.typography.bodySmall)
-                Button(onClick = onSendTestNotification) {
-                    Text("Send Test Notification")
-                }
-                Text(
-                    "Posts a local notification — a quick way to confirm the mirroring " +
-                        "pipeline reaches your paired devices without waiting for a real app to notify you.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            if (!notificationPermissionGranted()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.errorContainer
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            "Notifications permission is off — a paired device's mirrored " +
-                                "notifications will be silently dropped, with no error shown " +
-                                "anywhere (separate from notification mirroring access above, " +
-                                "which only controls sending this device's own notifications " +
-                                "out).",
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Button(onClick = onRequestNotificationPermission) {
-                            Text("Grant Notifications Permission")
-                        }
+                if (isPhone) {
+                    SettingsMenuRow("Notifications", "Notification access and which apps are forwarded") {
+                        settingsPage = SettingsPage.NOTIFICATIONS
                     }
                 }
-            }
-
-            if (!dndAccessGranted) {
-                Text(
-                    "To sync Do Not Disturb with your paired devices, Gossip needs notification " +
-                        "policy access.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = {
-                    dndSyncManagerProvider()?.let(onRequestDndAccess)
-                }) {
-                    Text("Grant DND Access")
+                SettingsMenuRow("Features", "Turn features on or off on this device") { settingsPage = SettingsPage.FEATURES }
+                if (isPhone) {
+                    SettingsMenuRow("Instant Hotspot", "Let your other devices use this phone's hotspot") {
+                        settingsPage = SettingsPage.HOTSPOT
+                    }
+                }
+                SettingsMenuRow("Permissions", "Notifications, Do Not Disturb, Bluetooth and more") {
+                    settingsPage = SettingsPage.PERMISSIONS
                 }
             }
 
-            if (!bluetoothPermissionGranted()) {
-                Text(
-                    "To detect nearby trusted devices over Bluetooth (for features like " +
-                        "locking a paired Mac or tablet when your phone leaves range), Gossip needs " +
-                        "Bluetooth permission.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = onRequestBluetoothPermission) {
-                    Text("Grant Bluetooth Permission")
+            SettingsPage.DEVICES -> SettingsPageScaffold("Devices & pairing", onBack = { settingsPage = page.parent }) {
+                Button(onClick = onPairNewDevice) { Text("Pair New Device") }
+                Button(onClick = onShowQrToPair) { Text("Show QR to Pair") }
+                androidx.compose.material3.TextButton(onClick = onRunSetupAgain) { Text("Run Setup Again") }
+            }
+
+            SettingsPage.NOTIFICATIONS -> SettingsPageScaffold("Notifications", onBack = { settingsPage = page.parent }) {
+                if (!notificationAccessGranted) {
+                    Text(
+                        "Grant notification access so your Android notifications can be mirrored to your paired devices.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = {
+                        onEnableNotificationAccess()
+                        notificationAccessGranted = isNotificationAccessGranted()
+                    }) {
+                        Text("Enable Notification Mirroring")
+                    }
+                } else {
+                    Text("Notification mirroring is enabled.", style = MaterialTheme.typography.bodySmall)
+                    val blockedCount by forwardSettings.blocked.collectAsState()
+                    SettingsMenuRow(
+                        "Apps",
+                        if (blockedCount.isEmpty()) "All apps are forwarded" else "${blockedCount.size} apps are not forwarded"
+                    ) { settingsPage = SettingsPage.NOTIFICATION_APPS }
+                    Button(onClick = onSendTestNotification) { Text("Send Test Notification") }
+                    Text(
+                        "Posts a local notification — a quick way to confirm the mirroring " +
+                            "pipeline reaches your paired devices without waiting for a real app to notify you.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
 
-            if (myDeviceType != DeviceType.ANDROID_PHONE && !deviceAdminActive()) {
-                Text(
-                    "To let a paired phone lock this device when it leaves Bluetooth range " +
-                        "(Lock-on-Leave), Gossip needs device admin access.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = onRequestDeviceAdmin) {
-                    Text("Grant Device Admin")
-                }
+            SettingsPage.NOTIFICATION_APPS -> SettingsPageScaffold("Forwarded apps", onBack = { settingsPage = page.parent }, scroll = false) {
+                NotificationAppsContent()
             }
 
-            if (myDeviceType == DeviceType.ANDROID_PHONE) {
+            SettingsPage.FEATURES -> SettingsPageScaffold("Features", onBack = { settingsPage = page.parent }) {
+                FeatureTogglesContent(featureSettings)
+            }
+
+            SettingsPage.HOTSPOT -> SettingsPageScaffold("Instant Hotspot", onBack = { settingsPage = page.parent }) {
                 var provideHotspotEnabled by remember { mutableStateOf(provideHotspotEnabledProvider()) }
                 androidx.compose.foundation.layout.Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text("Provide Instant Hotspot", style = MaterialTheme.typography.bodyLarge)
                         Text(
                             "Let nearby trusted devices with no internet request a hotspot from " +
@@ -574,9 +553,96 @@ fun ConnectHomeScreen(
                 }
             }
 
+            SettingsPage.PERMISSIONS -> SettingsPageScaffold("Permissions", onBack = { settingsPage = page.parent }) {
+                val needsDeviceAdmin = !isPhone && !deviceAdminActive()
+                if (notificationPermissionGranted() && dndAccessGranted && bluetoothPermissionGranted() && !needsDeviceAdmin) {
+                    Text("All permissions are granted.", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (!notificationPermissionGranted()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.errorContainer
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "Notifications permission is off — a paired device's mirrored " +
+                                    "notifications will be silently dropped, with no error shown " +
+                                    "anywhere.",
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Button(onClick = onRequestNotificationPermission) {
+                                Text("Grant Notifications Permission")
+                            }
+                        }
+                    }
+                }
+                if (!dndAccessGranted) {
+                    Text(
+                        "To sync Do Not Disturb with your paired devices, Gossip needs notification " +
+                            "policy access.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = { dndSyncManagerProvider()?.let(onRequestDndAccess) }) {
+                        Text("Grant DND Access")
+                    }
+                }
+                if (!bluetoothPermissionGranted()) {
+                    Text(
+                        "To detect nearby trusted devices over Bluetooth (for features like " +
+                            "locking a paired Mac or tablet when your phone leaves range), Gossip needs " +
+                            "Bluetooth permission.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = onRequestBluetoothPermission) { Text("Grant Bluetooth Permission") }
+                }
+                if (needsDeviceAdmin) {
+                    Text(
+                        "To let a paired phone lock this device when it leaves Bluetooth range " +
+                            "(Lock-on-Leave), Gossip needs device admin access.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = onRequestDeviceAdmin) { Text("Grant Device Admin") }
+                }
+            }
+        }
+        return
+    }
+
+    Scaffold { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Text("Gossip", style = MaterialTheme.typography.headlineMedium)
+                androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.ROOT }) {
+                    androidx.compose.material3.Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings"
+                    )
+                }
+            }
+            ConnectionStatusCard(connectionState)
+
             val nearbyDeviceIds by (nearbyDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.hotspot.HotspotState>()) })
             val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
+            val ringingPeers by (ringingPeersProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val directDeviceIds by (directDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val meshDeviceIds by (meshDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val batteryStates by (batteryStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.battery.BatteryState>()) })
 
             PairedDevicesScreen(
                 devices = devices,
@@ -586,6 +652,12 @@ fun ConnectHomeScreen(
                 hotspotStates = hotspotStates,
                 bleHotspotOnStates = bleHotspotOnStates,
                 onRequestHotspot = onRequestHotspot,
+                hotspotOverrides = hotspotOverrides,
+                directDeviceIds = directDeviceIds,
+                meshDeviceIds = meshDeviceIds,
+                batteryStates = batteryStates,
+                ringingPeers = ringingPeers,
+                onToggleRing = onToggleRing,
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls
@@ -603,6 +675,38 @@ fun ConnectHomeScreen(
                     devices = trustedDevicesStore.allDevices()
                 }
             )
+        }
+    }
+}
+
+/** Rounded status card: a coloured dot, a plain-language state and a one-line explanation. */
+@Composable
+private fun ConnectionStatusCard(state: ConnectionState) {
+    val (dot, title, detail) = when (state) {
+        ConnectionState.CONNECTED -> Triple(androidx.compose.ui.graphics.Color(0xFF34C759), "Connected", "Syncing with your paired devices")
+        ConnectionState.HANDSHAKING -> Triple(androidx.compose.ui.graphics.Color(0xFFFF9500), "Connecting…", "Securing the connection")
+        ConnectionState.DISCOVERING -> Triple(androidx.compose.ui.graphics.Color(0xFFFFCC00), "Searching…", "Looking for your paired devices")
+        ConnectionState.DISCONNECTED -> Triple(androidx.compose.ui.graphics.Color(0xFF8E8E93), "Disconnected", "Not connected to any device")
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .background(dot, androidx.compose.foundation.shape.CircleShape)
+            )
+            Column {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }

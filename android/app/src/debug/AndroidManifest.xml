@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug-only: logs every pointer / key event to logcat (tag GossipProbe) so the Universal Control
+             end-to-end script can assert what the virtual mouse and keyboard actually delivered. -->
+        <activity
+            android:name="dev.vmd1.gossip.debug.InputProbeActivity"
+            android:exported="true"
+            android:label="Input probe"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+        <!-- Debug-only: starts or ends a Universal Control session from adb without the mesh, for the scripted end-to-end test (actions CONTROL_START and CONTROL_END in dev.vmd1.gossip.debug, extras sessionId and secret). -->
+        <receiver android:name="dev.vmd1.gossip.debug.ControlDebugReceiver" android:exported="true" />
+    </application>
+</manifest>

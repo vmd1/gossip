@@ -26,6 +26,7 @@ import dev.vmd1.gossip.transport.ConnectionState
 import dev.vmd1.gossip.transport.MessageRouter
 import dev.vmd1.gossip.transport.TransportManager
 import dev.vmd1.gossip.transport.TransportManagerHolder
+import dev.vmd1.gossip.transport.newlyConnectedPeers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,6 +49,7 @@ class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
     lateinit var screenMirrorState: ScreenMirrorState
+    lateinit var controlSessionState: dev.vmd1.gossip.features.universalcontrol.ControlSessionState
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
@@ -57,6 +59,9 @@ class SyncForegroundService : Service() {
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
+    private lateinit var ringManager: dev.vmd1.gossip.features.find.RingManager
+    private lateinit var displayInfoSync: dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync
+    private lateinit var batterySyncManager: dev.vmd1.gossip.features.battery.BatterySyncManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -79,6 +84,17 @@ class SyncForegroundService : Service() {
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
         )
         screenMirrorState.register(messageRouter)
+        controlSessionState = dev.vmd1.gossip.features.universalcontrol.ControlSessionState(
+            selfId = identity.deviceId,
+            scope = serviceScope,
+            shizukuReady = { shizukuManager?.state?.value == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED },
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
+            sessionFactory = { sessionId, secret, onEnded ->
+                dev.vmd1.gossip.features.universalcontrol.ControlBridge(applicationContext, sessionId, secret, onEnded)
+            },
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.UNIVERSAL_CONTROL) }
+        )
+        controlSessionState.register(messageRouter)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
@@ -94,6 +110,9 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity
         )
         TransportManagerHolder.instance = transportManager
+        // The notification listener may have connected before the transport existed; let it register
+        // its reply/dismiss handlers now.
+        dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.ensureHandlersRegistered()
         shizukuManager = dev.vmd1.gossip.features.hotspot.ShizukuManager(applicationContext).also { it.start() }
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
@@ -197,6 +216,46 @@ class SyncForegroundService : Service() {
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.LOCK_ON_LEAVE) }
         )
         lockOnLeaveManager.start()
+
+        // Find my device: rings on `device.ring`; a notification with a Stop action silences it.
+        ringManager = dev.vmd1.gossip.features.find.RingManager(
+            messageRouter = messageRouter,
+            ringer = dev.vmd1.gossip.features.find.AlarmRinger(applicationContext),
+            scope = serviceScope,
+            onRingingChanged = { ringing -> showRingNotification(ringing) },
+            selfId = identity.deviceId,
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } }
+        )
+        ringManager.start()
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) { ringManager.stopRinging() }
+            },
+            IntentFilter(ACTION_STOP_RING),
+            android.content.Context.RECEIVER_NOT_EXPORTED
+        )
+
+        // Battery sync: broadcasts this device's level (reconciled on connect + every 60s), tracks
+        // peers' levels for the paired-devices list, alerts when a peer runs low.
+        batterySyncManager = dev.vmd1.gossip.features.battery.BatterySyncManager(
+            context = applicationContext,
+            deviceId = identity.deviceId,
+            messageRouter = messageRouter,
+            send = { envelope -> transportManager.send(envelope) },
+            scope = serviceScope,
+            onLowBattery = { senderId, level -> showLowBatteryNotification(senderId, level) },
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.BATTERY) }
+        )
+        batterySyncManager.start()
+
+        // Display size, so the Mac's Universal Control layout draws this device at its real shape
+        // before any session exists. Reconciled on every new peer + the 60s loop below.
+        displayInfoSync = dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync(
+            deviceId = identity.deviceId,
+            send = { envelope -> transportManager.send(envelope) },
+            scope = serviceScope,
+            readSize = { dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync.readFromSystem(applicationContext) }
+        )
 
         // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
         // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
@@ -349,28 +408,42 @@ class SyncForegroundService : Service() {
             .onEach { state ->
                 if (state == ConnectionState.CONNECTED) {
                     clipboardSyncManager.start()
-                    // Two devices that were apart can each have a different real DND
-                    // state with neither side having done anything wrong — nothing
-                    // synced them yet. Report on every fresh connection (not just once
-                    // ever) so a reconnect after being out of range reconciles too; see
-                    // DndSyncManager.reportInitialSyncState's doc for why this can't be
-                    // a plain reportCurrentState() call.
-                    dndSyncManager.reportInitialSyncState()
-                    // Same reasoning: a Mac that reconnects after being disconnected
-                    // (or missed the original event-driven publish to any other race)
-                    // otherwise never learns this device is currently playing anything
-                    // until the *next* playback/metadata change, which might be a long
-                    // time or never — mediaControlBridge.start() only ever published
-                    // once, at service startup, with no reconnect-triggered resend.
-                    mediaControlBridge.resyncNowPlaying()
-                    // Same reasoning as dndSyncManager.reportInitialSyncState above: a
-                    // peer that reconnects (or missed the original event-driven report
-                    // to any race) shouldn't have to wait for this phone's *next*
-                    // hotspot toggle to learn its current state.
-                    hotspotStateManager.periodicResync()
                 } else {
                     clipboardSyncManager.stop()
                 }
+            }
+            .launchIn(serviceScope)
+
+        // Initial syncs fire for every *newly connected peer*, not just when the aggregate
+        // state flips to CONNECTED: a second peer connecting while the first is still up
+        // causes no flip, and would otherwise wait for the 60s resync loops. The sends are
+        // broadcasts and idempotent, so an already-connected peer just gets a harmless repeat.
+        transportManager.connectedDeviceIds
+            .newlyConnectedPeers()
+            .onEach {
+                // Two devices that were apart can each have a different real DND
+                // state with neither side having done anything wrong — nothing
+                // synced them yet. Report on every fresh connection (not just once
+                // ever) so a reconnect after being out of range reconciles too; see
+                // DndSyncManager.reportInitialSyncState's doc for why this can't be
+                // a plain reportCurrentState() call.
+                dndSyncManager.reportInitialSyncState()
+                // Same reasoning: a Mac that reconnects after being disconnected
+                // (or missed the original event-driven publish to any other race)
+                // otherwise never learns this device is currently playing anything
+                // until the *next* playback/metadata change, which might be a long
+                // time or never — mediaControlBridge.start() only ever published
+                // once, at service startup, with no reconnect-triggered resend.
+                mediaControlBridge.resyncNowPlaying()
+                // Same reasoning as dndSyncManager.reportInitialSyncState above: a
+                // peer that reconnects (or missed the original event-driven report
+                // to any race) shouldn't have to wait for this phone's *next*
+                // hotspot toggle to learn its current state.
+                hotspotStateManager.periodicResync()
+                // Same reasoning for battery.update: a reconnecting peer shouldn't wait
+                // for the next 1% level change to learn this device's battery.
+                batterySyncManager.reportInitialSyncState()
+                displayInfoSync.resync()
             }
             .launchIn(serviceScope)
 
@@ -379,6 +452,61 @@ class SyncForegroundService : Service() {
         runRosterResyncLoop()
         runMediaResyncLoop()
         runHotspotStateResyncLoop()
+        runBatteryResyncLoop()
+    }
+
+    /** Self-healing backstop for `battery.update`, on top of the event-driven publish (a local
+     *  battery change) and the on-connect resend: re-sends the current reading every 60s while
+     *  connected, so a dropped or mis-timed report never leaves peers stale. */
+    private fun runBatteryResyncLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(DND_RESYNC_INTERVAL_MS)
+                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
+                    batterySyncManager.periodicResync()
+                    displayInfoSync.resync()
+                }
+            }
+        }
+    }
+
+    private fun showRingNotification(ringing: Boolean) {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (!ringing) { manager.cancel(RING_NOTIFICATION_ID); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(RING_CHANNEL_ID, "Find my device", NotificationManager.IMPORTANCE_HIGH))
+        }
+        val stop = android.app.PendingIntent.getBroadcast(
+            this, 0, Intent(ACTION_STOP_RING).setPackage(packageName),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val n = NotificationCompat.Builder(this, RING_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("Gossip is ringing this device")
+            .setContentText("A paired device asked this one to ring.")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
+            .setContentIntent(stop)
+            .build()
+        runCatching { manager.notify(RING_NOTIFICATION_ID, n) }
+    }
+
+    private fun showLowBatteryNotification(senderId: String, level: Int) {
+        val name = TrustedDevicesStore.getInstance(applicationContext).allDevices()
+            .firstOrNull { it.deviceId == senderId }?.deviceName ?: "A paired device"
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(BATTERY_CHANNEL_ID, "Low battery on paired devices", NotificationManager.IMPORTANCE_DEFAULT))
+        }
+        val n = NotificationCompat.Builder(this, BATTERY_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("$name battery low")
+            .setContentText("$name is at $level% and not charging.")
+            .setAutoCancel(true)
+            .build()
+        runCatching { manager.notify(BATTERY_NOTIFICATION_BASE + (senderId.hashCode() and 0xFFFF), n) }
     }
 
     /** Self-healing backstop for `hotspot.state_update`, on top of the event-driven
@@ -493,6 +621,8 @@ class SyncForegroundService : Service() {
         bleProximityMonitor.stop()
         hotspotStateManager.stop()
         lockOnLeaveManager.stop()
+        ringManager.shutdown()
+        batterySyncManager.stop()
         transportManager.shutdown()
         if (TransportManagerHolder.instance === transportManager) {
             TransportManagerHolder.instance = null
@@ -513,6 +643,10 @@ class SyncForegroundService : Service() {
     fun bleProximityMonitor(): BLEProximityMonitor = bleProximityMonitor
 
     fun hotspotStateManager(): dev.vmd1.gossip.features.hotspot.HotspotStateManager = hotspotStateManager
+
+    fun ringManager(): dev.vmd1.gossip.features.find.RingManager = ringManager
+
+    fun batterySyncManager(): dev.vmd1.gossip.features.battery.BatterySyncManager = batterySyncManager
 
     /** Exposed so the home screen can show a "your screen is being mirrored" indicator —
      *  see [dev.vmd1.gossip.features.screenmirror.ScreenMirrorState]'s own doc comment, which
@@ -562,6 +696,11 @@ class SyncForegroundService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "connect_sync"
+        private const val ACTION_STOP_RING = "dev.vmd1.gossip.STOP_RING"
+        private const val RING_CHANNEL_ID = "gossip_find_device"
+        private const val RING_NOTIFICATION_ID = 1002
+        private const val BATTERY_CHANNEL_ID = "gossip_battery_low"
+        private const val BATTERY_NOTIFICATION_BASE = 6000
         /** Not private: [dev.vmd1.gossip.features.notifications.NotificationListenerImpl]
          *  needs this to specifically exclude the persistent "Gossip is running"
          *  notification from mirroring, without excluding every notification this

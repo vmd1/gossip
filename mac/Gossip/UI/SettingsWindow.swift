@@ -76,6 +76,12 @@ private struct SettingsView: View {
     let onOpenDNDSetup: () -> Void
     let onRunSetupAgain: () -> Void
 
+    @ObservedObject private var universalControl = UniversalControlCoordinator.shared
+    @State private var commandMapping = UniversalControlSettings.commandMapping
+    @State private var typingMode = UniversalControlSettings.typingMode
+    @State private var launcherEnabled = LauncherPreference.autoInstall
+    @State private var launcherMessage: String?
+
     var body: some View {
         Form {
             Section {
@@ -99,6 +105,67 @@ private struct SettingsView: View {
                     .font(.caption)
             }
 
+            Section {
+                Button("Arrange Devices…") { universalControl.showLayoutWindow() }
+                    .disabled(!features.isEnabled(.universalControl))
+                permissionRow(
+                    "Accessibility", granted: universalControl.accessibilityGranted,
+                    detail: "Lets Gossip capture and redirect your mouse and keyboard.",
+                    request: { ControlEventTap.requestAccessibility(); ControlEventTap.openAccessibilitySettings() }
+                )
+                permissionRow(
+                    "Input Monitoring", granted: universalControl.inputMonitoringGranted,
+                    detail: "Lets Gossip see keystrokes to forward them.",
+                    request: { ControlEventTap.requestInputMonitoring(); ControlEventTap.openInputMonitoringSettings() }
+                )
+                Picker("Command key acts as", selection: Binding(
+                    get: { commandMapping },
+                    set: { commandMapping = $0; UniversalControlSettings.commandMapping = $0 }
+                )) {
+                    Text("Control (Cmd+C copies)").tag(HIDKeyTable.CommandMapping.control)
+                    Text("Meta / Windows key").tag(HIDKeyTable.CommandMapping.meta)
+                }
+                Picker("Typing", selection: Binding(
+                    get: { typingMode },
+                    set: { typingMode = $0; UniversalControlSettings.typingMode = $0 }
+                )) {
+                    Text("Characters (best for non-US layouts)").tag(ControlTypingMode.characters)
+                    Text("Key codes").tag(ControlTypingMode.keys)
+                }
+            } header: {
+                Text("Universal Control")
+            } footer: {
+                Text("Push the pointer off the edge of your Mac's screen towards a device you placed in Arrange Devices. Press Control+Option+Command+Esc to jump back at any time. Both permissions are tied to Gossip's code signature, so they reset if you rebuild without a stable signing certificate. Keystrokes in password fields aren't visible to Gossip (macOS secure input).")
+                    .font(.caption)
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { launcherEnabled },
+                    set: { on in
+                        LauncherPreference.autoInstall = on
+                        launcherEnabled = on
+                        if on {
+                            LauncherSetup.ensureInstalled()
+                            if case .notApplicable(let reason) = LauncherInstaller().status() { launcherMessage = reason } else { launcherMessage = nil }
+                        } else {
+                            launcherMessage = "To remove it, delete “Device Mirroring” from your Applications folder."
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Device Mirroring app")
+                        Text("Keeps a “Device Mirroring” app next to Gossip so you can open the device list from Spotlight or Launchpad.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let launcherMessage {
+                    Text(launcherMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Apps")
+            }
+
             Section("Devices & setup") {
                 Button("Pair New Device…", action: onPairNewDevice)
                 Button("Do Not Disturb Sync Setup…", action: onOpenDNDSetup)
@@ -106,5 +173,21 @@ private struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private func permissionRow(_ title: String, granted: Bool, detail: String, request: @escaping () -> Void) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if granted {
+                Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+            } else {
+                Button("Open System Settings", action: request)
+            }
+        }
     }
 }

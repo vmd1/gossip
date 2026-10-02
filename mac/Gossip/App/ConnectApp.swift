@@ -20,6 +20,10 @@ struct ConnectApp: App {
     @StateObject private var bleProximityMonitor: BLEProximityMonitor
     @StateObject private var hotspotStateManager: HotspotStateManager
     private let lockOnLeaveManager: LockOnLeaveManager
+    @StateObject private var ringManager: RingManager
+    @StateObject private var batterySyncManager: BatterySyncManager
+    private let batteryResyncSubscriptions = SubscriptionBox()
+    private let deviceMirroringWindowBox = DeviceMirroringWindowBox()
 
     /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
     /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
@@ -49,6 +53,8 @@ struct ConnectApp: App {
     private let onboardingPairingWindowBox = WindowBox()
 
     init() {
+        // Must come before anything that binds a port, starts BLE or watches the pasteboard.
+        SingleInstanceGuard.exitIfAnotherInstanceIsRunning()
         let transport = TransportManager()
         _transportManager = StateObject(wrappedValue: transport)
         let screenMirror = ScreenMirrorController()
@@ -70,6 +76,11 @@ struct ConnectApp: App {
             trustedDevicesStore: TrustedDevicesStore.shared,
             bleProximityMonitor: bleMonitor
         )
+        _ringManager = StateObject(wrappedValue: RingManager(transportManager: transport))
+        let battery = BatterySyncManager(transportManager: transport)
+        _batterySyncManager = StateObject(wrappedValue: battery)
+        battery.start()
+        UniversalControlCoordinator.shared.configure(transport: transport, trustedDevices: TrustedDevicesStore.shared, battery: battery)
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
@@ -80,6 +91,11 @@ struct ConnectApp: App {
         // a fresh launch until the user happened to click the menu-bar icon.
         transport.start()
         notificationMirror.requestAuthorizationIfNeeded()
+
+        // Keep the "Device Mirroring" launcher app (embedded in this app) installed next to Gossip.
+        if LauncherPreference.autoInstall {
+            LauncherSetup.ensureInstalled()
+        }
 
         // First-run onboarding (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 2). Same
         // "must not depend on the menu-bar tray ever being opened" reasoning as
@@ -121,9 +137,20 @@ struct ConnectApp: App {
         // silently dropped by `AppDelegate.application(_:open:)`'s `onOpenURLs?(urls)`
         // no-op on `nil` until the user opened the menu bar tray at least once after
         // launch.
-        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport] urls in
+        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport, battery, deviceMirroringWindowBox] urls in
             for url in urls {
-                if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
+                if url.host == "mirror" {
+                    // Sent by the "Device Mirroring" launcher app: show the device-list window.
+                    deviceMirroringWindowBox.show {
+                        DeviceMirroringView(
+                            trustedDevicesStore: TrustedDevicesStore.shared,
+                            transportManager: transport,
+                            screenMirrorController: screenMirror,
+                            batterySyncManager: battery,
+                            featureSettings: FeatureSettings.shared
+                        )
+                    }
+                } else if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
                     // TEMPORARY debug hook: `open connect://debug-mirror` starts on-device mirroring of
                     // the first connected trusted Android device without clicking the tray (remove
                     // once there's UI-driven test coverage); `debug-stop-mirror` ends it.
@@ -138,17 +165,13 @@ struct ConnectApp: App {
                     // exercised through the real "Request Hotspot" menu bar button
                     // instead.
                     let phones = TrustedDevicesStore.shared.devices.filter { $0.deviceType == .androidPhone }
-                    BLEProximityMonitor.debugLog("debug-hotspot-request: trusted phones=\(phones.map { $0.deviceId }) peripheralIds=\(bleMonitor.peripheralIdentifierByDeviceId) nearby=\(bleMonitor.nearbyDeviceIds)")
                     guard let deviceId = phones.first?.deviceId,
                           let peripheralId = bleMonitor.peripheralIdentifierByDeviceId[deviceId] else {
-                        BLEProximityMonitor.debugLog("debug-hotspot-request: no nearby trusted phone found")
                         continue
                     }
-                    BLEProximityMonitor.debugLog("debug-hotspot-request: requesting from \(deviceId)")
                     let client = HotspotGattClient()
                     debugHotspotClientBox.client = client
                     client.requestToggle(providerId: deviceId, peripheralIdentifier: peripheralId, enable: true) { result in
-                        BLEProximityMonitor.debugLog("debug-hotspot-request result: \(result)")
                         debugHotspotClientBox.client = nil
                     }
                 } else {
@@ -163,9 +186,12 @@ struct ConnectApp: App {
         // on *every* connect, including the very first one after a fresh launch — which is
         // exactly the case most likely to happen before the user has ever opened the tray.
         let clipboard = clipboardSyncManager
-        subscriptions.cancellable = transport.$connectionState.sink { [dndSyncManager, clipboard, notificationMirror] state in
+        subscriptions.cancellable = transport.$connectionState.sink { [dndSyncManager, clipboard, notificationMirror, battery] state in
             if case .connected = state {
                 clipboard.start()
+                // Same reasoning as dndSyncManager.reportInitialSyncState: a peer that reconnects
+                // shouldn't wait for the next battery change to learn this Mac's level.
+                battery.reportInitialSyncState()
                 notificationMirror.refreshAuthorizationStatus()
                 dndSyncManager.reportInitialSyncState()
             } else {
@@ -188,6 +214,16 @@ struct ConnectApp: App {
             .sink { [dndSyncManager, transport] _ in
                 if case .connected = transport.connectionState {
                     dndSyncManager.reportInitialSyncState()
+                }
+            }
+
+        // Self-healing backstop for `battery.update` (see BatterySyncManager): re-sends the current
+        // reading every 60s while connected, on top of the change-driven and on-connect sends.
+        batteryResyncSubscriptions.cancellable = Timer.publish(every: 60, on: .main, in: .common)
+            .autoconnect()
+            .sink { [transport, battery] _ in
+                if case .connected = transport.connectionState {
+                    battery.reportInitialSyncState()
                 }
             }
 
@@ -249,6 +285,8 @@ struct ConnectApp: App {
                 rosterGossipManager: rosterGossipManager,
                 bleProximityMonitor: bleProximityMonitor,
                 hotspotStateManager: hotspotStateManager,
+                ringManager: ringManager,
+                batterySyncManager: batterySyncManager,
                 featureSettings: FeatureSettings.shared
             )
         }

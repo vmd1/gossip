@@ -64,6 +64,12 @@
          checks, per Android 11+ package-visibility rules. -->
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
+        <!-- Settings → Notifications → Apps lists launchable apps; on Android 11+ seeing them needs this
+             intent query (no broad QUERY_ALL_PACKAGES permission). -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application
@@ -84,11 +90,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <activity
-            android:name=".ui.SettingsActivity"
-            android:exported="false"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
 
         <activity
             android:name=".onboarding.OnboardingActivity"

@@ -31,6 +31,11 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     private var sharedSecretKey: SymmetricKey?
     private var pendingRequest: HotspotGattProtocol.ToggleRequestPayload?
     private var pendingPeripheralIdentifier: UUID?
+    /// macOS caches a peripheral's GATT table across connections; if the phone's table changed
+    /// since (its service handles move whenever the app restarts) the filtered discovery can
+    /// return the service with no characteristics. One unfiltered re-discovery is attempted
+    /// before giving up.
+    private var retriedUnfilteredDiscovery = false
 
     init(identity: IdentityKeyStore = .shared, trustedDevices: TrustedDevicesStore = .shared) {
         self.identity = identity
@@ -111,6 +116,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
             centralManager.cancelPeripheralConnection(peripheral)
         }
         peripheral = nil
+        retriedUnfilteredDiscovery = false
         requestCharacteristic = nil
         responseCharacteristic = nil
         outboundQueue = []
@@ -155,15 +161,19 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let characteristics = service.characteristics else {
-            settle(.failed("No characteristics found on hotspot GATT service"))
+        let characteristics = service.characteristics ?? []
+        if characteristics.isEmpty, !retriedUnfilteredDiscovery {
+            retriedUnfilteredDiscovery = true
+            peripheral.discoverCharacteristics(nil, for: service)
             return
         }
         guard let foundRequestCharacteristic = characteristics.first(where: { $0.uuid == HotspotGattProtocol.requestCharacteristicUUID }),
               let foundResponseCharacteristic = characteristics.first(where: { $0.uuid == HotspotGattProtocol.responseCharacteristicUUID }),
               pendingRequest != nil
         else {
-            settle(.failed("Hotspot GATT characteristics not found on this device"))
+            settle(.failed(characteristics.isEmpty
+                ? "This Mac has a stale Bluetooth cache for the phone — turn Bluetooth off and on, then retry"
+                : "Hotspot GATT characteristics not found on this device"))
             return
         }
         requestCharacteristic = foundRequestCharacteristic

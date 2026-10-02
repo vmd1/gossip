@@ -13,9 +13,12 @@ import android.service.notification.StatusBarNotification
 import android.util.Base64
 import android.util.Log
 import dev.vmd1.gossip.protocol.Envelope
+import dev.vmd1.gossip.protocol.DeviceType
 import dev.vmd1.gossip.protocol.MessageType
+import dev.vmd1.gossip.protocol.detectDeviceType
 import dev.vmd1.gossip.service.SyncForegroundService
 import dev.vmd1.gossip.transport.EnvelopeHandler
+import dev.vmd1.gossip.transport.MessageRouter
 import dev.vmd1.gossip.transport.TransportManagerHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +31,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "NotificationListener"
 private const val REPLY_DEDUPE_CACHE_LIMIT = 128
+private const val APP_ICON_SIZE_PX = 96
+private const val APP_ICON_CACHE_LIMIT = 128
 
 /**
  * Bridges the Android [NotificationListenerService] special-access API into the
@@ -54,14 +59,17 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     private val replyTargets = ConcurrentHashMap<String, ReplyTarget>()
     private var scope: CoroutineScope? = null
-    private var replyHandler: EnvelopeHandler? = null
-    private var dismissHandler: EnvelopeHandler? = null
 
     /** Bounded, size-capped cache of recently-handled `notification.reply` [NotificationReplyPayload.attemptId]s.
      *  A duplicate delivery (retry, relay race, mesh dedupe-cache eviction — see
      *  `docs/wire-protocol.md`'s "De-duplication" section) must not fire the source app's
      *  own `PendingIntent` twice, since that sends the same reply text into a real
      *  conversation a second time. Mirrors `TransportManager.recentEnvelopeIds`/`recordSeen`. */
+    /** packageName -> encoded launcher icon (or null if unavailable); see [appIconBase64]. Bounded. */
+    private val appIconCache = object : LinkedHashMap<String, String?>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String?>?) = size > APP_ICON_CACHE_LIMIT
+    }
+
     private val dedupeLock = Any()
     private val recentReplyAttemptIds = ArrayDeque<String>()
     private val recentReplyAttemptIdSet = HashSet<String>()
@@ -78,8 +86,16 @@ class NotificationListenerImpl : NotificationListenerService() {
         true
     }
 
+    /** Only phones forward their notifications to the mesh; a tablet (or any other non-phone) shows
+     *  mirrored notifications from phones but never sends its own. */
+    private val isPhone: Boolean by lazy { detectDeviceType(applicationContext) == DeviceType.ANDROID_PHONE }
+
     override fun onListenerConnected() {
         super.onListenerConnected()
+        if (!isPhone) {
+            Log.i(TAG, "Not a phone — notification forwarding disabled on this device")
+            return
+        }
         // The system can call this while already connected (its own base-class doc warns
         // "this can result in duplicate events") — observed directly in testing, where it
         // registered a second `replyHandler` alongside the first and doubled every
@@ -93,13 +109,34 @@ class NotificationListenerImpl : NotificationListenerService() {
         val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = serviceScope
 
-        val handler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
-        replyHandler = handler
-        TransportManagerHolder.instance?.messageRouter?.register(MessageType.NOTIFICATION_REPLY, handler)
+        active = this
+        ensureHandlersRegistered()
+    }
 
-        val dismiss = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
-        dismissHandler = dismiss
-        TransportManagerHolder.instance?.messageRouter?.register(MessageType.NOTIFICATION_DISMISS, dismiss)
+    private val replyEnvelopeHandler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
+    private val dismissEnvelopeHandler = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
+    private var registeredRouter: MessageRouter? = null
+
+    /**
+     * Registers the `notification.reply` / `notification.dismiss` handlers on the live router. The
+     * system binds this listener independently of [SyncForegroundService] (e.g. right after the app
+     * process restarts), so [TransportManagerHolder.instance] can still be null when
+     * [onListenerConnected] runs — previously the handlers were then silently never registered, and
+     * dismissing a mirrored notification on the Mac did nothing on the phone. This is idempotent and
+     * is retried when the service publishes its transport ([SyncForegroundService]) and on every
+     * notification event, so the handlers always end up registered on the *current* router.
+     */
+    @Synchronized
+    fun ensureHandlersRegistered() {
+        val router = TransportManagerHolder.instance?.messageRouter ?: return
+        if (registeredRouter === router) return
+        registeredRouter?.let { old ->
+            old.unregister(replyEnvelopeHandler)
+            old.unregister(dismissEnvelopeHandler)
+        }
+        router.register(MessageType.NOTIFICATION_REPLY, replyEnvelopeHandler)
+        router.register(MessageType.NOTIFICATION_DISMISS, dismissEnvelopeHandler)
+        registeredRouter = router
     }
 
     override fun onListenerDisconnected() {
@@ -108,10 +145,12 @@ class NotificationListenerImpl : NotificationListenerService() {
     }
 
     private fun tearDown() {
-        replyHandler?.let { TransportManagerHolder.instance?.messageRouter?.unregister(it) }
-        replyHandler = null
-        dismissHandler?.let { TransportManagerHolder.instance?.messageRouter?.unregister(it) }
-        dismissHandler = null
+        registeredRouter?.let { router ->
+            router.unregister(replyEnvelopeHandler)
+            router.unregister(dismissEnvelopeHandler)
+        }
+        registeredRouter = null
+        if (active === this) active = null
         scope?.cancel()
         scope = null
         replyTargets.clear()
@@ -119,6 +158,10 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
+        if (!isPhone) return
+        ensureHandlersRegistered()
+        // Settings → Notifications → Apps: the user can switch individual apps off.
+        if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return
         // Never mirror our own persistent "Gossip is running" foreground-service
         // notification specifically — but DO mirror any other notification this app
         // posts (e.g. a manual "Send Test Notification" button), so that button is
@@ -159,7 +202,7 @@ class NotificationListenerImpl : NotificationListenerService() {
             appName = appLabel(sbn.packageName),
             title = title,
             body = body,
-            iconBase64 = smallIconBase64(notification),
+            iconBase64 = appIconBase64(sbn.packageName),
             hasReplyAction = replyAction != null,
             timestamp = sbn.postTime
         )
@@ -168,6 +211,8 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         super.onNotificationRemoved(sbn)
+        if (!isPhone) return
+        if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return
         replyTargets.remove(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
         send(payload.toEnvelope(senderId = deviceId()))
@@ -236,19 +281,27 @@ class NotificationListenerImpl : NotificationListenerService() {
         packageName
     }
 
-    private fun smallIconBase64(notification: Notification): String? = try {
-        val drawable: Drawable? = notification.smallIcon?.loadDrawable(this)
-        drawable?.let { Base64.encodeToString(drawableToPngBytes(it), Base64.NO_WRAP) }
-    } catch (e: Exception) {
-        null
+    /** The source app's launcher icon as a [APP_ICON_SIZE_PX]-px PNG, base64-encoded — what receiving
+     *  devices show as the notification's image. (This used to be the notification's *small* icon,
+     *  which is a white single-colour status-bar glyph and rendered as a blank square on the Mac/tablet.)
+     *  Encoded once per app and cached, since the same few apps notify over and over; a `null` result
+     *  (icon couldn't be loaded) is cached too so a bad app isn't retried on every notification. */
+    private fun appIconBase64(packageName: String): String? = synchronized(appIconCache) {
+        if (appIconCache.containsKey(packageName)) return@synchronized appIconCache[packageName]
+        val encoded = try {
+            val drawable: Drawable = packageManager.getApplicationIcon(packageName)
+            Base64.encodeToString(drawableToPngBytes(drawable, APP_ICON_SIZE_PX), Base64.NO_WRAP)
+        } catch (e: Exception) {
+            null
+        }
+        appIconCache[packageName] = encoded
+        encoded
     }
 
-    private fun drawableToPngBytes(drawable: Drawable): ByteArray {
-        val width = drawable.intrinsicWidth.coerceAtLeast(1)
-        val height = drawable.intrinsicHeight.coerceAtLeast(1)
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    private fun drawableToPngBytes(drawable: Drawable, sizePx: Int): ByteArray {
+        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
-        drawable.setBounds(0, 0, canvas.width, canvas.height)
+        drawable.setBounds(0, 0, sizePx, sizePx)
         drawable.draw(canvas)
         val stream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
@@ -276,4 +329,9 @@ class NotificationListenerImpl : NotificationListenerService() {
     }
 
     private fun deviceId(): String = TransportManagerHolder.instance?.identityKeyStore?.deviceId.orEmpty()
+
+    companion object {
+        /** The connected listener instance, so [SyncForegroundService] can nudge it once the transport exists. */
+        @Volatile var active: NotificationListenerImpl? = null
+    }
 }

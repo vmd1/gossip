@@ -1,0 +1,9 @@
+// Shared signing config for Gossip and the Device Mirroring launcher.
+//
+// Accessibility and Input Monitoring grants (needed by Universal Control) are tied to the app's code
+// signature. Ad-hoc builds get a new signature on every build, so the grants reset each time. To keep
+// them, sign with a stable local certificate: run `scripts/create-signing-cert.sh` once, which writes
+// Config/Signing.local.xcconfig (git-ignored) that the optional include below picks up.
+//
+// Without that file the build falls back to Xcode's automatic signing, exactly as before.
+#include? "Signing.local.xcconfig"

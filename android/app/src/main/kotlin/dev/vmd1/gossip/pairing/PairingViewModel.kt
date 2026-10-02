@@ -70,7 +70,7 @@ class PairingViewModel(
         val payload = try {
             Json { ignoreUnknownKeys = true }.decodeFromString(PairingQrPayload.serializer(), rawValue)
         } catch (e: Exception) {
-            _uiState.value = PairingUiState.Failed("Unreadable QR code: ${e.message}")
+            failWith("Unreadable QR code: ${e.message}")
             return
         }
 
@@ -80,7 +80,7 @@ class PairingViewModel(
                 findPeer(payload.responderDeviceId)
             }
             if (peer == null || peer.host == null) {
-                _uiState.value = PairingUiState.Failed("Could not find ${payload.responderDeviceId} on the local network")
+                failWith("Could not find ${payload.responderDeviceId} on the local network")
                 return@launch
             }
 
@@ -113,13 +113,28 @@ class PairingViewModel(
                 rosterGossipManager?.announceNewDevice()
                 _uiState.value = PairingUiState.Success(payload.responderDeviceId, payload.responderDeviceName)
             } else {
-                _uiState.value = PairingUiState.Failed("Handshake did not complete")
+                failWith("Handshake did not complete")
             }
         }
     }
 
     fun reset() {
+        failureClearJob?.cancel()
         _uiState.value = PairingUiState.Idle
+    }
+
+    private var failureClearJob: kotlinx.coroutines.Job? = null
+
+    /** Shows a failure, then returns to [PairingUiState.Idle] by itself after [ERROR_LIFETIME_MS]
+     *  so a stale error never lingers (the scanner re-arms when it sees Idle). */
+    private fun failWith(reason: String) {
+        val failed = PairingUiState.Failed(reason)
+        _uiState.value = failed
+        failureClearJob?.cancel()
+        failureClearJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(ERROR_LIFETIME_MS)
+            if (_uiState.value === failed) _uiState.value = PairingUiState.Idle
+        }
     }
 
     private suspend fun findPeer(responderDeviceId: String): DiscoveredPeer? {
@@ -143,6 +158,7 @@ class PairingViewModel(
     companion object {
         private const val DISCOVERY_TIMEOUT_MS = 15_000L
         private const val HANDSHAKE_TIMEOUT_MS = 15_000L
+        private const val ERROR_LIFETIME_MS = 10_000L
     }
 }
 

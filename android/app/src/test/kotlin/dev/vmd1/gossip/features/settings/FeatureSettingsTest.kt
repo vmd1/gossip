@@ -43,6 +43,8 @@ class FeatureSettingsTest {
         assertEquals(Feature.MEDIA, FeatureSettings.featureForMessageType("media.command"))
         assertEquals(Feature.LOCK_ON_LEAVE, FeatureSettings.featureForMessageType("lock_on_leave.config"))
         assertEquals(Feature.HOTSPOT, FeatureSettings.featureForMessageType("hotspot.state_update"))
+        assertEquals(Feature.FIND_DEVICE, FeatureSettings.featureForMessageType("device.ring"))
+        assertEquals(Feature.BATTERY, FeatureSettings.featureForMessageType("battery.update"))
         for (unowned in listOf("handshake.hello", "presence.heartbeat", "trust.roster_update", "screen.start", "screen.ready")) {
             assertNull(unowned, FeatureSettings.featureForMessageType(unowned))
         }
