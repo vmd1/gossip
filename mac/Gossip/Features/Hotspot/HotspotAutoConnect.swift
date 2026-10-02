@@ -90,7 +90,7 @@ final class HotspotAutoConnect: NSObject, CLLocationManagerDelegate {
 
     private func associate(ssid: String, passphrase: String, completion: @escaping (Bool) -> Void) {
         guard let interface = CWWiFiClient.shared().interface() else {
-            BLEProximityMonitor.debugLog("HotspotAutoConnect: no Wi-Fi interface available")
+            NSLog("Gossip: " + "HotspotAutoConnect: no Wi-Fi interface available")
             completion(false)
             return
         }
@@ -98,14 +98,14 @@ final class HotspotAutoConnect: NSObject, CLLocationManagerDelegate {
             do {
                 let scanResults = try interface.scanForNetworks(withSSID: ssid.data(using: .utf8))
                 guard let network = scanResults.first else {
-                    BLEProximityMonitor.debugLog("HotspotAutoConnect: scan for '\(ssid)' found no matching network")
+                    NSLog("Gossip: " + "HotspotAutoConnect: scan for '\(ssid)' found no matching network")
                     DispatchQueue.main.async { completion(false) }
                     return
                 }
                 try interface.associate(to: network, password: passphrase)
                 DispatchQueue.main.async { completion(true) }
             } catch {
-                BLEProximityMonitor.debugLog("HotspotAutoConnect: failed: \(error)")
+                NSLog("Gossip: " + "HotspotAutoConnect: failed: \(error)")
                 DispatchQueue.main.async { completion(false) }
             }
         }

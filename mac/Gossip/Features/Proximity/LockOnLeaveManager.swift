@@ -53,18 +53,14 @@ final class LockOnLeaveManager {
         previousNearbyDeviceIds = newValue
         // Local BLE trigger (not a message), so the transport-level feature gate can't cover it.
         guard featureSettings.isEnabled(.lockOnLeave) else { return }
-        BLEProximityMonitor.debugLog("LockOnLeaveManager: nearbyDeviceIds changed to \(newValue), justLeft=\(justLeft)")
 
         for deviceId in justLeft {
             let device = trustedDevicesStore.device(for: deviceId)
-            BLEProximityMonitor.debugLog("LockOnLeaveManager: \(deviceId) left; lockOnLeaveEnabled=\(String(describing: device?.lockOnLeaveEnabled))")
             guard device?.lockOnLeaveEnabled == true else { continue }
             if let last = lastFiredAt[deviceId], Date().timeIntervalSince(last) < Self.cooldown {
-                BLEProximityMonitor.debugLog("LockOnLeaveManager: \(deviceId) in cooldown, skipping")
                 continue
             }
             lastFiredAt[deviceId] = Date()
-            BLEProximityMonitor.debugLog("LockOnLeaveManager: calling lockScreen() for \(deviceId)")
             Self.lockScreen()
         }
     }
@@ -84,15 +80,14 @@ final class LockOnLeaveManager {
     private static func lockScreen() {
         typealias LockFunction = @convention(c) () -> Void
         guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/A/login", RTLD_NOW) else {
-            BLEProximityMonitor.debugLog("lockScreen: dlopen login.framework failed: \(dlerror().map { String(cString: $0) } ?? "unknown")")
+            NSLog("Gossip: " + "lockScreen: dlopen login.framework failed: \(dlerror().map { String(cString: $0) } ?? "unknown")")
             return
         }
         defer { dlclose(handle) }
         guard let sym = dlsym(handle, "SACLockScreenImmediate") else {
-            BLEProximityMonitor.debugLog("lockScreen: dlsym SACLockScreenImmediate failed")
+            NSLog("Gossip: " + "lockScreen: dlsym SACLockScreenImmediate failed")
             return
         }
-        BLEProximityMonitor.debugLog("lockScreen: calling SACLockScreenImmediate()")
         unsafeBitCast(sym, to: LockFunction.self)()
     }
 }

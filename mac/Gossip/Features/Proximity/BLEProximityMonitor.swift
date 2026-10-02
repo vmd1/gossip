@@ -81,29 +81,6 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
         var isInRange: Bool = false
     }
 
-    // TEMPORARY debug logging while diagnosing a live BLE-detection issue — NSLog/`log show`
-    // produced no output at all for this process, so this writes plain text directly to a
-    // file inside the sandbox container instead. Remove once the underlying issue is found.
-    private static let debugLogURL: URL = {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("ble-debug.log")
-    }()
-
-    static func debugLog(_ message: String) {
-        let line = "\(Date()) \(message)\n"
-        if let data = line.data(using: .utf8) {
-            if let handle = try? FileHandle(forWritingTo: debugLogURL) {
-                handle.seekToEndOfFile()
-                handle.write(data)
-                try? handle.close()
-            } else {
-                try? data.write(to: debugLogURL)
-            }
-        }
-    }
-
     init(trustedDevicesStore: TrustedDevicesStore) {
         self.trustedDevicesStore = trustedDevicesStore
         super.init()
@@ -136,7 +113,6 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        Self.debugLog("centralManagerDidUpdateState: \(central.state.rawValue)")
         guard central.state == .poweredOn else { return }
         // No service-UUID filter: the advertisement payload has no room for an
         // 18-byte 128-bit-UUID AD structure alongside the manufacturer data AD
@@ -156,21 +132,17 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
     ) {
         guard let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data else { return }
         guard manufacturerData.count >= 12 else {
-            Self.debugLog("didDiscover: manufacturerData too short (\(manufacturerData.count) bytes) rssi=\(RSSI)")
             return
         }
         let companyId = UInt16(manufacturerData[0]) | (UInt16(manufacturerData[1]) << 8)
         guard companyId == Self.manufacturerId,
               manufacturerData[2] == Self.magic[0], manufacturerData[3] == Self.magic[1] else {
-            Self.debugLog("didDiscover: companyId=\(String(format: "0x%04X", companyId)) magic mismatch rssi=\(RSSI)")
             return
         }
         let fingerprint = manufacturerData.subdata(in: 4..<12)
         guard let deviceId = fingerprintToDeviceId[fingerprint] else {
-            Self.debugLog("didDiscover: unrecognized fingerprint \(fingerprint.map { String(format: "%02x", $0) }.joined()) rssi=\(RSSI); known=\(fingerprintToDeviceId.keys.map { $0.map { String(format: "%02x", $0) }.joined() })")
             return
         }
-        Self.debugLog("didDiscover: MATCH deviceId=\(deviceId) rssi=\(RSSI)")
         // Byte 12 (optional — a peer on an older build simply won't have it, which
         // isn't a malformed advertisement, just an absent capability signal).
         if manufacturerData.count >= 13 {
@@ -208,7 +180,6 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
         for (deviceId, state) in states where state.isInRange {
             let elapsed = now.timeIntervalSince(state.lastSeenAt)
             guard elapsed > Self.lossTimeout else { continue }
-            Self.debugLog("checkForStaleDevices: marking \(deviceId) OUT OF RANGE (elapsed=\(elapsed)s)")
             states[deviceId]?.isInRange = false
             states[deviceId]?.consecutiveStrongHits = 0
             nearbyDeviceIds.remove(deviceId)
