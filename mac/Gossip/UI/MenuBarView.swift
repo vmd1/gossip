@@ -147,7 +147,6 @@ struct MenuBarView: View {
     /// are written to the BLE debug log.
     private func requestHotspot(for device: TrustedDevice, enable: Bool) {
         guard let peripheralId = bleProximityMonitor.peripheralIdentifierByDeviceId[device.deviceId] else {
-            BLEProximityMonitor.debugLog("requestHotspot: \(device.deviceName) is no longer nearby")
             return
         }
         let client = HotspotGattClient()
@@ -157,14 +156,14 @@ struct MenuBarView: View {
                 hotspotGattClients[device.deviceId] = nil
                 switch result {
                 case .failed(let reason):
-                    BLEProximityMonitor.debugLog("requestHotspot failed: \(reason)")
+                    NSLog("Gossip: " + "requestHotspot failed: \(reason)")
                 case .success(let enabled, let ssid, let passphrase):
                     hotspotOverrides[device.deviceId] = (enabled, Date())
                     guard enable, enabled, let ssid, let passphrase else { return }
                     let autoConnect = HotspotAutoConnect()
                     activeHotspotAutoConnect = autoConnect
                     autoConnect.connect(ssid: ssid, passphrase: passphrase) { connected in
-                        if !connected { BLEProximityMonitor.debugLog("requestHotspot: could not auto-connect to \(ssid)") }
+                        if !connected { NSLog("Gossip: " + "requestHotspot: could not auto-connect to \(ssid)") }
                     }
                 }
             }

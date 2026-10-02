@@ -109,7 +109,6 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
 
     private func settle(_ result: Result) {
         guard let completion else { return }
-        BLEProximityMonitor.debugLog("GattClient: settle \(result)")
         self.completion = nil
         timeoutWorkItem?.cancel()
         timeoutWorkItem = nil
@@ -135,7 +134,6 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        BLEProximityMonitor.debugLog("GattClient: didConnect \(peripheral.identifier)")
         peripheral.discoverServices([HotspotGattProtocol.serviceUUID])
     }
 
@@ -152,7 +150,6 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     // MARK: - CBPeripheralDelegate
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        BLEProximityMonitor.debugLog("GattClient: didDiscoverServices error=\(String(describing: error)) services=\(peripheral.services?.map { $0.uuid.uuidString } ?? [])")
         guard let service = peripheral.services?.first(where: { $0.uuid == HotspotGattProtocol.serviceUUID }) else {
             settle(.failed("Hotspot GATT service not found on this device"))
             return
@@ -164,11 +161,9 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        BLEProximityMonitor.debugLog("GattClient: didDiscoverCharacteristics error=\(String(describing: error)) chars=\(service.characteristics?.map { $0.uuid.uuidString } ?? []) pendingRequest=\(pendingRequest != nil)")
         let characteristics = service.characteristics ?? []
         if characteristics.isEmpty, !retriedUnfilteredDiscovery {
             retriedUnfilteredDiscovery = true
-            BLEProximityMonitor.debugLog("GattClient: empty characteristic list (likely a stale GATT cache) — retrying unfiltered")
             peripheral.discoverCharacteristics(nil, for: service)
             return
         }

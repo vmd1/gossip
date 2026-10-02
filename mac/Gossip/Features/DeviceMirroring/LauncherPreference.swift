@@ -25,7 +25,7 @@ enum LauncherSetup {
         configuration.activates = false
         configuration.addsToRecentItems = false
         NSWorkspace.shared.openApplication(at: embedded, configuration: configuration) { _, error in
-            if let error { BLEProximityMonitor.debugLog("couldn't start the Device Mirroring installer: \(error)") }
+            if let error { NSLog("Gossip: couldn't start the Device Mirroring installer: \(error)") }
         }
     }
 }
