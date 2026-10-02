@@ -1,0 +1,104 @@
+package dev.vmd1.gossip.features.universalcontrol
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class HidAndBackendTest {
+    @Test fun mouseReportLayout() {
+        assertArrayEquals(byteArrayOf(0x05, 0x0a, 0x00, 0xfb.toByte(), 0xff.toByte(), 1, 0xff.toByte()), HidReports.mouseReport(5, 10, -5, 1, -1))
+        assertEquals(7, HidReports.mouseReport(0, 0, 0).size)
+        // clamped, never wrapped
+        assertArrayEquals(byteArrayOf(0, 0xff.toByte(), 0x7f, 0x01, 0x80.toByte(), 127, 0x81.toByte()), HidReports.mouseReport(0, 99999, -99999, 500, -500))
+    }
+
+    @Test fun keyboardReportAndRollover() {
+        assertArrayEquals(byteArrayOf(2, 0, 4, 5, 0, 0, 0, 0), HidReports.keyboardReport(2, listOf(4, 5)))
+        assertEquals(6, HidReports.keyboardReport(0, (4..20).toList()).drop(2).count { it.toInt() != 0 })
+        assertArrayEquals(ByteArray(8), HidReports.keyboardReport(0, listOf(0xE0, 0x01))) // modifier usages / invalid never occupy slots
+    }
+
+    @Test fun scrcpyFraming() {
+        val create = HidReports.create(7, "ab", byteArrayOf(1, 2, 3), vendor = 0x18d1, product = 0x4e00)
+        assertArrayEquals(byteArrayOf(12, 0, 7, 0x18, 0xd1.toByte(), 0x4e, 0x07, 2, 'a'.code.toByte(), 'b'.code.toByte(), 0, 3, 1, 2, 3), create)
+        assertArrayEquals(byteArrayOf(13, 0, 7, 0, 2, 9, 9), HidReports.input(7, byteArrayOf(9, 9)))
+        assertArrayEquals(byteArrayOf(14, 0, 7), HidReports.destroy(7))
+        assertArrayEquals(byteArrayOf(1, 0, 0, 0, 2, 'h'.code.toByte(), 'i'.code.toByte()), HidReports.injectText("hi"))
+        val paste = HidReports.pasteText("é")
+        assertEquals(9, paste[0].toInt()); assertEquals(1, paste[9].toInt()); assertEquals(2, paste[13].toInt())
+    }
+
+    private class Recorder { val msgs = mutableListOf<ByteArray>(); fun type(i: Int) = msgs[i][0].toInt() }
+
+    private fun backend(r: Recorder) = UhidInputBackend({ r.msgs.add(it) }, sleep = {}, compensator = null)
+    private val display = ControlDisplayInfo(2000, 1200, 1, 0)
+
+    @Test fun inputIsIgnoredUntilEnteredAndEnterIsIdempotent() {
+        val r = Recorder(); val b = backend(r)
+        b.mouseMove(5, 5); b.key(4, true, 0); b.buttons(1)
+        assertTrue(r.msgs.isEmpty())
+        b.enter(ControlEdge.LEFT, 32768, display)
+        assertEquals(listOf(12, 12), r.msgs.take(2).map { it[0].toInt() }) // mouse + keyboard created
+        val afterFirst = r.msgs.size
+        b.enter(ControlEdge.LEFT, 32768, display)                          // re-enter: no second create
+        assertEquals(2, r.msgs.count { it[0].toInt() == 12 })
+        assertTrue(r.msgs.size > afterFirst)
+        // slam then walk to y = 0.5 * 1199
+        val moves = r.msgs.filter { it[0].toInt() == 13 }.map { it.drop(5).toByteArray() }
+        assertArrayEquals(HidReports.mouseReport(0, -32767, -32767), moves[0])
+        assertArrayEquals(HidReports.mouseReport(0, 0, 599), moves[1])
+    }
+
+    @Test fun leaveReleasesEverythingThenDestroysAndIsIdempotent() {
+        val r = Recorder(); val b = backend(r)
+        b.enter(ControlEdge.RIGHT, 0, display)
+        b.buttons(1); b.key(4, true, 2)
+        r.msgs.clear()
+        b.leave()
+        assertEquals(listOf(13, 13, 14, 14), r.msgs.map { it[0].toInt() })
+        assertArrayEquals(HidReports.mouseReport(0, 0, 0), r.msgs[0].drop(5).toByteArray())
+        assertArrayEquals(ByteArray(8), r.msgs[1].drop(5).toByteArray())
+        r.msgs.clear(); b.leave()
+        assertTrue(r.msgs.isEmpty())
+    }
+
+    @Test fun duplicateStateIsNotAnEvent() {
+        val r = Recorder(); val b = backend(r)
+        b.enter(ControlEdge.TOP, 0, display); r.msgs.clear()
+        b.buttons(1); b.buttons(1)
+        b.key(4, true, 0); b.key(4, true, 0)
+        assertEquals(2, r.msgs.size)
+        b.key(4, false, 0); b.key(4, false, 0)
+        assertEquals(3, r.msgs.size)
+    }
+
+    @Test fun scrollAccumulatesFractionsOfANotch() {
+        val r = Recorder(); val b = backend(r)
+        b.enter(ControlEdge.TOP, 0, display); r.msgs.clear()
+        b.scroll(0, 50); b.scroll(0, 50)
+        assertTrue(r.msgs.isEmpty())
+        b.scroll(0, 30)
+        assertEquals(1, r.msgs.size)
+        assertEquals(1, r.msgs[0][5 + 5].toInt()) // wheel byte
+        b.scroll(-240, 0)
+        assertEquals((-2).toByte(), r.msgs[1][5 + 6])
+    }
+
+    @Test fun textUsesInjectForAsciiAndClipboardPasteOtherwise() {
+        val r = Recorder(); val b = backend(r)
+        b.text("hello"); b.text("héllo")
+        assertEquals(listOf(1, 9), r.msgs.map { it[0].toInt() })
+    }
+
+    @Test fun compensatorLeavesSlowMotionAloneAndShrinksFastMotion() {
+        val c = PointerAccelCompensator()
+        var t = 0L
+        var out = 0
+        repeat(20) { out += c.compensate(t, 2, 0).first; t += 16_000_000L } // ~125 counts/s: unaccelerated
+        assertEquals(40, out)
+        c.reset(); out = 0
+        repeat(40) { out += c.compensate(t, 40, 0).first; t += 8_000_000L } // 5000 counts/s: scale 3
+        assertTrue("got $out", out in 500..700)
+    }
+}

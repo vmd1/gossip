@@ -48,6 +48,7 @@ class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
     lateinit var screenMirrorState: ScreenMirrorState
+    lateinit var controlSessionState: dev.vmd1.gossip.features.universalcontrol.ControlSessionState
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
@@ -81,6 +82,17 @@ class SyncForegroundService : Service() {
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
         )
         screenMirrorState.register(messageRouter)
+        controlSessionState = dev.vmd1.gossip.features.universalcontrol.ControlSessionState(
+            selfId = identity.deviceId,
+            scope = serviceScope,
+            shizukuReady = { shizukuManager?.state?.value == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED },
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
+            sessionFactory = { sessionId, secret, onEnded ->
+                dev.vmd1.gossip.features.universalcontrol.ControlBridge(applicationContext, sessionId, secret, onEnded)
+            },
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.UNIVERSAL_CONTROL) }
+        )
+        controlSessionState.register(messageRouter)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
