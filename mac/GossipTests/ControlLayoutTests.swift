@@ -99,6 +99,51 @@ final class ControlLayoutTests: XCTestCase {
         XCTAssertEqual(reopened.loadPlacements(), l.devices)
         XCTAssertEqual(reopened.loadSizes()["a"], CGSize(width: 2000, height: 1200))
     }
+
+    // MARK: Placement forgiveness and resize
+
+    func testCaptureDistanceAttachesANearMissInsteadOfRejecting() {
+        var l = layout()
+        // 150 points off the right edge: rejected by default, attached flush when capture is allowed.
+        XCTAssertNil(layout().resolveDrop(deviceId: "t", size: tabletSize, proposedOrigin: CGPoint(x: 1590, y: 100)))
+        let o = l.place(deviceId: "t", size: tabletSize, proposedOrigin: CGPoint(x: 1590, y: 100), captureDistance: 200)
+        XCTAssertEqual(o, CGPoint(x: 1440, y: 100))
+        XCTAssertNil(layout().resolveDrop(deviceId: "t", size: tabletSize, proposedOrigin: CGPoint(x: 3000, y: 100), captureDistance: 200), "too far even for capture")
+    }
+
+    func testLargerSnapDistanceSnapsFromFurther() {
+        var l = layout()
+        XCTAssertEqual(l.place(deviceId: "t", size: tabletSize, proposedOrigin: CGPoint(x: 1480, y: 300), snapDistance: 60), CGPoint(x: 1440, y: 300))
+    }
+
+    func testResizeToPortraitKeepsDeviceAttachedOnEachSide() {
+        // Placed with the default landscape size, then the phone reports its real portrait size.
+        let portrait = CGSize(width: 400, height: 900)
+        for (origin, name) in [(CGPoint(x: 1440, y: 0), "right"), (CGPoint(x: -800, y: 0), "left"),
+                               (CGPoint(x: 100, y: 900), "bottom"), (CGPoint(x: 100, y: -500), "top")] {
+            var l = layout()
+            XCTAssertNotNil(l.place(deviceId: "p", size: tabletSize, proposedOrigin: origin), name)
+            let shelved = l.resize(deviceId: "p", to: portrait)
+            XCTAssertTrue(shelved.isEmpty, "\(name): shelved \(shelved)")
+            XCTAssertTrue(l.isPlaced("p"), name)
+            XCTAssertEqual(l.devices["p"]?.rect.size, portrait, name)
+        }
+    }
+
+    func testResizeToSameSizeIsANoOp() {
+        var l = layout()
+        l.place(deviceId: "p", size: tabletSize, proposedOrigin: CGPoint(x: 1440, y: 0))
+        let before = l
+        XCTAssertTrue(l.resize(deviceId: "p", to: tabletSize).isEmpty)
+        XCTAssertEqual(l, before)
+    }
+
+    func testParseDisplaySize() {
+        XCTAssertEqual(UniversalControlManager.parseDisplaySize(.object(["width": .number(1080), "height": .number(2400)]))?.height, 2400)
+        XCTAssertNil(UniversalControlManager.parseDisplaySize(.object(["width": .number(0), "height": .number(2400)])))
+        XCTAssertNil(UniversalControlManager.parseDisplaySize(.object(["width": .number(99999), "height": .number(10)])))
+        XCTAssertNil(UniversalControlManager.parseDisplaySize(.object([:])))
+    }
 }
 
 final class HIDKeyTableTests: XCTestCase {

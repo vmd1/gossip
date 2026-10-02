@@ -10,6 +10,7 @@ struct ControlLayoutView: View {
     @ObservedObject var trustedDevices: TrustedDevicesStore
     @ObservedObject var transport: TransportManager
     @ObservedObject var battery: BatterySyncManager
+    @ObservedObject private var coordinator = UniversalControlCoordinator.shared
 
     private struct Drag: Equatable {
         var deviceId: String
@@ -25,6 +26,7 @@ struct ControlLayoutView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let problem = captureProblem { banner(problem) }
             canvas
             Divider()
             shelf
@@ -32,6 +34,29 @@ struct ControlLayoutView: View {
         .coordinateSpace(name: "root")
         .overlay(alignment: .topLeading) { ghost }
         .frame(minWidth: 560, minHeight: 420)
+    }
+
+    // MARK: Permissions
+
+    /// Why the Mac can't capture the mouse right now, if it can't — the layout can look fully "Ready" while
+    /// the event tap is down, and then nothing happens at the edge.
+    private var captureProblem: String? {
+        guard FeatureSettings.shared.isEnabled(.universalControl) else { return "Universal Control is turned off in Settings." }
+        if !coordinator.accessibilityGranted { return "Accessibility access is needed to capture the mouse and keyboard. Rebuilding the app resets it." }
+        if !coordinator.inputMonitoringGranted { return "Input Monitoring access is needed to capture the keyboard." }
+        if !coordinator.tapRunning { return "The input capture isn't running yet." }
+        return nil
+    }
+
+    private func banner(_ text: String) -> some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+            Text(text).font(.callout)
+            Spacer()
+            Button("Open Settings") { ControlEventTap.openAccessibilitySettings() }
+        }
+        .padding(10)
+        .background(Color.yellow.opacity(0.15))
     }
 
     // MARK: Canvas
@@ -132,7 +157,7 @@ struct ControlLayoutView: View {
     }
 
     private func shelfItem(_ d: TrustedDevice) -> some View {
-        let known = manager.knownSizes[d.deviceId] ?? CGSize(width: 2000, height: 1200)
+        let known = manager.knownSizes[d.deviceId] ?? ControlLayout.defaultPixelSize(for: d.deviceType)
         let layoutSize = ControlLayout.deviceSize(pixelWidth: Int(known.width), pixelHeight: Int(known.height))
         let t = transform(in: canvasFrame.size == .zero ? CGSize(width: 700, height: 400) : canvasFrame.size)
         let size = CGSize(width: layoutSize.width * t.scale, height: layoutSize.height * t.scale)
@@ -182,7 +207,12 @@ struct ControlLayoutView: View {
         let inCanvas = CGPoint(x: tl.x - canvasFrame.minX, y: tl.y - canvasFrame.minY)
         let layoutOrigin = t.toLayout(inCanvas)
         // An illegal spot leaves the device where it was (or on the shelf).
-        withAnimation(.spring(duration: 0.25)) { _ = manager.place(deviceId: deviceId, origin: layoutOrigin) }
+        // Snap / capture distances are in canvas pixels (the canvas is scaled down), converted to layout points.
+        let fallback = device(deviceId).map { ControlLayout.defaultPixelSize(for: $0.deviceType) } ?? CGSize(width: 2000, height: 1200)
+        withAnimation(.spring(duration: 0.25)) {
+            _ = manager.place(deviceId: deviceId, origin: layoutOrigin, fallbackPixelSize: fallback,
+                              snapDistance: 16 / t.scale, captureDistance: 120 / t.scale)
+        }
     }
 
     @ViewBuilder

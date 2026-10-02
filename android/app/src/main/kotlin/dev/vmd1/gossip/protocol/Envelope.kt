@@ -93,6 +93,7 @@ object MessageType {
     const val DEVICE_RING = "device.ring"
     const val DEVICE_RING_STATE = "device.ring_state"
     const val BATTERY_UPDATE = "battery.update"
+    const val DISPLAY_INFO = "display.info"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */

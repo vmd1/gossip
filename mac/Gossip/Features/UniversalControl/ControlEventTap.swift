@@ -41,9 +41,9 @@ final class ControlEventTap {
 
     @discardableResult
     func start() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard tap == nil else { return true }
-        guard Self.accessibilityGranted else { return false }
+        lock.lock()
+        guard tap == nil else { lock.unlock(); return true }
+        guard Self.accessibilityGranted else { lock.unlock(); return false }
 
         let types: [CGEventType] = [
             .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
@@ -58,7 +58,7 @@ final class ControlEventTap {
         guard let port = CGEvent.tapCreate(
             tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
             eventsOfInterest: mask, callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { return false }
+        ) else { lock.unlock(); return false }
         tap = port
 
         let ready = DispatchSemaphore(value: 0)
@@ -76,6 +76,8 @@ final class ControlEventTap {
         t.qualityOfService = .userInteractive
         thread = t
         t.start()
+        // Must not wait while holding `lock`: the tap thread takes it to publish its run loop before signalling.
+        lock.unlock()
         ready.wait()
         return true
     }

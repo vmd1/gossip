@@ -40,6 +40,8 @@ final class UniversalControlCoordinator: ObservableObject {
 
         transport.router.register(prefix: "control.") { [weak manager] envelope in manager?.handleMesh(envelope) }
 
+        transport.router.register(prefix: "display.info") { [weak manager] envelope in manager?.handleDisplayInfo(envelope) }
+
         tap.handler = { [weak manager] event in manager?.handle(event) ?? .pass }
 
         let nc = NotificationCenter.default

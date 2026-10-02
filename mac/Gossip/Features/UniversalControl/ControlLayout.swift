@@ -69,6 +69,11 @@ struct ControlLayout: Equatable {
 
     func isPlaced(_ deviceId: String) -> Bool { devices[deviceId] != nil }
 
+    /// Pixel size to draw a device with before it has ever reported its real one.
+    static func defaultPixelSize(for type: DeviceType) -> CGSize {
+        type == .androidPhone ? CGSize(width: 1080, height: 2400) : CGSize(width: 2000, height: 1200)
+    }
+
     static func deviceSize(pixelWidth: Int, pixelHeight: Int, pixelsPerPoint: Double = defaultPixelsPerPoint) -> CGSize {
         CGSize(width: Double(pixelWidth) / pixelsPerPoint, height: Double(pixelHeight) / pixelsPerPoint)
     }
@@ -112,7 +117,13 @@ struct ControlLayout: Equatable {
 
     /// Resolves a drag: returns the snapped origin for a device of `size` dropped near `proposed`, or nil if
     /// there is no legal spot (overlap, or not touching anything). `deviceId`'s own old placement is ignored.
-    func resolveDrop(deviceId: String, size: CGSize, proposedOrigin: CGPoint) -> CGPoint? {
+    ///
+    /// `snapDistance` is how close an edge must be to snap (the canvas passes a screen-pixel distance converted
+    /// to layout points, since the canvas is scaled down). `captureDistance`, when positive, makes a drop with no
+    /// legal spot fall back to the nearest legal flush position within that many layout points, so a drop that
+    /// is merely *near* an edge attaches instead of being rejected.
+    func resolveDrop(deviceId: String, size: CGSize, proposedOrigin: CGPoint,
+                     snapDistance: Double = ControlLayout.snapDistance, captureDistance: Double = 0) -> CGPoint? {
         let others = screens.filter { $0.id != .device(deviceId) }.map { $0.rect }
         guard !others.isEmpty else { return nil }
         var rect = CGRect(origin: proposedOrigin, size: size)
@@ -121,7 +132,7 @@ struct ControlLayout: Equatable {
         // along the shared edge).
         var bestDX: Double? = nil, bestDY: Double? = nil
         func consider(_ delta: Double, into best: inout Double?) {
-            if abs(delta) <= Self.snapDistance, best == nil || abs(delta) < abs(best!) { best = delta }
+            if abs(delta) <= snapDistance, best == nil || abs(delta) < abs(best!) { best = delta }
         }
         for o in others {
             // Horizontal touching: my left to their right, my right to their left (only if rows overlap-ish).
@@ -147,7 +158,30 @@ struct ControlLayout: Equatable {
             rect.origin = c
             if isLegal(rect, against: others) { return c }
         }
-        return nil
+        guard captureDistance > 0 else { return nil }
+        return nearestLegalFlushOrigin(size: size, near: proposedOrigin, others: others, within: captureDistance)
+    }
+
+    /// The legal origin flush against some edge of `others` that is closest to `proposed`, if within `limit`.
+    private func nearestLegalFlushOrigin(size: CGSize, near proposed: CGPoint, others: [CGRect], within limit: Double) -> CGPoint? {
+        var best: (point: CGPoint, distance: Double)?
+        for o in others {
+            // Keep at least a sliver of shared edge so the screens are properly connected.
+            let minX = o.minX - size.width + min(40, o.width / 2, size.width / 2)
+            let maxX = o.maxX - min(40, o.width / 2, size.width / 2)
+            let minY = o.minY - size.height + min(40, o.height / 2, size.height / 2)
+            let maxY = o.maxY - min(40, o.height / 2, size.height / 2)
+            let clampedX = min(max(proposed.x, minX), maxX), clampedY = min(max(proposed.y, minY), maxY)
+            let candidates = [
+                CGPoint(x: o.maxX, y: clampedY), CGPoint(x: o.minX - size.width, y: clampedY),
+                CGPoint(x: clampedX, y: o.maxY), CGPoint(x: clampedX, y: o.minY - size.height),
+            ]
+            for c in candidates where isLegal(CGRect(origin: c, size: size), against: others) {
+                let d = hypot(c.x - proposed.x, c.y - proposed.y)
+                if d <= limit, best == nil || d < best!.distance { best = (c, d) }
+            }
+        }
+        return best?.point
     }
 
     /// No overlap with any of `others`, and shares a positive-length edge segment with at least one.
@@ -171,17 +205,35 @@ struct ControlLayout: Equatable {
 
     /// Places (or moves) a device after `resolveDrop`. Returns the final origin, or nil if illegal (unchanged).
     @discardableResult
-    mutating func place(deviceId: String, size: CGSize, proposedOrigin: CGPoint) -> CGPoint? {
-        guard let origin = resolveDrop(deviceId: deviceId, size: size, proposedOrigin: proposedOrigin) else { return nil }
+    mutating func place(deviceId: String, size: CGSize, proposedOrigin: CGPoint,
+                        snapDistance: Double = ControlLayout.snapDistance, captureDistance: Double = 0) -> CGPoint? {
+        guard let origin = resolveDrop(deviceId: deviceId, size: size, proposedOrigin: proposedOrigin,
+                                       snapDistance: snapDistance, captureDistance: captureDistance) else { return nil }
         devices[deviceId] = Placement(rect: CGRect(origin: origin, size: size))
         return origin
     }
 
-    /// Re-sizes a placed device (it reported a new size / rotated), keeping its top-left. If that makes the
-    /// layout illegal the device is shelved. Returns the ids removed from the layout.
+    /// Re-sizes a placed device (it reported a new size / rotated). The device keeps whichever corner lets it
+    /// stay legal — top-left first, then the others — so a phone placed with a default size and then reporting
+    /// its real (portrait) size stays attached to the same edge instead of being shelved. Only if no corner
+    /// works is the new size applied as-is and the layout normalised (which may shelve it). Returns the ids
+    /// removed from the layout.
     mutating func resize(deviceId: String, to size: CGSize) -> [String] {
-        guard var p = devices[deviceId] else { return [] }
-        p.width = size.width; p.height = size.height
+        guard let old = devices[deviceId] else { return [] }
+        if abs(old.width - size.width) < 0.01 && abs(old.height - size.height) < 0.01 { return [] }
+        let others = screens.filter { $0.id != .device(deviceId) }.map { $0.rect }
+        let r = old.rect
+        let origins = [
+            r.origin,                                                                 // keep top-left
+            CGPoint(x: r.maxX - size.width, y: r.minY),                               // keep top-right
+            CGPoint(x: r.minX, y: r.maxY - size.height),                              // keep bottom-left
+            CGPoint(x: r.maxX - size.width, y: r.maxY - size.height),                 // keep bottom-right
+        ]
+        for o in origins where isLegal(CGRect(origin: o, size: size), against: others) {
+            devices[deviceId] = Placement(rect: CGRect(origin: o, size: size))
+            return normalize()
+        }
+        var p = old; p.width = size.width; p.height = size.height
         devices[deviceId] = p
         return normalize()
     }

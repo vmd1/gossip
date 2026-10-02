@@ -191,14 +191,23 @@ final class UniversalControlManager: ObservableObject {
     }
 
     private func applyDisplayInfo(_ id: String, _ info: ControlDisplayInfo) {
-        let size = CGSize(width: info.width, height: info.height)
-        knownSizes[id] = size
-        store?.saveSizes(knownSizes)
+        applyAdvertisedSize(deviceId: id, width: info.width, height: info.height)
+    }
+
+    /// Records a device's real display size, from a live session or a `display.info` message (which arrives
+    /// without any session, so cards are right before the first connect). A repeat is a no-op.
+    func applyAdvertisedSize(deviceId id: String, width: Int, height: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard width > 0, height > 0 else { return }
+        let size = CGSize(width: width, height: height)
+        if knownSizes[id] != size {
+            knownSizes[id] = size
+            store?.saveSizes(knownSizes)
+        }
         guard layout.isPlaced(id) else { return }
-        let target = ControlLayout.deviceSize(pixelWidth: info.width, pixelHeight: info.height)
         var updated = layout
-        let shelved = updated.resize(deviceId: id, to: target)
-        commit(updated, shelved: shelved)
+        let shelved = updated.resize(deviceId: id, to: ControlLayout.deviceSize(pixelWidth: width, pixelHeight: height))
+        if updated != layout { commit(updated, shelved: shelved) }
     }
 
     // MARK: Layout editing (main thread)
@@ -211,11 +220,14 @@ final class UniversalControlManager: ObservableObject {
 
     /// Drops `deviceId` into the layout at `origin` (snapped). Returns false if there is no legal spot.
     @discardableResult
-    func place(deviceId: String, origin: CGPoint) -> Bool {
+    func place(deviceId: String, origin: CGPoint, fallbackPixelSize: CGSize = CGSize(width: 2000, height: 1200),
+               snapDistance: Double = ControlLayout.snapDistance, captureDistance: Double = 0) -> Bool {
         var updated = layout
-        let size = ControlLayout.deviceSize(pixelWidth: Int(knownSizes[deviceId]?.width ?? 2000), pixelHeight: Int(knownSizes[deviceId]?.height ?? 1200))
+        let pixels = knownSizes[deviceId] ?? fallbackPixelSize
+        let size = ControlLayout.deviceSize(pixelWidth: Int(pixels.width), pixelHeight: Int(pixels.height))
         let current = layout.devices[deviceId].map { CGSize(width: $0.width, height: $0.height) } ?? size
-        guard updated.place(deviceId: deviceId, size: current, proposedOrigin: origin) != nil else { return false }
+        guard updated.place(deviceId: deviceId, size: current, proposedOrigin: origin,
+                            snapDistance: snapDistance, captureDistance: captureDistance) != nil else { return false }
         commit(updated, shelved: [])
         return true
     }
@@ -374,6 +386,19 @@ final class UniversalControlManager: ObservableObject {
     }
 
     // MARK: Mesh messages
+
+    /// `display.info`: a device's real display size, sent without any control session. Idempotent.
+    func handleDisplayInfo(_ envelope: Envelope) {
+        guard let size = Self.parseDisplaySize(envelope.payload) else { return }
+        let id = envelope.senderId
+        DispatchQueue.main.async { [weak self] in self?.applyAdvertisedSize(deviceId: id, width: size.width, height: size.height) }
+    }
+
+    static func parseDisplaySize(_ payload: JSONValue) -> (width: Int, height: Int)? {
+        guard let w = payload["width"]?.numberValue, let h = payload["height"]?.numberValue,
+              w >= 1, h >= 1, w <= 20_000, h <= 20_000 else { return nil }
+        return (Int(w), Int(h))
+    }
 
     func handleMesh(_ envelope: Envelope) {
         DispatchQueue.main.async { [weak self] in

@@ -60,6 +60,7 @@ class SyncForegroundService : Service() {
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
     private lateinit var ringManager: dev.vmd1.gossip.features.find.RingManager
+    private lateinit var displayInfoSync: dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync
     private lateinit var batterySyncManager: dev.vmd1.gossip.features.battery.BatterySyncManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -247,6 +248,15 @@ class SyncForegroundService : Service() {
         )
         batterySyncManager.start()
 
+        // Display size, so the Mac's Universal Control layout draws this device at its real shape
+        // before any session exists. Reconciled on every new peer + the 60s loop below.
+        displayInfoSync = dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync(
+            deviceId = identity.deviceId,
+            send = { envelope -> transportManager.send(envelope) },
+            scope = serviceScope,
+            readSize = { dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync.readFromSystem(applicationContext) }
+        )
+
         // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
         // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
         registerReceiver(
@@ -433,6 +443,7 @@ class SyncForegroundService : Service() {
                 // Same reasoning for battery.update: a reconnecting peer shouldn't wait
                 // for the next 1% level change to learn this device's battery.
                 batterySyncManager.reportInitialSyncState()
+                displayInfoSync.resync()
             }
             .launchIn(serviceScope)
 
@@ -453,6 +464,7 @@ class SyncForegroundService : Service() {
                 delay(DND_RESYNC_INTERVAL_MS)
                 if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
                     batterySyncManager.periodicResync()
+                    displayInfoSync.resync()
                 }
             }
         }
