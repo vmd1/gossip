@@ -49,19 +49,30 @@ private struct DeviceSettingsContentView: View {
     var onDone: () -> Void
 
     @State private var showForgetConfirmation = false
+    @State private var fallbackText: String
 
     init(device: TrustedDevice, trustedDevicesStore: TrustedDevicesStore, onForget: @escaping () -> Void, onDone: @escaping () -> Void) {
         self.device = device
+        _fallbackText = State(initialValue: device.fallbackHost ?? "")
         self.trustedDevicesStore = trustedDevicesStore
         self.onForget = onForget
         self.onDone = onDone
+    }
+
+    /// Saves the typed address if it differs from what's stored (a no-op otherwise, so repeated
+    /// commits don't rewrite the store or republish).
+    private func saveFallbackHost() {
+        let trimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = trustedDevicesStore.device(for: device.deviceId)?.fallbackHost ?? ""
+        guard trimmed != stored else { return }
+        trustedDevicesStore.setFallbackHost(deviceId: device.deviceId, fallbackHost: trimmed)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Fallback IP (e.g. Tailscale)")
                 .font(.headline)
-            FallbackHostField(device: device, trustedDevicesStore: trustedDevicesStore)
+            FallbackHostField(text: $fallbackText, onCommit: saveFallbackHost)
 
             Divider()
 
@@ -73,12 +84,13 @@ private struct DeviceSettingsContentView: View {
 
             HStack {
                 Spacer()
-                Button("Done") { onDone() }
+                Button("Done") { saveFallbackHost(); onDone() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
         .frame(width: 340, height: 200)
+        .onDisappear { saveFallbackHost() }
         .confirmationDialog(
             "Forget \(device.deviceName)?",
             isPresented: $showForgetConfirmation,
