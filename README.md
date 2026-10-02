@@ -28,6 +28,11 @@ Prebuilt binaries are attached to every [GitHub Release](https://github.com/vmd1
   "install unknown apps" for whichever app you downloaded it with). It's debug-signed, not a Play
   Store build, so Android will warn about an unverified app — expected for a side-loaded build.
 
+The first time Gossip runs from `/Applications` (or `~/Applications`) it also adds a small **Device Mirroring**
+app next to itself, so you can open the list of paired phones and tablets and start mirroring from Spotlight or
+Launchpad. It ships inside `Gossip.app`, so there is nothing extra to download; turn it off under Gossip's
+Settings → Apps (deleting the app from Applications removes it).
+
 To pair the two: open Gossip on the Mac, click the menu bar icon, and choose **Pair New Device…**
 to show a QR code. On Android, tap **Pair New Device** and scan it. Once paired, either device can
 also generate its own QR (**Show QR to Pair**, Android) for pairing directly with another Android

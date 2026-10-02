@@ -264,6 +264,8 @@ class MainActivity : ComponentActivity() {
                         bleHotspotOnStatesProvider = { boundService?.bleProximityMonitor()?.hotspotOnByDeviceId },
                         onRequestHotspot = { deviceId, enable -> requestHotspot(deviceId, enable) },
                         hotspotOverrides = hotspotOverrides,
+                        directDeviceIdsProvider = { boundService?.transportManager()?.connectedDeviceIds },
+                        meshDeviceIdsProvider = { boundService?.transportManager()?.meshReachableDeviceIds },
                         batteryStatesProvider = { boundService?.batterySyncManager()?.batteryBySenderId },
                         ringingPeersProvider = { boundService?.ringManager()?.ringingPeers },
                         onToggleRing = { deviceId -> boundService?.ringManager()?.toggleRing(deviceId) }
@@ -420,6 +422,8 @@ fun ConnectHomeScreen(
     bleHotspotOnStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>>? = { null },
     onRequestHotspot: (deviceId: String, enable: Boolean) -> Unit = { _, _ -> },
     hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
+    directDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    meshDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
     batteryStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.battery.BatteryState>>? = { null },
     ringingPeersProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
     onToggleRing: (deviceId: String) -> Unit = {}
@@ -636,6 +640,8 @@ fun ConnectHomeScreen(
             val hotspotStates by (hotspotStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.hotspot.HotspotState>()) })
             val bleHotspotOnStates by (bleHotspotOnStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, Boolean>()) })
             val ringingPeers by (ringingPeersProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val directDeviceIds by (directDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val meshDeviceIds by (meshDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val batteryStates by (batteryStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.battery.BatteryState>()) })
 
             PairedDevicesScreen(
@@ -647,6 +653,8 @@ fun ConnectHomeScreen(
                 bleHotspotOnStates = bleHotspotOnStates,
                 onRequestHotspot = onRequestHotspot,
                 hotspotOverrides = hotspotOverrides,
+                directDeviceIds = directDeviceIds,
+                meshDeviceIds = meshDeviceIds,
                 batteryStates = batteryStates,
                 ringingPeers = ringingPeers,
                 onToggleRing = onToggleRing,

@@ -18,6 +18,7 @@ import dev.vmd1.gossip.protocol.MessageType
 import dev.vmd1.gossip.protocol.detectDeviceType
 import dev.vmd1.gossip.service.SyncForegroundService
 import dev.vmd1.gossip.transport.EnvelopeHandler
+import dev.vmd1.gossip.transport.MessageRouter
 import dev.vmd1.gossip.transport.TransportManagerHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,8 +59,6 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     private val replyTargets = ConcurrentHashMap<String, ReplyTarget>()
     private var scope: CoroutineScope? = null
-    private var replyHandler: EnvelopeHandler? = null
-    private var dismissHandler: EnvelopeHandler? = null
 
     /** Bounded, size-capped cache of recently-handled `notification.reply` [NotificationReplyPayload.attemptId]s.
      *  A duplicate delivery (retry, relay race, mesh dedupe-cache eviction — see
@@ -110,13 +109,34 @@ class NotificationListenerImpl : NotificationListenerService() {
         val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = serviceScope
 
-        val handler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
-        replyHandler = handler
-        TransportManagerHolder.instance?.messageRouter?.register(MessageType.NOTIFICATION_REPLY, handler)
+        active = this
+        ensureHandlersRegistered()
+    }
 
-        val dismiss = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
-        dismissHandler = dismiss
-        TransportManagerHolder.instance?.messageRouter?.register(MessageType.NOTIFICATION_DISMISS, dismiss)
+    private val replyEnvelopeHandler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
+    private val dismissEnvelopeHandler = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
+    private var registeredRouter: MessageRouter? = null
+
+    /**
+     * Registers the `notification.reply` / `notification.dismiss` handlers on the live router. The
+     * system binds this listener independently of [SyncForegroundService] (e.g. right after the app
+     * process restarts), so [TransportManagerHolder.instance] can still be null when
+     * [onListenerConnected] runs — previously the handlers were then silently never registered, and
+     * dismissing a mirrored notification on the Mac did nothing on the phone. This is idempotent and
+     * is retried when the service publishes its transport ([SyncForegroundService]) and on every
+     * notification event, so the handlers always end up registered on the *current* router.
+     */
+    @Synchronized
+    fun ensureHandlersRegistered() {
+        val router = TransportManagerHolder.instance?.messageRouter ?: return
+        if (registeredRouter === router) return
+        registeredRouter?.let { old ->
+            old.unregister(replyEnvelopeHandler)
+            old.unregister(dismissEnvelopeHandler)
+        }
+        router.register(MessageType.NOTIFICATION_REPLY, replyEnvelopeHandler)
+        router.register(MessageType.NOTIFICATION_DISMISS, dismissEnvelopeHandler)
+        registeredRouter = router
     }
 
     override fun onListenerDisconnected() {
@@ -125,10 +145,12 @@ class NotificationListenerImpl : NotificationListenerService() {
     }
 
     private fun tearDown() {
-        replyHandler?.let { TransportManagerHolder.instance?.messageRouter?.unregister(it) }
-        replyHandler = null
-        dismissHandler?.let { TransportManagerHolder.instance?.messageRouter?.unregister(it) }
-        dismissHandler = null
+        registeredRouter?.let { router ->
+            router.unregister(replyEnvelopeHandler)
+            router.unregister(dismissEnvelopeHandler)
+        }
+        registeredRouter = null
+        if (active === this) active = null
         scope?.cancel()
         scope = null
         replyTargets.clear()
@@ -137,6 +159,7 @@ class NotificationListenerImpl : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
         if (!isPhone) return
+        ensureHandlersRegistered()
         // Settings → Notifications → Apps: the user can switch individual apps off.
         if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return
         // Never mirror our own persistent "Gossip is running" foreground-service
@@ -306,4 +329,9 @@ class NotificationListenerImpl : NotificationListenerService() {
     }
 
     private fun deviceId(): String = TransportManagerHolder.instance?.identityKeyStore?.deviceId.orEmpty()
+
+    companion object {
+        /** The connected listener instance, so [SyncForegroundService] can nudge it once the transport exists. */
+        @Volatile var active: NotificationListenerImpl? = null
+    }
 }

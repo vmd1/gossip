@@ -20,6 +20,15 @@ targets:
         excludes:
           - "Resources/Info.plist"
           - "Resources/Gossip.entitlements"
+      - path: Shared
+    dependencies:
+      # The "Device Mirroring" launcher rides inside Gossip.app (Contents/SharedSupport) and is copied
+      # out next to it on first run — see LauncherInstaller.
+      - target: DeviceMirroring
+        embed: true
+        codeSign: true
+        copy:
+          destination: sharedSupport
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vmd1.gossip.Gossip
@@ -31,6 +40,25 @@ targets:
         ENABLE_PREVIEWS: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+  DeviceMirroring:
+    type: application
+    platform: macOS
+    sources:
+      - path: DeviceMirroringLauncher
+        excludes:
+          - "Info.plist"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vmd1.gossip.DeviceMirroring
+        PRODUCT_NAME: Device Mirroring
+        INFOPLIST_FILE: DeviceMirroringLauncher/Info.plist
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
 

@@ -37,6 +37,24 @@ final class TransportManager: ObservableObject {
     /// existing `.sink`s that just want to know "connected to anything or not".
     @Published private(set) var connectedDeviceIds: Set<String> = []
 
+    /// Devices we have no direct connection to but heard from recently via the mesh
+    /// (`DeviceConnectivity.meshTTL`). Main thread. Re-evaluated every 15s and on connection changes.
+    @Published private(set) var meshReachableDeviceIds: Set<String> = []
+    private var lastHeard: [String: Date] = [:]
+    private var meshExpiryTimer: Timer?
+
+    private func noteHeard(from senderId: String) {
+        lastHeard[senderId] = Date()
+        refreshMeshReachable()
+    }
+
+    private func refreshMeshReachable() {
+        let reachable = DeviceConnectivity.meshReachable(
+            lastHeard: lastHeard, directIds: connectedDeviceIds, selfId: identity.deviceId, now: Date()
+        )
+        if reachable != meshReachableDeviceIds { meshReachableDeviceIds = reachable }
+    }
+
     /// Fired for every successfully decoded, post-handshake envelope this
     /// device is the intended recipient of (directly addressed, or broadcast).
     /// Not fired for envelopes merely being relayed through this device. For an
@@ -210,6 +228,11 @@ final class TransportManager: ObservableObject {
             }
         }
         discovery.startBrowsing()
+
+        meshExpiryTimer?.invalidate()
+        meshExpiryTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.refreshMeshReachable()
+        }
 
         // Self-healing redial: a peer that drops while its Bonjour advertisement stays visible produces
         // no new browse result, so nothing would ever dial it again. Re-offer the visible peers
@@ -642,6 +665,11 @@ final class TransportManager: ObservableObject {
     /// downstream hop's own "next frame is raw" expectation if some other
     /// message interleaved in between.
     private func handleReceivedEnvelope(_ envelope: Envelope, arrivedFrom: String) {
+        // Any message from a device — even one relayed through another — proves it is reachable.
+        if envelope.senderId != identity.deviceId {
+            let sender = envelope.senderId
+            DispatchQueue.main.async { [weak self] in self?.noteHeard(from: sender) }
+        }
         guard recordSeen(envelope.id) else {
             // Already processed/forwarded this one — but if it carries a raw
             // follow-up, that frame is still physically coming next on this
@@ -920,6 +948,7 @@ final class TransportManager: ObservableObject {
             guard let self else { return }
             self.connectedDeviceIds = ids
             self.connectionState = newState
+            self.refreshMeshReachable()
         }
     }
 

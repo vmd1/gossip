@@ -96,6 +96,9 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity
         )
         TransportManagerHolder.instance = transportManager
+        // The notification listener may have connected before the transport existed; let it register
+        // its reply/dismiss handlers now.
+        dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.ensureHandlersRegistered()
         shizukuManager = dev.vmd1.gossip.features.hotspot.ShizukuManager(applicationContext).also { it.start() }
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,

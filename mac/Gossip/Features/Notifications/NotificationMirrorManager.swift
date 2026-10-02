@@ -141,7 +141,8 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
                 if let error {
                     NSLog("Gossip: failed to post mirrored notification: \(error)")
                 } else {
-                    self?.trackedIdentifiers.insert(request.identifier)
+                    // `trackedIdentifiers` is read by the dismiss poller on main; mutate it there too.
+                    DispatchQueue.main.async { self?.trackedIdentifiers.insert(request.identifier) }
                 }
             }
         }
@@ -153,7 +154,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             return
         }
         let identifier = localIdentifier(for: removed.id, sourceDeviceId: envelope.senderId)
-        trackedIdentifiers.remove(identifier)
+        DispatchQueue.main.async { [weak self] in self?.trackedIdentifiers.remove(identifier) }
         notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
     }
 
