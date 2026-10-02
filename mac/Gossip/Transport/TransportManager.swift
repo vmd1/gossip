@@ -127,6 +127,13 @@ final class TransportManager: ObservableObject {
         /// heartbeats) — see `startHeartbeatMonitoring`'s doc for why this exists.
         var lastReceivedAt: Date = .distantPast
         var heartbeatTimer: Timer?
+        /// Transport frames received while the handshake is finished but the peer is
+        /// still awaiting the user's trust confirmation (so `deviceId` is nil). The
+        /// initiator treats the connection as live once it reads `handshake.ack` and
+        /// immediately sends its roster/initial syncs. Noise nonces are implicit
+        /// counters, so dropping those frames undecrypted would desync the session for
+        /// good; they're held here and decrypted in order at promotion.
+        var queuedFrames = PendingFrameQueue()
         /// Serializes every `session.encrypt(...)` + `sendFramed(...)` pair for
         /// *this* peer's Noise session. `NoiseCipherState`'s nonce counter is
         /// mutable, unsynchronized state — concurrent encrypts on the same
@@ -571,29 +578,34 @@ final class TransportManager: ObservableObject {
             trustedConnectedHandlers.forEach { $0(peer) }
             sendPresence(online: true)
             startHeartbeatMonitoring(for: pending)
+            replayQueuedFrames(for: pending)
         } else if let onUntrustedHandshake {
             onUntrustedHandshake(peer, publicKey) { [weak self] confirmed in
-                guard let self else { return }
-                if confirmed {
-                    self.trustedDevices.addDevice(
-                        deviceId: peer.deviceId,
-                        publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
-                        deviceName: peer.deviceName,
-                        deviceType: peer.deviceType,
-                        signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
-                    )
-                    self.promote(pending, peer: peer)
-                    // Freshly-confirmed pairing reaches the same "connected" outcome
-                    // as reconnecting to an already-trusted device — fire the same
-                    // callbacks so PairingViewModel's state machine actually advances
-                    // to `.paired` instead of being stuck at `.confirmingTrust`
-                    // forever once the user taps Confirm.
-                    self.trustedConnectedHandlers.forEach { $0(peer) }
-                    self.newDevicePairedHandlers.forEach { $0(peer) }
-                    self.sendPresence(online: true)
-                    self.startHeartbeatMonitoring(for: pending)
-                } else {
-                    self.teardownAny(pending)
+                // The UI answers on the main thread; peers/Noise state live on `queue`.
+                self?.queue.async { [weak self] in
+                    guard let self else { return }
+                    if confirmed {
+                        self.trustedDevices.addDevice(
+                            deviceId: peer.deviceId,
+                            publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
+                            deviceName: peer.deviceName,
+                            deviceType: peer.deviceType,
+                            signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
+                        )
+                        self.promote(pending, peer: peer)
+                        // Freshly-confirmed pairing reaches the same "connected" outcome
+                        // as reconnecting to an already-trusted device — fire the same
+                        // callbacks so PairingViewModel's state machine actually advances
+                        // to `.paired` instead of being stuck at `.confirmingTrust`
+                        // forever once the user taps Confirm.
+                        self.trustedConnectedHandlers.forEach { $0(peer) }
+                        self.newDevicePairedHandlers.forEach { $0(peer) }
+                        self.sendPresence(online: true)
+                        self.startHeartbeatMonitoring(for: pending)
+                        self.replayQueuedFrames(for: pending)
+                    } else {
+                        self.teardownAny(pending)
+                    }
                 }
             }
         } else {
@@ -618,6 +630,26 @@ final class TransportManager: ObservableObject {
     }
 
     private func handleTransportFrame(_ payload: Data, pending: PeerConnection) {
+        guard pending.deviceId != nil else {
+            // Not promoted yet (awaiting trust confirmation): hold the frame, don't drop it.
+            if !pending.queuedFrames.enqueue(payload) {
+                NSLog("Gossip: too many frames before trust confirmation; closing")
+                teardownAny(pending)
+            }
+            return
+        }
+        processTransportFrame(payload, pending: pending)
+    }
+
+    /// Decrypts and routes the frames queued during the confirmation window, in
+    /// arrival order. Call on `queue` after `promote`.
+    private func replayQueuedFrames(for pending: PeerConnection) {
+        for frame in pending.queuedFrames.drain() {
+            processTransportFrame(frame, pending: pending)
+        }
+    }
+
+    private func processTransportFrame(_ payload: Data, pending: PeerConnection) {
         pending.lastReceivedAt = Date()
         guard let arrivedFrom = pending.deviceId else { return }
         do {
@@ -954,5 +986,24 @@ final class TransportManager: ObservableObject {
 
     private func currentDeviceName() -> String {
         Host.current().localizedName ?? "Mac"
+    }
+}
+
+
+/// Bounded FIFO of still-encrypted transport frames, see `PeerConnection.queuedFrames`.
+struct PendingFrameQueue {
+    static let limit = 256
+    private var frames: [Data] = []
+
+    /// Returns false (frame not stored) once the cap is hit.
+    mutating func enqueue(_ frame: Data) -> Bool {
+        guard frames.count < Self.limit else { return false }
+        frames.append(frame)
+        return true
+    }
+
+    mutating func drain() -> [Data] {
+        defer { frames.removeAll() }
+        return frames
     }
 }

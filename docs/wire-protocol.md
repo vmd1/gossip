@@ -27,6 +27,10 @@ Once a transport frame's ciphertext is decrypted via the established Noise sessi
 - `type` selects the message's meaning and payload shape. See `schema/message-types.md` — the authoritative registry both codebases hand-sync against — for the full list of valid types and their payload fields.
 - One decrypted frame carries exactly one envelope (no batching of multiple envelopes into a single frame in Wave 1).
 
+## Frames before trust confirmation
+
+A responder sends `handshake.ack` before an untrusted initiator has been confirmed by the user, so the initiator may send transport frames (roster, initial syncs) during that window. Noise transport nonces are implicit counters, so a responder must never discard those frames undecrypted: it holds them (bounded, 256 frames; closes the connection if exceeded) and decrypts/routes them in arrival order once the peer is confirmed and promoted, or drops them with the connection if the user declines. Mac implements this (`PendingFrameQueue`); Android's responder doesn't read transport frames until after confirmation, so TCP buffers them.
+
 ## Multi-hop relay
 
 A device may be trusted-but-not-directly-connected to another device — different LANs, no fallback host configured, or simply not yet discovered — while both have a live connection to some third device. Every device therefore makes a deliver-vs-forward decision on every envelope it receives, using the envelope's own `recipientId`/`broadcast`/`ttl` fields (see `schema/envelope.schema.json`) — a deliberately simple flood-forward with a hop budget and de-duplication, not a shortest-path routing table, since a real Connect mesh is expected to stay small (a handful of devices).

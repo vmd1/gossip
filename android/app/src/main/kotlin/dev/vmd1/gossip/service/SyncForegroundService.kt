@@ -26,6 +26,7 @@ import dev.vmd1.gossip.transport.ConnectionState
 import dev.vmd1.gossip.transport.MessageRouter
 import dev.vmd1.gossip.transport.TransportManager
 import dev.vmd1.gossip.transport.TransportManagerHolder
+import dev.vmd1.gossip.transport.newlyConnectedPeers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -397,31 +398,41 @@ class SyncForegroundService : Service() {
             .onEach { state ->
                 if (state == ConnectionState.CONNECTED) {
                     clipboardSyncManager.start()
-                    // Two devices that were apart can each have a different real DND
-                    // state with neither side having done anything wrong — nothing
-                    // synced them yet. Report on every fresh connection (not just once
-                    // ever) so a reconnect after being out of range reconciles too; see
-                    // DndSyncManager.reportInitialSyncState's doc for why this can't be
-                    // a plain reportCurrentState() call.
-                    dndSyncManager.reportInitialSyncState()
-                    // Same reasoning: a Mac that reconnects after being disconnected
-                    // (or missed the original event-driven publish to any other race)
-                    // otherwise never learns this device is currently playing anything
-                    // until the *next* playback/metadata change, which might be a long
-                    // time or never — mediaControlBridge.start() only ever published
-                    // once, at service startup, with no reconnect-triggered resend.
-                    mediaControlBridge.resyncNowPlaying()
-                    // Same reasoning as dndSyncManager.reportInitialSyncState above: a
-                    // peer that reconnects (or missed the original event-driven report
-                    // to any race) shouldn't have to wait for this phone's *next*
-                    // hotspot toggle to learn its current state.
-                    hotspotStateManager.periodicResync()
-                    // Same reasoning for battery.update: a reconnecting peer shouldn't wait
-                    // for the next 1% level change to learn this device's battery.
-                    batterySyncManager.reportInitialSyncState()
                 } else {
                     clipboardSyncManager.stop()
                 }
+            }
+            .launchIn(serviceScope)
+
+        // Initial syncs fire for every *newly connected peer*, not just when the aggregate
+        // state flips to CONNECTED: a second peer connecting while the first is still up
+        // causes no flip, and would otherwise wait for the 60s resync loops. The sends are
+        // broadcasts and idempotent, so an already-connected peer just gets a harmless repeat.
+        transportManager.connectedDeviceIds
+            .newlyConnectedPeers()
+            .onEach {
+                // Two devices that were apart can each have a different real DND
+                // state with neither side having done anything wrong — nothing
+                // synced them yet. Report on every fresh connection (not just once
+                // ever) so a reconnect after being out of range reconciles too; see
+                // DndSyncManager.reportInitialSyncState's doc for why this can't be
+                // a plain reportCurrentState() call.
+                dndSyncManager.reportInitialSyncState()
+                // Same reasoning: a Mac that reconnects after being disconnected
+                // (or missed the original event-driven publish to any other race)
+                // otherwise never learns this device is currently playing anything
+                // until the *next* playback/metadata change, which might be a long
+                // time or never — mediaControlBridge.start() only ever published
+                // once, at service startup, with no reconnect-triggered resend.
+                mediaControlBridge.resyncNowPlaying()
+                // Same reasoning as dndSyncManager.reportInitialSyncState above: a
+                // peer that reconnects (or missed the original event-driven report
+                // to any race) shouldn't have to wait for this phone's *next*
+                // hotspot toggle to learn its current state.
+                hotspotStateManager.periodicResync()
+                // Same reasoning for battery.update: a reconnecting peer shouldn't wait
+                // for the next 1% level change to learn this device's battery.
+                batterySyncManager.reportInitialSyncState()
             }
             .launchIn(serviceScope)
 
