@@ -309,11 +309,16 @@ final class UniversalControlManager: ObservableObject {
                 } else if down { heldUsages.insert(usage) } else { heldUsages.remove(usage) }
                 transmit(.key(usage: usage, down: down, modifiers: currentModifierByte()), to: id)
             }
-        case .key(let keyCode, let down, _, let characters, let flags):
+        case .key(let keyCode, let down, let isRepeat, let characters, let flags):
             if down, keyCode == 53, flags.isSuperset(of: [.control, .option, .command]) {
                 // Escape hatch: Control+Option+Command+Escape returns to the Mac from anywhere.
                 actions = router.forceReturn(nearestTo: nil)
                 disposition = wasRemote ? .swallow : .pass
+            } else if wasRemote, let id = router.state.remoteDeviceId,
+                      flags == [.command], let action = ControlAction.shortcut(forMacKeyCode: keyCode) {
+                // ⌘1 / ⌘2 / ⌘3 / ⌘[ navigate the device (Home, App Switcher, Notifications, Back); the key itself is
+                // not forwarded, and neither is its release or auto-repeat.
+                if down, !isRepeat { transmit(.action(action), to: id) }
             } else if wasRemote, let id = router.state.remoteDeviceId {
                 handleKey(keyCode: keyCode, down: down, characters: characters, flags: flags, to: id)
             }

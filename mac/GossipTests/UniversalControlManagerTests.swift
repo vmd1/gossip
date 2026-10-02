@@ -171,6 +171,34 @@ final class UniversalControlManagerTests: XCTestCase {
         XCTAssertEqual(manager.layout.devices["B"]?.x ?? 0, 2240, accuracy: 0.01, "snapped")
     }
 
+    // MARK: Navigation shortcuts
+
+    func testCommandNumberShortcutsSendDeviceActionsInsteadOfKeys() {
+        makeReady("A", "B")
+        pushIntoA()
+        let before = sessions["A"]!.frames.count
+        let cmd: ControlModifierFlags = [.command]
+        for (code, action) in [(18, ControlAction.home), (19, .appSwitch), (20, .notifications), (33, .back)] as [(UInt16, ControlAction)] {
+            XCTAssertEqual(manager.handle(.key(keyCode: code, down: true, isRepeat: false, characters: "1", flags: cmd)), .swallow)
+            XCTAssertEqual(manager.handle(.key(keyCode: code, down: false, isRepeat: false, characters: "1", flags: cmd)), .swallow)
+            XCTAssertEqual(sessions["A"]!.frames.filter { $0 == .action(action) }.count, 1, "\(action) sent once for press + release")
+        }
+        _ = manager.handle(.key(keyCode: 18, down: true, isRepeat: true, characters: "1", flags: cmd))
+        XCTAssertEqual(sessions["A"]!.frames.filter { $0 == .action(.home) }.count, 1, "auto-repeat is ignored")
+        let after = Array(sessions["A"]!.frames.dropFirst(before))
+        XCTAssertFalse(after.contains { if case .key = $0 { return true }; if case .text = $0 { return true }; return false }, "the key itself isn't forwarded")
+    }
+
+    func testShortcutsOnlyApplyWhileTheCursorIsOnTheDeviceAndForPlainCommand() {
+        makeReady("A", "B")
+        let cmd: ControlModifierFlags = [.command]
+        XCTAssertEqual(manager.handle(.key(keyCode: 18, down: true, isRepeat: false, characters: "1", flags: cmd)), .pass, "cursor is on the Mac")
+        XCTAssertTrue(sessions["A"]!.frames.isEmpty)
+        pushIntoA()
+        _ = manager.handle(.key(keyCode: 18, down: true, isRepeat: false, characters: "1", flags: [.command, .shift]))
+        XCTAssertFalse(sessions["A"]!.frames.contains(.action(.home)), "⌘⇧1 is not the shortcut")
+    }
+
     // MARK: Closed-loop cursor correction
 
     private var fakeNow: TimeInterval = 100

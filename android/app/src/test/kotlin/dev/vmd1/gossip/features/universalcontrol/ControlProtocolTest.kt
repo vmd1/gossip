@@ -109,5 +109,9 @@ class ControlProtocolTest {
         }
         assertNull(ControlFrame.decode(byteArrayOf(0x86.toByte(), 1, 0, 0, 0, 0, 0, 0))) // truncated
         assertNull(ControlFrame.decode(byteArrayOf(0x18)))
+        assertEquals("1904", hex(ControlFrame.Action(ControlAction.BACK).encode()))
+        for (a in ControlAction.values()) assertEquals(ControlFrame.Action(a), ControlFrame.decode(ControlFrame.Action(a).encode()))
+        assertNull(ControlFrame.decode(byteArrayOf(0x19, 9)))
+        assertNull(ControlFrame.decode(byteArrayOf(0x19)))
     }
 }

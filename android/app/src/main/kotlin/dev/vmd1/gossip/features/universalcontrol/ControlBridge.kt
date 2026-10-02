@@ -156,6 +156,7 @@ class ControlBridge(
             is ControlFrame.Scroll -> run { it.scroll(frame.dx, frame.dy) }
             is ControlFrame.Key -> run { it.key(frame.usage, frame.down, frame.modifiers) }
             is ControlFrame.Text -> run { it.text(frame.text) }
+            is ControlFrame.Action -> run { it.action(frame.action) }
         }
     }
 

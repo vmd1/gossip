@@ -18,6 +18,12 @@ import javax.crypto.spec.SecretKeySpec
  */
 data class ControlDisplayInfo(val width: Int, val height: Int, val rotation: Int, val backend: Int)
 
+enum class ControlAction(val raw: Int) {
+    HOME(1), APP_SWITCH(2), NOTIFICATIONS(3), BACK(4);
+
+    companion object { fun from(raw: Int) = values().firstOrNull { it.raw == raw } }
+}
+
 enum class ControlEdge(val raw: Int) {
     LEFT(0), RIGHT(1), TOP(2), BOTTOM(3);
 
@@ -41,6 +47,8 @@ sealed class ControlFrame {
     object Ping : ControlFrame() { override fun toString() = "Ping" }
     /** Asks for the real cursor position; answered with [CursorPos] carrying the same [token]. */
     data class CursorQuery(val token: Int) : ControlFrame()
+    /** A system navigation action: 1 Home, 2 App Switcher, 3 Notifications, 4 Back (see [ControlAction]). */
+    data class Action(val action: ControlAction) : ControlFrame()
     // device -> Mac
     data class HelloAck(val info: ControlDisplayInfo) : ControlFrame()
     data class DisplayInfo(val info: ControlDisplayInfo) : ControlFrame()
@@ -69,6 +77,7 @@ sealed class ControlFrame {
             is Text -> { u8(KIND_TEXT); out.write(text.toByteArray(Charsets.UTF_8)) }
             Ping -> u8(KIND_PING)
             is CursorQuery -> { u8(KIND_CURSOR_QUERY); u8(token) }
+            is Action -> { u8(KIND_ACTION); u8(action.raw) }
             is HelloAck -> { u8(KIND_HELLO_ACK); display(info) }
             is DisplayInfo -> { u8(KIND_DISPLAY_INFO); display(info) }
             is Error -> { u8(KIND_ERROR); out.write(reason.toByteArray(Charsets.UTF_8)) }
@@ -89,6 +98,7 @@ sealed class ControlFrame {
         const val KIND_TEXT = 0x16
         const val KIND_PING = 0x17
         const val KIND_CURSOR_QUERY = 0x18
+        const val KIND_ACTION = 0x19
         const val KIND_HELLO_ACK = 0x81
         const val KIND_DISPLAY_INFO = 0x82
         const val KIND_ERROR = 0x84
@@ -120,6 +130,7 @@ sealed class ControlFrame {
                     KIND_TEXT -> Text(String(rest(), Charsets.UTF_8))
                     KIND_PING -> if (b.hasRemaining()) null else Ping
                     KIND_CURSOR_QUERY -> if (b.remaining() != 1) null else CursorQuery(u8())
+                    KIND_ACTION -> if (b.remaining() != 1) null else ControlAction.from(u8())?.let { Action(it) }
                     KIND_HELLO_ACK -> display()?.let { HelloAck(it) }
                     KIND_DISPLAY_INFO -> display()?.let { DisplayInfo(it) }
                     KIND_ERROR -> Error(String(rest(), Charsets.UTF_8))

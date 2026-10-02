@@ -20,6 +20,8 @@ interface InputBackend {
     fun scroll(dx: Int, dy: Int)
     fun key(usage: Int, down: Boolean, modifiers: Int)
     fun text(text: String)
+    /** Home / App Switcher / Notifications / Back. */
+    fun action(action: ControlAction)
     fun close()
 }
 
@@ -131,10 +133,22 @@ class UhidInputBackend(
         if (text.all { it.code in 0x20..0x7e }) write(HidReports.injectText(text)) else write(HidReports.pasteText(text))
     }
 
+    override fun action(action: ControlAction) {
+        when (action) {
+            ControlAction.HOME -> write(HidReports.pressKeycode(KEYCODE_HOME))
+            ControlAction.BACK -> write(HidReports.pressKeycode(KEYCODE_BACK))
+            ControlAction.APP_SWITCH -> write(HidReports.pressKeycode(KEYCODE_APP_SWITCH))
+            ControlAction.NOTIFICATIONS -> write(HidReports.expandNotifications())
+        }
+    }
+
     override fun close() { runCatching { leave() } }
 
     private companion object {
         const val TAG = "UhidInput"
+        const val KEYCODE_HOME = 3
+        const val KEYCODE_BACK = 4
+        const val KEYCODE_APP_SWITCH = 187
         const val DEVICE_SETTLE_MS = 300L
         const val ACCEL_SETTLE_MS = 130L
     }

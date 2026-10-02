@@ -50,6 +50,20 @@ class HidAndBackendTest {
         assertArrayEquals(HidReports.mouseReport(0, 0, 599), moves[1])
     }
 
+    @Test fun navigationActionsAreScrcpyKeycodesAndNotificationPanel() {
+        val r = Recorder(); val b = backend(r)
+        b.action(ControlAction.HOME)
+        // one write holding two INJECT_KEYCODE messages (down, up): [0][action][keycode u32][repeat u32][meta u32]
+        val down = byteArrayOf(0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0)
+        val up = byteArrayOf(0, 1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0)
+        assertArrayEquals(down + up, r.msgs[0])
+        b.action(ControlAction.BACK); b.action(ControlAction.APP_SWITCH)
+        assertEquals(4, r.msgs[1][5].toInt()); assertEquals(187, r.msgs[2][5].toInt() and 0xff)
+        r.msgs.clear()
+        b.action(ControlAction.NOTIFICATIONS)
+        assertArrayEquals(byteArrayOf(5), r.msgs.single())
+    }
+
     @Test fun leaveReleasesEverythingThenDestroysAndIsIdempotent() {
         val r = Recorder(); val b = backend(r)
         b.enter(ControlEdge.RIGHT, 0, display)

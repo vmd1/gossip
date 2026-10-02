@@ -73,6 +73,12 @@ object HidReports {
 
     fun input(id: Int, report: ByteArray): ByteArray = msg { u8(CONTROL_UHID_INPUT); u16(id); u16(report.size); write(report) }
     fun destroy(id: Int): ByteArray = msg { u8(CONTROL_UHID_DESTROY); u16(id) }
+    /** scrcpy `INJECT_KEYCODE` (type 0): a full press (down then up) of an Android keycode. */
+    fun pressKeycode(keycode: Int): ByteArray = msg {
+        for (action in 0..1) { u8(0); u8(action); u32(keycode); u32(0); u32(0) }
+    }
+    /** scrcpy `EXPAND_NOTIFICATION_PANEL` (type 5). */
+    fun expandNotifications(): ByteArray = byteArrayOf(5)
     fun injectText(text: String): ByteArray = msg {
         val t = text.toByteArray(Charsets.UTF_8); u8(CONTROL_INJECT_TEXT); u32(t.size); write(t)
     }

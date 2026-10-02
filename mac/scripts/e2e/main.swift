@@ -98,6 +98,15 @@ case "locate":
     for _ in 0..<40 { client.send(.mouseMove(dx: -4, dy: 3)); pause(0.016) }        // slow: not accelerated
     pause(0.4); marker("query-after-slow"); client.send(.cursorQuery(token: 3)); pause(1.0)
     client.send(.leave); pause(0.6)
+case "nav":
+    // Navigation shortcuts: Home leaves the probe activity; Back would too, Notifications opens the shade.
+    client.send(.enter(edge: .left, position: 32768)); pause(1.5)
+    marker("home"); client.send(.action(.home)); pause(2.0)
+    marker("notifications"); client.send(.action(.notifications)); pause(2.0)
+    marker("back"); client.send(.action(.back)); pause(1.5)
+    marker("appswitch"); client.send(.action(.appSwitch)); pause(2.0)
+    client.send(.action(.home)); pause(1.0)
+    client.send(.leave); pause(0.6)
 case "idle":
     marker("idle"); pause(5)
 default: print("unknown scenario"); exit(2)

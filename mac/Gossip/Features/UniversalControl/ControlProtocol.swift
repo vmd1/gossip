@@ -50,6 +50,22 @@ struct ControlDisplayInfo: Equatable, Codable {
     var backend: Int
 }
 
+/// Device navigation actions, triggered by the Mac-side shortcuts (⌘1 / ⌘2 / ⌘3 / ⌘[, like screen mirroring).
+enum ControlAction: UInt8, CaseIterable {
+    case home = 1, appSwitch = 2, notifications = 3, back = 4
+
+    /// The action bound to ⌘ + this Mac key code (1, 2, 3 and [), the same bindings as screen mirroring.
+    static func shortcut(forMacKeyCode code: UInt16) -> ControlAction? {
+        switch code {
+        case 18: return .home          // 1
+        case 19: return .appSwitch     // 2
+        case 20: return .notifications // 3
+        case 33: return .back          // [
+        default: return nil
+        }
+    }
+}
+
 enum ControlBackendKind: Int {
     case uhid = 0
     case touchOverlay = 1
@@ -73,6 +89,8 @@ enum ControlFrame: Equatable {
     case ping
     /// Asks the device where its real cursor is; answered with `cursorPos` carrying the same `token`.
     case cursorQuery(token: UInt8)
+    /// A system navigation action on the device (`ControlAction` raw value): Home, App Switcher, Notifications, Back.
+    case action(ControlAction)
     // device -> Mac
     case helloAck(ControlDisplayInfo)
     case displayInfo(ControlDisplayInfo)
@@ -93,6 +111,7 @@ enum ControlFrame: Equatable {
         static let text: UInt8 = 0x16
         static let ping: UInt8 = 0x17
         static let cursorQuery: UInt8 = 0x18
+        static let action: UInt8 = 0x19
         static let helloAck: UInt8 = 0x81
         static let displayInfo: UInt8 = 0x82
         static let error: UInt8 = 0x84
@@ -113,6 +132,7 @@ enum ControlFrame: Equatable {
         case .text(let s): w.u8(Kind.text); w.bytes(Data(s.utf8))
         case .ping: w.u8(Kind.ping)
         case .cursorQuery(let t): w.u8(Kind.cursorQuery); w.u8(t)
+        case .action(let a): w.u8(Kind.action); w.u8(a.rawValue)
         case .helloAck(let d): w.u8(Kind.helloAck); w.display(d)
         case .displayInfo(let d): w.u8(Kind.displayInfo); w.display(d)
         case .error(let s): w.u8(Kind.error); w.bytes(Data(s.utf8))
@@ -148,6 +168,9 @@ enum ControlFrame: Equatable {
         case Kind.cursorQuery:
             guard let t = r.u8(), r.isAtEnd else { return nil }
             return .cursorQuery(token: t)
+        case Kind.action:
+            guard let a = r.u8().flatMap(ControlAction.init(rawValue:)), r.isAtEnd else { return nil }
+            return .action(a)
         case Kind.helloAck: return r.display().map { .helloAck($0) }
         case Kind.displayInfo: return r.display().map { .displayInfo($0) }
         case Kind.error: return r.rest().flatMap { String(data: $0, encoding: .utf8) }.map { .error($0) }
