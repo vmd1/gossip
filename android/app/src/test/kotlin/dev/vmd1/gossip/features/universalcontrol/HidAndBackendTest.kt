@@ -31,7 +31,7 @@ class HidAndBackendTest {
 
     private class Recorder { val msgs = mutableListOf<ByteArray>(); fun type(i: Int) = msgs[i][0].toInt() }
 
-    private fun backend(r: Recorder) = UhidInputBackend({ r.msgs.add(it) }, sleep = {}, compensator = null)
+    private fun backend(r: Recorder) = UhidInputBackend({ r.msgs.add(it) }, sleep = {})
     private val display = ControlDisplayInfo(2000, 1200, 1, 0)
 
     @Test fun inputIsIgnoredUntilEnteredAndEnterIsIdempotent() {
@@ -89,16 +89,5 @@ class HidAndBackendTest {
         val r = Recorder(); val b = backend(r)
         b.text("hello"); b.text("héllo")
         assertEquals(listOf(1, 9), r.msgs.map { it[0].toInt() })
-    }
-
-    @Test fun compensatorLeavesSlowMotionAloneAndShrinksFastMotion() {
-        val c = PointerAccelCompensator()
-        var t = 0L
-        var out = 0
-        repeat(20) { out += c.compensate(t, 2, 0).first; t += 16_000_000L } // ~125 counts/s: unaccelerated
-        assertEquals(40, out)
-        c.reset(); out = 0
-        repeat(40) { out += c.compensate(t, 40, 0).first; t += 8_000_000L } // 5000 counts/s: scale 3
-        assertTrue("got $out", out in 500..700)
     }
 }

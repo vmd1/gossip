@@ -8,5 +8,7 @@
             android:exported="true"
             android:label="Input probe"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+        <!-- Debug-only: starts or ends a Universal Control session from adb without the mesh, for the scripted end-to-end test (actions CONTROL_START and CONTROL_END in dev.vmd1.gossip.debug, extras sessionId and secret). -->
+        <receiver android:name="dev.vmd1.gossip.debug.ControlDebugReceiver" android:exported="true" />
     </application>
 </manifest>

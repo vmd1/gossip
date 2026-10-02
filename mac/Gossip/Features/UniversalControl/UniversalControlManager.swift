@@ -121,6 +121,7 @@ final class UniversalControlManager: ObservableObject {
         initial.normalize()
         layout = initial
         router = PointerRouter(layout: initial)
+        router.pointerGain = ControlLayout.expectedDeviceAcceleration
         knownSizes = store?.loadSizes() ?? [:]
     }
 

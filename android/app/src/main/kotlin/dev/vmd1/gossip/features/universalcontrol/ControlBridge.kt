@@ -72,6 +72,7 @@ class ControlBridge(
         mainHandler.post { displayManager.registerDisplayListener(displayListener, mainHandler) }
         thread("ctl-accept") { acceptLoop(l) }
         thread("ctl-devmsg") { drainDeviceMessages(s) }
+        Log.i(TAG, "[$sessionId] listening on port ${l.localPort} (display ${info.width}x${info.height} rotation ${info.rotation})")
         return ControlSessionHandle.Ready(l.localPort, info, "uhid")
     }
 

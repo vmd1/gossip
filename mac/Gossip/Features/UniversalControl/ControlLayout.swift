@@ -12,6 +12,9 @@ struct ControlLayout: Equatable {
     /// Default scale between device pixels and layout points.
     static let defaultPixelsPerPoint: Double = 1.5
     /// Edges closer than this snap together while dragging.
+    /// Typical extra travel Android's pointer acceleration adds to a relative mouse (measured 1.3x to 2x on the
+    /// SM-T500, Android 12); used as the router's model gain. See `PointerRouter.pointerGain`.
+    static let expectedDeviceAcceleration: Double = 1.5
     static let snapDistance: Double = 24
     /// Two edges count as touching when they are at most this far apart.
     static let touchTolerance: Double = 1

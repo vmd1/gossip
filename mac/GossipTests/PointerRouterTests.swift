@@ -130,4 +130,20 @@ final class PointerRouterTests: XCTestCase {
         for _ in 0..<5 { actions += r.macMoved(delta: CGPoint(x: 0, y: 5), location: CGPoint(x: 700, y: 799.5)) }
         guard case .enter("P", .top, _)? = actions.first else { return XCTFail("\(actions)") }
     }
+
+    func testPointerGainMakesTheModelTrackADeviceThatAccelerates() {
+        // The device cursor runs 1.5x faster than the deltas we send, so the router must reach the far edge
+        // after 1/1.5 of the nominal travel while still sending the nominal (unscaled) delta.
+        var l = ControlLayout(macDisplays: ["M": CGRect(x: 0, y: 0, width: 1000, height: 800)])
+        _ = l.place(deviceId: "A", size: CGSize(width: 600, height: 400), proposedOrigin: CGPoint(x: 1000, y: 100))
+        var r = PointerRouter(layout: l, pushThreshold: 10)
+        r.readyDevices = ["A"]
+        r.pointerGain = 1.5
+        _ = r.macMoved(delta: CGPoint(x: 20, y: 0), location: CGPoint(x: 999.5, y: 300))
+        guard case .remote(_, let p0) = r.state else { return XCTFail("did not enter") }
+        let actions = r.remoteMoved(delta: CGPoint(x: 100, y: 0))
+        XCTAssertTrue(actions.contains(.move(deviceId: "A", dx: 100, dy: 0)), "sent delta is not scaled")
+        guard case .remote(_, let p1) = r.state else { return XCTFail() }
+        XCTAssertEqual(p1.x - p0.x, 150, accuracy: 0.001)
+    }
 }

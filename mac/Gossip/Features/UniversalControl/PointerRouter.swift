@@ -33,6 +33,10 @@ struct PointerRouter {
     /// Devices with a live, ready session; anything else is a wall.
     var readyDevices: Set<String> = []
     var pushThreshold: Double
+    /// The device moves its cursor `pointerGain` times further than the deltas we send (Android applies pointer
+    /// acceleration to a relative mouse; measured on the SM-T500 at 1.3x to 2x). The model integrates with this
+    /// gain so the edge a user sees the cursor hit is the edge the router crosses; the *sent* delta is unchanged.
+    var pointerGain: Double = 1
     /// How far inside the destination the pointer is placed after crossing, so it doesn't instantly re-cross.
     var insetPoints: Double = 2
 
@@ -98,7 +102,7 @@ struct PointerRouter {
     mutating func remoteMoved(delta: CGPoint) -> [Action] {
         guard case .remote(let id, let pos) = state, let rect = layout.rect(of: .device(id)) else { return [] }
         var actions: [Action] = []
-        let target = CGPoint(x: pos.x + delta.x, y: pos.y + delta.y)
+        let target = CGPoint(x: pos.x + delta.x * pointerGain, y: pos.y + delta.y * pointerGain)
         // Always send the full delta: the device clamps at its own edges, which re-synchronises its cursor
         // with ours whenever the pointer is pushed into a wall.
         if delta.x != 0 || delta.y != 0 { actions.append(.move(deviceId: id, dx: delta.x, dy: delta.y)) }

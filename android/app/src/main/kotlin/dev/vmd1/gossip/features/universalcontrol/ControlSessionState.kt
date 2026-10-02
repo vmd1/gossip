@@ -47,8 +47,14 @@ class ControlSessionState(
     val activeSessionId: String? get() = synchronized(lock) { active?.sessionId }
 
     fun register(router: MessageRouter) {
+        current = this
         router.register(CONTROL_SESSION_START, EnvelopeHandler { onSessionStart(it) })
         router.register(CONTROL_END, EnvelopeHandler { onEnd(it) })
+    }
+
+    /** Entry point for the debug-only adb receiver (`internal` members aren't visible across the debug source set boundary by name). */
+    fun handleDebug(envelope: Envelope) {
+        if (envelope.type == CONTROL_END) onEnd(envelope) else onSessionStart(envelope)
     }
 
     internal fun onSessionStart(envelope: Envelope) {
@@ -160,6 +166,8 @@ class ControlSessionState(
 
     companion object {
         private const val TAG = "ControlSession"
+        /** The live instance, so the debug-only adb receiver can start a session without the mesh. */
+        @Volatile var current: ControlSessionState? = null
         private const val RECENT_CACHE = 64
         const val CONTROL_SESSION_START = "control.session_start"
         const val CONTROL_READY = "control.ready"

@@ -28,12 +28,19 @@ object ControlBackendKind { const val UHID = 0; const val TOUCH_OVERLAY = 1 }
  *
  * Verified live on the Samsung SM-T500 (Android 12, enforcing SELinux): devices appear in `dumpsys input`,
  * hover / button / wheel / key events reach an app (see `InputProbeActivity`), and destroying them removes
- * the cursor. [write] sends one framed scrcpy control message. Not thread-safe: drive it from one thread.
+ * the cursor.
+ *
+ * **Drift:** Android applies its pointer acceleration to a relative mouse (scale 1.0 below ~500 counts/s up to
+ * 3.0 at 3000), so the cursor travels 1.3x-2x further than the deltas sent (measured on the SM-T500). A single
+ * report after a pause is exact, and the top-left slam on [enter] is exact (it clamps). A device-side inverse
+ * was tried and rejected: the send-rate estimate is too noisy through the Shizuku relay, giving 0.45x-1.1x
+ * (undershoot is worse than overshoot). Instead the Mac models the gain (`PointerRouter.pointerGain`), and
+ * the device clamps at its edges, which re-synchronises the cursor whenever it is pushed into a wall.
+ * [write] sends one framed scrcpy control message. Not thread-safe: drive it from one thread.
  */
 class UhidInputBackend(
     private val write: (ByteArray) -> Unit,
     private val sleep: (Long) -> Unit = { Thread.sleep(it) },
-    private val compensator: PointerAccelCompensator? = PointerAccelCompensator(),
 ) : InputBackend {
     override val kind = ControlBackendKind.UHID
 
@@ -54,7 +61,6 @@ class UhidInputBackend(
         releaseAll()
         // Slam into the top-left corner (a clamped, therefore exact, position), then walk to the entry point.
         // A single report after a pause is not accelerated, which is what makes this precise.
-        compensator?.reset()
         write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(0, -32767, -32767)))
         sleep(ACCEL_SETTLE_MS)
         val frac = position.coerceIn(0, 65535) / 65535.0
@@ -82,9 +88,8 @@ class UhidInputBackend(
 
     override fun mouseMove(dx: Int, dy: Int) {
         if (!created) return
-        val (cx, cy) = compensator?.compensate(System.nanoTime(), dx, dy) ?: (dx to dy)
-        if (cx == 0 && cy == 0) return
-        write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(buttonMask, cx, cy)))
+        if (dx == 0 && dy == 0) return
+        write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(buttonMask, dx, dy)))
     }
 
     override fun buttons(mask: Int) {
@@ -121,48 +126,5 @@ class UhidInputBackend(
         const val TAG = "UhidInput"
         const val DEVICE_SETTLE_MS = 300L
         const val ACCEL_SETTLE_MS = 130L
-    }
-}
-
-/**
- * Android applies pointer acceleration to a relative mouse (`VelocityControl`: scale 1.0 below ~500
- * counts/s, rising to 3.0 at 3000 counts/s), on top of the acceleration macOS already applied to the deltas
- * we receive, so the cursor on the device would travel further than the Mac's integrated position (drift).
- * This divides each report by an estimate of that scale from our own recent send rate. Measured live on the
- * SM-T500: without it a 600-count move at 600-1200 counts/s lands 25-95% too far; a single report after a
- * pause is exact. It is an approximation (Android's velocity tracker is not reproduced exactly), so the Mac
- * also re-slams on enter and relies on edge clamping.
- */
-class PointerAccelCompensator(
-    private val low: Double = 500.0,
-    private val high: Double = 3000.0,
-    private val maxScale: Double = 3.0,
-    private val windowNanos: Long = 80_000_000L,
-) {
-    private class Sample(val t: Long, val d: Double)
-    private val samples = ArrayDeque<Sample>()
-    private var remX = 0.0
-    private var remY = 0.0
-
-    fun reset() { samples.clear(); remX = 0.0; remY = 0.0 }
-
-    fun scale(speed: Double): Double = when {
-        speed <= low -> 1.0
-        speed >= high -> maxScale
-        else -> 1.0 + (speed - low) * (maxScale - 1.0) / (high - low)
-    }
-
-    /** Returns the integer report to send for an intended move of ([dx], [dy]) at time [nowNanos]. */
-    fun compensate(nowNanos: Long, dx: Int, dy: Int): Pair<Int, Int> {
-        while (samples.isNotEmpty() && nowNanos - samples.first().t > windowNanos) samples.removeFirst()
-        val dist = Math.hypot(dx.toDouble(), dy.toDouble())
-        val windowCounts = samples.sumOf { it.d } + dist
-        val span = maxOf((nowNanos - (samples.firstOrNull()?.t ?: nowNanos)).toDouble(), 8_000_000.0) / 1e9
-        val s = scale(windowCounts / span)
-        val fx = dx / s + remX; val fy = dy / s + remY
-        val ox = Math.round(fx).toInt(); val oy = Math.round(fy).toInt()
-        remX = fx - ox; remY = fy - oy
-        samples.addLast(Sample(nowNanos, Math.hypot(ox.toDouble(), oy.toDouble())))
-        return ox to oy
     }
 }
