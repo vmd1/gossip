@@ -10,9 +10,12 @@ final class ControlLayoutTests: XCTestCase {
 
     func testPlacesAgainstEdgeAndSnapsWithinDistance() {
         var l = layout()
-        // 10 points off the right edge snaps flush.
+        // 10 points off the right edge snaps flush; the top edge is 20 away so it aligns flush too.
         let origin = l.place(deviceId: "t", size: tabletSize, proposedOrigin: CGPoint(x: 1450, y: 20))
-        XCTAssertEqual(origin, CGPoint(x: 1440, y: 20))
+        XCTAssertEqual(origin, CGPoint(x: 1440, y: 0))
+        var l2 = layout()
+        // 40 points below the top edge is beyond snap distance, so only the touching axis snaps.
+        XCTAssertEqual(l2.place(deviceId: "u", size: tabletSize, proposedOrigin: CGPoint(x: 1450, y: 40)), CGPoint(x: 1440, y: 40))
         XCTAssertTrue(l.isPlaced("t"))
     }
 

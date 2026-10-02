@@ -117,7 +117,7 @@ final class UniversalControlManagerTests: XCTestCase {
         _ = manager.handle(.key(keyCode: 8, down: true, isRepeat: false, characters: "c", flags: [.command]))
         _ = manager.handle(.key(keyCode: 8, down: false, isRepeat: false, characters: "c", flags: [.command]))
         _ = manager.handle(.key(keyCode: 36, down: true, isRepeat: false, characters: "\r", flags: []))
-        let frames = sessions["A"]!.frames.dropFirst()
+        let frames = sessions["A"]!.frames.dropFirst().filter { if case .mouseMove = $0 { return false } else { return true } }
         XCTAssertEqual(Array(frames), [
             .text("a"), .text("é"),
             .key(usage: 0xE0, down: true, modifiers: 0x01),
@@ -132,7 +132,7 @@ final class UniversalControlManagerTests: XCTestCase {
         pushIntoA()
         _ = manager.handle(.modifier(keyCode: 55, down: true))
         _ = manager.handle(.key(keyCode: 0, down: true, isRepeat: false, characters: "a", flags: [.command]))
-        XCTAssertEqual(Array(sessions["A"]!.frames.dropFirst()), [
+        XCTAssertEqual(sessions["A"]!.frames.dropFirst().filter { if case .mouseMove = $0 { return false } else { return true } }, [
             .key(usage: 0xE3, down: true, modifiers: 0x08), .key(usage: 0x04, down: true, modifiers: 0x08),
         ])
     }
@@ -155,7 +155,8 @@ final class UniversalControlManagerTests: XCTestCase {
 
     func testDisplayInfoResizesTheCardAndIsRemembered() {
         sessions["A"]!.onDisplayInfo?(ControlDisplayInfo(width: 1200, height: 2000, rotation: 1, backend: 0))
-        XCTAssertTrue(waitUntil { self.manager.layout.devices["A"]?.width == 800 })   // 1200 / 1.5
+        XCTAssertTrue(waitUntil { (self.manager.layout.devices["A"]?.height ?? 0) > 1000 })   // 2000 / 1.5
+        XCTAssertEqual(manager.layout.devices["A"]?.width ?? 0, 800, accuracy: 0.01)          // 1200 / 1.5
         XCTAssertEqual(manager.layout.devices["A"]?.height ?? 0, 2000 / 1.5, accuracy: 0.01)
         XCTAssertEqual(ControlLayoutStore(fileURL: storeURL).loadSizes()["A"], CGSize(width: 1200, height: 2000))
     }
@@ -175,7 +176,7 @@ final class UniversalControlManagerTests: XCTestCase {
         var enabled = true
         let m = UniversalControlManager(
             mesh: StubMesh(connected: { ["A"] }), makeSession: { FakeControlSession(deviceId: $0) }, cursor: FakeCursor(),
-            store: ControlLayoutStore(fileURL: storeURL), macDisplays: { [mac: CGRect(x: 0, y: 0, width: 1440, height: 900)] },
+            store: ControlLayoutStore(fileURL: storeURL), macDisplays: { [self.mac: CGRect(x: 0, y: 0, width: 1440, height: 900)] },
             isFeatureEnabled: { enabled })
         enabled = false
         m.start()

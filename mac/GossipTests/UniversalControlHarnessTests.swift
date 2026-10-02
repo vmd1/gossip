@@ -22,6 +22,7 @@ final class UniversalControlHarnessTests: XCTestCase {
         var placements: [String: ControlLayout.Placement] = [:]
         for (i, id) in ["A", "B", "C"].enumerated() {
             let d = FakeControlDevice(deviceId: id)
+            d.displayInfo = ControlDisplayInfo(width: 1200, height: 750, rotation: 0, backend: 0) // 800x500 pt: matches the placement
             devices[id] = d; mesh.devices[id] = d; mesh.setConnected(id, true)
             placements[id] = ControlLayout.Placement(rect: CGRect(x: 1440 + 800 * Double(i), y: 100, width: 800, height: 500))
         }
@@ -55,14 +56,14 @@ final class UniversalControlHarnessTests: XCTestCase {
     }
 
     func testParallelWarmSessionsAllCompleteTheEncryptedHandshake() {
-        XCTAssertTrue(awaitReady(["A", "B", "C"]))
+        XCTAssertTrue(awaitReady(["A", "B", "C"]), "\(manager.sessionStates) \(mesh.sent)")
         for d in devices.values { XCTAssertTrue(waitUntil { d.helloReceived }, d.deviceId) }
         // Each connection used its own session id and secret.
         XCTAssertEqual(mesh.sent.filter { $0.type == "control.session_start" }.count >= 3, true)
     }
 
     func testInputReachesTheDeviceThroughTheEncryptedChannelAndHandsOver() {
-        XCTAssertTrue(awaitReady(["A", "B", "C"]))
+        XCTAssertTrue(awaitReady(["A", "B", "C"]), "\(manager.sessionStates) \(mesh.sent)")
         push()
         _ = manager.handle(.mouseMoved(delta: CGPoint(x: 20, y: 10), location: .zero))
         XCTAssertTrue(waitUntil { self.devices["A"]!.frames.contains(.mouseMove(dx: 30, dy: 15)) }, "\(devices["A"]!.frames)")
@@ -78,7 +79,7 @@ final class UniversalControlHarnessTests: XCTestCase {
     }
 
     func testOneDeviceFailingDoesNotDisturbTheOthersAndItReconnects() {
-        XCTAssertTrue(awaitReady(["A", "B", "C"]))
+        XCTAssertTrue(awaitReady(["A", "B", "C"]), "\(manager.sessionStates) \(mesh.sent)")
         let firstSession = devices["B"]!.helloReceived
         XCTAssertTrue(firstSession)
         devices["B"]!.dropConnection()
@@ -100,7 +101,10 @@ final class UniversalControlHarnessTests: XCTestCase {
     }
 
     func testSilentDeviceTimesOutIntoBackoffAndRecoversWhenItAnswers() {
+        manager.stop()                    // setUp already started warm sessions; restart with a mute mesh
+        for d in devices.values { d.close() }
         mesh.silent = true
+        manager.start()
         XCTAssertTrue(waitUntil(timeout: 8) { if case .backoff = self.manager.sessionStates["A"] ?? .idle { return true } else { return false } })
         mesh.silent = false
         XCTAssertTrue(awaitReady(["A"], timeout: 10))
@@ -109,7 +113,7 @@ final class UniversalControlHarnessTests: XCTestCase {
     func testDeviceSideDisplayInfoUpdatesTheLayout() {
         XCTAssertTrue(awaitReady(["A"]))
         devices["A"]!.sendToMac(.displayInfo(ControlDisplayInfo(width: 1200, height: 2000, rotation: 1, backend: 0)))
-        XCTAssertTrue(waitUntil { self.manager.layout.devices["A"]?.width == 800 })
+        XCTAssertTrue(waitUntil { (self.manager.layout.devices["A"]?.height ?? 0) > 1000 })
     }
 
     func testDisconnectedDeviceGetsNoSession() {
