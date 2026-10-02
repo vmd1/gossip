@@ -451,120 +451,87 @@ fun ConnectHomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Everything that isn't the status + paired devices lives on the Settings page (pairing, setup,
-    // permissions, hotspot provider, per-feature switches), shown in place of the home screen.
-    var showSettings by remember { mutableStateOf(false) }
-    if (showSettings) {
-        androidx.activity.compose.BackHandler { showSettings = false }
-        dev.vmd1.gossip.ui.SettingsScreen(
-            settings = dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(androidx.compose.ui.platform.LocalContext.current),
-            onBack = { showSettings = false }
-        ) {
-            Button(onClick = onPairNewDevice) {
-                Text("Pair New Device")
-            }
-
-            Button(onClick = onShowQrToPair) {
-                Text("Show QR to Pair")
-            }
-
-            androidx.compose.material3.TextButton(onClick = onRunSetupAgain) {
-                Text("Run Setup Again")
-            }
-
-            if (!notificationAccessGranted) {
-                Text(
-                    "Grant notification access so your Android notifications can be mirrored to your paired devices.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = {
-                    onEnableNotificationAccess()
-                    notificationAccessGranted = isNotificationAccessGranted()
-                }) {
-                    Text("Enable Notification Mirroring")
+    // Everything that isn't the status + paired devices lives under Settings, a menu of sub-pages shown in
+    // place of the home screen. `null` = the home screen; Back steps up one level (see SettingsPage.parent).
+    var settingsPage by remember { mutableStateOf<SettingsPage?>(null) }
+    val isPhone = myDeviceType == DeviceType.ANDROID_PHONE
+    settingsPage?.let { page ->
+        androidx.activity.compose.BackHandler { settingsPage = page.parent }
+        val featureSettings = dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(androidx.compose.ui.platform.LocalContext.current)
+        val forwardSettings = dev.vmd1.gossip.features.notifications.NotificationForwardSettings.getInstance(
+            androidx.compose.ui.platform.LocalContext.current
+        )
+        when (page) {
+            SettingsPage.ROOT -> SettingsPageScaffold("Settings", onBack = { settingsPage = null }) {
+                SettingsMenuRow("Devices & pairing", "Pair a device, show your QR code, run setup again") {
+                    settingsPage = SettingsPage.DEVICES
                 }
-            } else {
-                Text("Notification mirroring is enabled.", style = MaterialTheme.typography.bodySmall)
-                Button(onClick = onSendTestNotification) {
-                    Text("Send Test Notification")
-                }
-                Text(
-                    "Posts a local notification — a quick way to confirm the mirroring " +
-                        "pipeline reaches your paired devices without waiting for a real app to notify you.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            if (!notificationPermissionGranted()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.errorContainer
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            "Notifications permission is off — a paired device's mirrored " +
-                                "notifications will be silently dropped, with no error shown " +
-                                "anywhere (separate from notification mirroring access above, " +
-                                "which only controls sending this device's own notifications " +
-                                "out).",
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Button(onClick = onRequestNotificationPermission) {
-                            Text("Grant Notifications Permission")
-                        }
+                if (isPhone) {
+                    SettingsMenuRow("Notifications", "Notification access and which apps are forwarded") {
+                        settingsPage = SettingsPage.NOTIFICATIONS
                     }
                 }
-            }
-
-            if (!dndAccessGranted) {
-                Text(
-                    "To sync Do Not Disturb with your paired devices, Gossip needs notification " +
-                        "policy access.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = {
-                    dndSyncManagerProvider()?.let(onRequestDndAccess)
-                }) {
-                    Text("Grant DND Access")
+                SettingsMenuRow("Features", "Turn features on or off on this device") { settingsPage = SettingsPage.FEATURES }
+                if (isPhone) {
+                    SettingsMenuRow("Instant Hotspot", "Let your other devices use this phone's hotspot") {
+                        settingsPage = SettingsPage.HOTSPOT
+                    }
+                }
+                SettingsMenuRow("Permissions", "Notifications, Do Not Disturb, Bluetooth and more") {
+                    settingsPage = SettingsPage.PERMISSIONS
                 }
             }
 
-            if (!bluetoothPermissionGranted()) {
-                Text(
-                    "To detect nearby trusted devices over Bluetooth (for features like " +
-                        "locking a paired Mac or tablet when your phone leaves range), Gossip needs " +
-                        "Bluetooth permission.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = onRequestBluetoothPermission) {
-                    Text("Grant Bluetooth Permission")
+            SettingsPage.DEVICES -> SettingsPageScaffold("Devices & pairing", onBack = { settingsPage = page.parent }) {
+                Button(onClick = onPairNewDevice) { Text("Pair New Device") }
+                Button(onClick = onShowQrToPair) { Text("Show QR to Pair") }
+                androidx.compose.material3.TextButton(onClick = onRunSetupAgain) { Text("Run Setup Again") }
+            }
+
+            SettingsPage.NOTIFICATIONS -> SettingsPageScaffold("Notifications", onBack = { settingsPage = page.parent }) {
+                if (!notificationAccessGranted) {
+                    Text(
+                        "Grant notification access so your Android notifications can be mirrored to your paired devices.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = {
+                        onEnableNotificationAccess()
+                        notificationAccessGranted = isNotificationAccessGranted()
+                    }) {
+                        Text("Enable Notification Mirroring")
+                    }
+                } else {
+                    Text("Notification mirroring is enabled.", style = MaterialTheme.typography.bodySmall)
+                    val blockedCount by forwardSettings.blocked.collectAsState()
+                    SettingsMenuRow(
+                        "Apps",
+                        if (blockedCount.isEmpty()) "All apps are forwarded" else "${blockedCount.size} apps are not forwarded"
+                    ) { settingsPage = SettingsPage.NOTIFICATION_APPS }
+                    Button(onClick = onSendTestNotification) { Text("Send Test Notification") }
+                    Text(
+                        "Posts a local notification — a quick way to confirm the mirroring " +
+                            "pipeline reaches your paired devices without waiting for a real app to notify you.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
 
-            if (myDeviceType != DeviceType.ANDROID_PHONE && !deviceAdminActive()) {
-                Text(
-                    "To let a paired phone lock this device when it leaves Bluetooth range " +
-                        "(Lock-on-Leave), Gossip needs device admin access.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Button(onClick = onRequestDeviceAdmin) {
-                    Text("Grant Device Admin")
-                }
+            SettingsPage.NOTIFICATION_APPS -> SettingsPageScaffold("Forwarded apps", onBack = { settingsPage = page.parent }, scroll = false) {
+                NotificationAppsContent()
             }
 
-            if (myDeviceType == DeviceType.ANDROID_PHONE) {
+            SettingsPage.FEATURES -> SettingsPageScaffold("Features", onBack = { settingsPage = page.parent }) {
+                FeatureTogglesContent(featureSettings)
+            }
+
+            SettingsPage.HOTSPOT -> SettingsPageScaffold("Instant Hotspot", onBack = { settingsPage = page.parent }) {
                 var provideHotspotEnabled by remember { mutableStateOf(provideHotspotEnabledProvider()) }
                 androidx.compose.foundation.layout.Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text("Provide Instant Hotspot", style = MaterialTheme.typography.bodyLarge)
                         Text(
                             "Let nearby trusted devices with no internet request a hotspot from " +
@@ -582,6 +549,62 @@ fun ConnectHomeScreen(
                 }
             }
 
+            SettingsPage.PERMISSIONS -> SettingsPageScaffold("Permissions", onBack = { settingsPage = page.parent }) {
+                val needsDeviceAdmin = !isPhone && !deviceAdminActive()
+                if (notificationPermissionGranted() && dndAccessGranted && bluetoothPermissionGranted() && !needsDeviceAdmin) {
+                    Text("All permissions are granted.", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (!notificationPermissionGranted()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.errorContainer
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "Notifications permission is off — a paired device's mirrored " +
+                                    "notifications will be silently dropped, with no error shown " +
+                                    "anywhere.",
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Button(onClick = onRequestNotificationPermission) {
+                                Text("Grant Notifications Permission")
+                            }
+                        }
+                    }
+                }
+                if (!dndAccessGranted) {
+                    Text(
+                        "To sync Do Not Disturb with your paired devices, Gossip needs notification " +
+                            "policy access.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = { dndSyncManagerProvider()?.let(onRequestDndAccess) }) {
+                        Text("Grant DND Access")
+                    }
+                }
+                if (!bluetoothPermissionGranted()) {
+                    Text(
+                        "To detect nearby trusted devices over Bluetooth (for features like " +
+                            "locking a paired Mac or tablet when your phone leaves range), Gossip needs " +
+                            "Bluetooth permission.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = onRequestBluetoothPermission) { Text("Grant Bluetooth Permission") }
+                }
+                if (needsDeviceAdmin) {
+                    Text(
+                        "To let a paired phone lock this device when it leaves Bluetooth range " +
+                            "(Lock-on-Leave), Gossip needs device admin access.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = onRequestDeviceAdmin) { Text("Grant Device Admin") }
+                }
+            }
         }
         return
     }
@@ -600,7 +623,7 @@ fun ConnectHomeScreen(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 Text("Gossip", style = MaterialTheme.typography.headlineMedium)
-                androidx.compose.material3.IconButton(onClick = { showSettings = true }) {
+                androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.ROOT }) {
                     androidx.compose.material3.Icon(
                         Icons.Default.Settings,
                         contentDescription = "Settings"
