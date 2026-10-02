@@ -120,6 +120,18 @@ case "slow":
     }
     pause(0.5); marker("slow-stop")
     client.send(.leave); pause(0.6)
+case "recross":
+    // Cold entry (devices created), leave, then warm re-entries soon after (devices reused). Moves are sent
+    // immediately after each enter, like a real mouse. Wall-clock stamps let the script compute entry latency.
+    func stamp(_ s: String) { print("T \(s) \(Int(Date().timeIntervalSince1970 * 1000))"); fflush(stdout) }
+    for round in 1...3 {
+        stamp("enter\(round)"); client.send(.enter(edge: .left, position: 32768))
+        for _ in 0..<60 { client.send(.mouseMove(dx: 3, dy: 0)); pause(0.012) }
+        pause(0.3)
+        stamp("leave\(round)"); client.send(.leave); pause(1.2)
+    }
+    marker("grace-wait"); pause(10)   // past the device grace period: the devices are destroyed
+    marker("done")
 case "idle":
     marker("idle"); pause(5)
 default: print("unknown scenario"); exit(2)

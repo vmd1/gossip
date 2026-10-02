@@ -64,17 +64,45 @@ class HidAndBackendTest {
         assertArrayEquals(byteArrayOf(5), r.msgs.single())
     }
 
-    @Test fun leaveReleasesEverythingThenDestroysAndIsIdempotent() {
+    @Test fun leaveReleasesButKeepsTheDevicesUntilDestroyed() {
         val r = Recorder(); val b = backend(r)
         b.enter(ControlEdge.RIGHT, 0, display)
         b.buttons(1); b.key(4, true, 2)
         r.msgs.clear()
         b.leave()
-        assertEquals(listOf(13, 13, 14, 14), r.msgs.map { it[0].toInt() })
+        assertEquals(listOf(13, 13), r.msgs.map { it[0].toInt() })            // mouse + keyboard released, nothing destroyed
         assertArrayEquals(HidReports.mouseReport(0, 0, 0), r.msgs[0].drop(5).toByteArray())
         assertArrayEquals(ByteArray(8), r.msgs[1].drop(5).toByteArray())
         r.msgs.clear(); b.leave()
+        assertTrue(r.msgs.isEmpty())                                          // idempotent
+        b.destroyDevices()
+        assertEquals(listOf(14, 14), r.msgs.map { it[0].toInt() })
+        r.msgs.clear(); b.destroyDevices()
+        assertTrue(r.msgs.isEmpty())                                          // idempotent
+    }
+
+    @Test fun reEnteringBeforeTheDevicesAreDestroyedReusesThem() {
+        val r = Recorder(); val b = backend(r)
+        b.enter(ControlEdge.LEFT, 100, display); b.leave()
+        assertEquals(2, r.msgs.count { it[0].toInt() == 12 })
+        r.msgs.clear()
+        b.enter(ControlEdge.LEFT, 100, display)
+        assertEquals("no second create: re-entry skips the slow device creation", 0, r.msgs.count { it[0].toInt() == 12 })
+        assertTrue(r.msgs.any { it[0].toInt() == 13 })                        // but the cursor is placed again
+        // after a destroy it has to create them again
+        b.leave(); b.destroyDevices(); r.msgs.clear()
+        b.enter(ControlEdge.LEFT, 100, display)
+        assertEquals(2, r.msgs.count { it[0].toInt() == 12 })
+    }
+
+    @Test fun devicesAreNeverDestroyedWhileTheCursorIsOnThem() {
+        val r = Recorder(); val b = backend(r)
+        b.enter(ControlEdge.TOP, 0, display); r.msgs.clear()
+        b.destroyDevices()                                                    // a late grace timer must not pull them out
         assertTrue(r.msgs.isEmpty())
+        b.buttons(1); r.msgs.clear()
+        b.close()
+        assertEquals(listOf(13, 14, 14), r.msgs.map { it[0].toInt() })        // closing releases the held button, then destroys both
     }
 
     @Test fun duplicateStateIsNotAnEvent() {

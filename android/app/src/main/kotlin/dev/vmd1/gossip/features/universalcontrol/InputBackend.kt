@@ -9,8 +9,12 @@ interface InputBackend {
     val kind: Int
     /** The cursor enters through [edge], [position] (0..65535) along it. Idempotent: re-entering repositions. */
     fun enter(edge: ControlEdge, position: Int, display: ControlDisplayInfo)
-    /** The cursor left: release anything held and remove the virtual devices (so the cursor disappears). Idempotent. */
+    /** The cursor left: release anything held. The virtual devices stay (a quick re-[enter] is then instant); see
+     *  [destroyDevices]. Idempotent. */
     fun leave()
+    /** Removes the virtual devices (so the cursor disappears and the soft keyboard may return). A no-op while the
+     *  cursor is on the device or when there are none. The bridge calls it a while after [leave]. */
+    fun destroyDevices()
     fun mouseMove(dx: Int, dy: Int)
     /** `MouseMove`s applied since the last [enter]; reported alongside the real cursor position. */
     val movesApplied: Long get() = 0
@@ -51,6 +55,8 @@ class UhidInputBackend(
     override val kind = ControlBackendKind.UHID
 
     private var created = false
+    /** True from [enter] until [leave]: the cursor is on this device. */
+    private var inside = false
     private var buttonMask = 0
     private val pressed = TreeSet<Int>()
     private var heldModifiers = 0
@@ -68,6 +74,7 @@ class UhidInputBackend(
             created = true
             sleep(DEVICE_SETTLE_MS) // events written before Android has opened the new evdev node are lost
         }
+        inside = true
         releaseAll()
         // Slam into the top-left corner (a clamped, therefore exact, position), then walk to the entry point.
         // A single report after a pause is not accelerated, which is what makes this precise.
@@ -84,7 +91,12 @@ class UhidInputBackend(
 
     override fun leave() {
         if (!created) return
+        inside = false
         releaseAll()
+    }
+
+    override fun destroyDevices() {
+        if (!created || inside) return
         write(HidReports.destroy(HidReports.MOUSE_ID))
         write(HidReports.destroy(HidReports.KEYBOARD_ID))
         created = false
@@ -142,7 +154,7 @@ class UhidInputBackend(
         }
     }
 
-    override fun close() { runCatching { leave() } }
+    override fun close() { runCatching { leave(); destroyDevices() } }
 
     private companion object {
         const val TAG = "UhidInput"

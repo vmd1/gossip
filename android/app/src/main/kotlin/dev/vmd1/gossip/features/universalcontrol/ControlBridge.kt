@@ -40,6 +40,8 @@ class ControlBridge(
     private val backendFactory: (write: (ByteArray) -> Unit) -> InputBackend = { UhidInputBackend(it) },
     private val serverFactory: (Context) -> ScrcpyServerSession = { ScrcpyServerSession.openControlOnly(it) },
     private val cursorLocator: CursorLocator = CursorLocator(),
+    /** How long the virtual devices outlive a `leave`, so crossing back soon after is instant. */
+    private val deviceGraceMs: Long = DEVICE_GRACE_MS,
 ) : ControlSessionHandle {
     private val cipher = ControlCipher(secret, sessionId, deviceSide = true)
     private val sendLock = Any()
@@ -50,6 +52,12 @@ class ControlBridge(
     private var backend: InputBackend? = null
     private var lastInfo: ControlDisplayInfo? = null
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "ctl-input").apply { isDaemon = true } }
+    private val enterLock = Any()
+    private var pendingEnters = 0                       // enterLock
+    private var droppedMoves = 0L                       // enterLock
+    @Volatile private var appliedBase = 0L              // moves dropped during the last enter, counted as applied
+    private val grace = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "ctl-grace").apply { isDaemon = true } }
+    private var graceTask: java.util.concurrent.ScheduledFuture<*>? = null
     private val cursorExec = Executors.newSingleThreadExecutor { r -> Thread(r, "ctl-cursor").apply { isDaemon = true } }
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -143,15 +151,38 @@ class ControlBridge(
             ControlFrame.Ping -> sendFrame(ControlFrame.Pong)
             is ControlFrame.Hello, is ControlFrame.HelloAck, is ControlFrame.DisplayInfo, is ControlFrame.Error, ControlFrame.Pong, is ControlFrame.CursorPos -> Unit
             // Input is applied in order on one worker, so a slow `enter` (device creation) never reorders later frames.
-            is ControlFrame.Enter -> run {
-                it.enter(frame.edge, frame.position, currentDisplayInfo())
-                // The pointer is stationary at an exactly-known spot right now: measure the cursor image's hotspot
-                // offset once, here on the input worker so no queued move shifts the pointer during the read.
-                if (!cursorLocator.calibrated) it.entryPoint?.let { p -> cursorLocator.calibrate(p) }
+            is ControlFrame.Enter -> {
+                graceTask?.cancel(false)
+                synchronized(enterLock) { pendingEnters++; droppedMoves = 0 }
+                run {
+                    try {
+                        it.enter(frame.edge, frame.position, currentDisplayInfo())
+                        // The pointer is stationary at an exactly-known spot right now: measure the cursor image's hotspot
+                        // offset once, here on the input worker so no queued move shifts the pointer during the read.
+                        if (!cursorLocator.calibrated) it.entryPoint?.let { p -> cursorLocator.calibrate(p) }
+                    } finally {
+                        // Even if placement failed: never leave the bridge dropping motion.
+                        synchronized(enterLock) { appliedBase = droppedMoves; pendingEnters-- }
+                    }
+                }
             }
             is ControlFrame.CursorQuery -> answerCursorQuery(frame.token)
-            ControlFrame.Leave -> run { it.leave() }
-            is ControlFrame.MouseMove -> run { it.mouseMove(frame.dx, frame.dy) }
+            ControlFrame.Leave -> {
+                run { it.leave() }
+                // Keep the devices a while: re-entering soon skips their (slow) creation. They are destroyed later
+                // unless the cursor came back, so the cursor and the hardware-keyboard state don't linger.
+                graceTask?.cancel(false)
+                graceTask = runCatching {
+                    grace.schedule({ run { it.destroyDevices() } }, deviceGraceMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }.getOrNull()
+            }
+            is ControlFrame.MouseMove -> {
+                // Motion that arrives while the cursor is still being placed would be applied in one burst the moment
+                // the placement finishes (a visible jump). Drop it instead: the Mac's model is corrected by the
+                // closed-loop position reports. Dropped moves still count as applied so those reports stay aligned.
+                val drop = synchronized(enterLock) { if (pendingEnters > 0) { droppedMoves++; true } else false }
+                if (!drop) run { it.mouseMove(frame.dx, frame.dy) }
+            }
             is ControlFrame.Buttons -> run { it.buttons(frame.mask) }
             is ControlFrame.Scroll -> run { it.scroll(frame.dx, frame.dy) }
             is ControlFrame.Key -> run { it.key(frame.usage, frame.down, frame.modifiers) }
@@ -166,9 +197,9 @@ class ControlBridge(
         try {
             cursorExec.execute {
                 if (ended.get()) return@execute
-                val before = b.movesApplied
+                val before = b.movesApplied + appliedBase
                 val pos = cursorLocator.position() ?: return@execute
-                val after = b.movesApplied
+                val after = b.movesApplied + appliedBase
                 // The read lands somewhere inside the window, so report the middle of it.
                 sendFrame(ControlFrame.CursorPos(token, Math.round(pos.first), Math.round(pos.second), before + (after - before) / 2))
             }
@@ -193,6 +224,7 @@ class ControlBridge(
     fun end() {
         if (!ended.compareAndSet(false, true)) return
         cursorExec.shutdownNow()
+        grace.shutdownNow()
         runCatching { worker.execute { runCatching { backend?.close() } ; worker.shutdown() } }
         mainHandler.post { runCatching { displayManager.unregisterDisplayListener(displayListener) } }
         runCatching { ws?.close(1001) }
@@ -213,6 +245,7 @@ class ControlBridge(
     companion object {
         private const val TAG = "ControlBridge"
         const val ATTACH_TIMEOUT_MS = 30_000L
+        const val DEVICE_GRACE_MS = 8_000L
         private const val AUTH_TIMEOUT_MS = 10_000
         private const val IDLE_TIMEOUT_MS = 20_000
     }

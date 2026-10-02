@@ -61,7 +61,8 @@ for scenario in ${SCENARIOS[@]}; do
   grep GossipProbe "$OUT/$scenario.logcat" > "$OUT/$scenario.probe"
   case "$scenario" in
   basic)
-    check "virtual devices removed after leave" '[ "$(devices)" = "0" ]'
+    sleep 9 # leave keeps the virtual devices for a grace period so a quick re-entry is instant
+    check "virtual devices removed after the grace period" '[ "$(devices)" = "0" ]'
     check "mouse hovers (>=15 HOVER_MOVE from Gossip Mouse)" '[ "$(grep -c "HOVER_MOVE.*dev=Gossip Mouse" "$OUT/basic.probe")" -ge 15 ]'
     check "entered at the left edge" 'grep -m1 "HOVER_.*x=0.0 " "$OUT/basic.probe" >/dev/null || grep -m1 "HOVER_.*x=[0-3]\.[0-9] " "$OUT/basic.probe" >/dev/null'
     check "primary click: DOWN buttons=0x1 then UP" 'grep -q "ACTION_DOWN.*buttons=0x1" "$OUT/basic.probe" && grep -q "ACTION_UP" "$OUT/basic.probe"'
