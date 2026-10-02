@@ -80,6 +80,7 @@ struct ConnectApp: App {
         let battery = BatterySyncManager(transportManager: transport)
         _batterySyncManager = StateObject(wrappedValue: battery)
         battery.start()
+        UniversalControlCoordinator.shared.configure(transport: transport, trustedDevices: TrustedDevicesStore.shared, battery: battery)
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
@@ -93,7 +94,6 @@ struct ConnectApp: App {
 
         // Keep the "Device Mirroring" launcher app (embedded in this app) installed next to Gossip.
         if LauncherPreference.autoInstall {
-            BLEProximityMonitor.debugLog("Device Mirroring launcher status: \(LauncherInstaller().status())")
             LauncherSetup.ensureInstalled()
         }
 
@@ -141,7 +141,6 @@ struct ConnectApp: App {
             for url in urls {
                 if url.host == "mirror" {
                     // Sent by the "Device Mirroring" launcher app: show the device-list window.
-                    BLEProximityMonitor.debugLog("opening the Device Mirroring window (\(url.absoluteString))")
                     deviceMirroringWindowBox.show {
                         DeviceMirroringView(
                             trustedDevicesStore: TrustedDevicesStore.shared,
@@ -166,17 +165,13 @@ struct ConnectApp: App {
                     // exercised through the real "Request Hotspot" menu bar button
                     // instead.
                     let phones = TrustedDevicesStore.shared.devices.filter { $0.deviceType == .androidPhone }
-                    BLEProximityMonitor.debugLog("debug-hotspot-request: trusted phones=\(phones.map { $0.deviceId }) peripheralIds=\(bleMonitor.peripheralIdentifierByDeviceId) nearby=\(bleMonitor.nearbyDeviceIds)")
                     guard let deviceId = phones.first?.deviceId,
                           let peripheralId = bleMonitor.peripheralIdentifierByDeviceId[deviceId] else {
-                        BLEProximityMonitor.debugLog("debug-hotspot-request: no nearby trusted phone found")
                         continue
                     }
-                    BLEProximityMonitor.debugLog("debug-hotspot-request: requesting from \(deviceId)")
                     let client = HotspotGattClient()
                     debugHotspotClientBox.client = client
                     client.requestToggle(providerId: deviceId, peripheralIdentifier: peripheralId, enable: true) { result in
-                        BLEProximityMonitor.debugLog("debug-hotspot-request result: \(result)")
                         debugHotspotClientBox.client = nil
                     }
                 } else {

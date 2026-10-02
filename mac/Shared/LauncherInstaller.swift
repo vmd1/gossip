@@ -5,11 +5,9 @@ import CryptoKit
 /// shows up in Spotlight and Launchpad as its own app. An app nested in another app's bundle isn't indexed
 /// individually, so it is copied out — into `/Applications` or `~/Applications`, whichever Gossip lives in.
 ///
-/// **Who does the copying matters.** Gossip is sandboxed, and every file a sandboxed process creates is
-/// quarantined as "created by an AppSandbox", which Gatekeeper refuses to open — and a sandboxed process
-/// cannot clear that flag (verified: the flags stay on). So Gossip only *reads* this state (`status()`) and
-/// starts the embedded, non-sandboxed launcher, which copies itself out and
-/// creates ordinary files and clears any quarantine. This file is compiled into both targets.
+/// Gossip is not sandboxed, so it does the copy itself and clears any quarantine flag the copy inherited
+/// (e.g. when Gossip was downloaded) so Gatekeeper doesn't block the launcher on first open.
+/// This file is compiled into both targets.
 ///
 /// Never touches an app it didn't put there: it only replaces a bundle whose identifier is the launcher's.
 struct LauncherInstaller {
@@ -24,14 +22,14 @@ struct LauncherInstaller {
         case failed(String)
     }
 
-    /// What `install()` would have to do — read-only, so it is safe to call from the sandboxed Gossip.
+    /// What `install()` would have to do — read-only.
     enum Status: Equatable {
         case notApplicable(String)
         case missing
         /// Installed, but the embedded launcher is newer.
         case outdated
         /// Installed and current, but flagged quarantined so Gatekeeper blocks it (e.g. an earlier copy
-        /// made by the sandboxed app).
+        /// made by the old sandboxed Gossip).
         case quarantined
         case current
     }
@@ -56,8 +54,7 @@ struct LauncherInstaller {
         self.fileManager = fileManager
     }
 
-    /// `/Applications` and the *real* `~/Applications` (a sandboxed app's `NSHomeDirectory()` is its
-    /// container, so the account's home comes from the password database instead).
+    /// `/Applications` and the account's `~/Applications` (home taken from the password database).
     static func defaultAllowedDirectories() -> [URL] {
         var dirs = [URL(fileURLWithPath: "/Applications", isDirectory: true)]
         if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
@@ -98,7 +95,6 @@ struct LauncherInstaller {
     }
 
     /// Copies the embedded launcher out next to Gossip, or refreshes it if the embedded one changed.
-    /// **Must run in a non-sandboxed process** (see the type's doc).
     @discardableResult
     func install() -> Outcome {
         switch status() {
@@ -152,9 +148,9 @@ struct LauncherInstaller {
         return false
     }
 
-    /// Clears the quarantine flag from the whole bundle (only works from a non-sandboxed process). Files a
-    /// sandboxed app creates are quarantined, which would make Gatekeeper block the launcher the
-    /// first time it is opened even though Gossip itself was already approved.
+    /// Clears the quarantine flag from the whole bundle . A copy made from a quarantined
+    /// (downloaded) Gossip can carry the flag, which would make Gatekeeper block the launcher the first
+    /// time it is opened.
     static func stripQuarantine(from appURL: URL, fileManager: FileManager = .default) {
         let name = "com.apple.quarantine"
         removexattr(appURL.path, name, XATTR_NOFOLLOW)

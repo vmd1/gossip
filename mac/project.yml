@@ -5,6 +5,10 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "5.0"

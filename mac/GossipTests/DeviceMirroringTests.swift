@@ -32,17 +32,11 @@ final class LauncherInstallerTests: XCTestCase {
 
     private var installed: URL { applications.appendingPathComponent("Device Mirroring.app") }
 
-    /// These tests run inside the sandboxed Gossip app, where every file created is quarantined and the
-    /// flag cannot be cleared — the reason the installer is run by the non-sandboxed launcher in real use
-    /// (verified live: see the launcher's `main.swift`). Quarantine-dependent assertions are skipped there.
-    private var runningSandboxed: Bool { ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil }
-
     func testInstallsNextToGossipThenIsUpToDate() {
         XCTAssertEqual(installer().status(), .missing)
         XCTAssertEqual(installer().install(), .installed)
         XCTAssertTrue(fm.fileExists(atPath: installed.path))
         XCTAssertTrue(installer().isInstalled)
-        if runningSandboxed { return }   // the copy is quarantined here, so it would report .quarantined
         XCTAssertEqual(installer().status(), .current)
         XCTAssertEqual(installer().install(), .upToDate)
     }
@@ -56,9 +50,8 @@ final class LauncherInstallerTests: XCTestCase {
     }
 
     func testRepairsAQuarantinedCopy() throws {
-        try XCTSkipIf(runningSandboxed, "a sandboxed process can neither set nor clear the quarantine flag")
         XCTAssertEqual(installer().install(), .installed)
-        // What a sandboxed app leaves behind: a quarantine flag the launcher must clear.
+        // What the old sandboxed app (or a downloaded build) leaves behind: a quarantine flag the launcher must clear.
         let value = "0086;00000000;Gossip;"
         XCTAssertEqual(setxattr(installed.path, "com.apple.quarantine", value, value.utf8.count, 0, 0), 0)
         XCTAssertTrue(LauncherInstaller.hasQuarantine(installed))

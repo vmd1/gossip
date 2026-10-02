@@ -18,13 +18,13 @@ Ordered by dependency, not just priority — several of these explicitly reuse i
 
 1. ~~**Find my device / ring to locate**~~ — **Done** (see Implemented).
 2. ~~**Battery level sync**~~ — **Done** (see Implemented); it is in the reconciliation loop (on change, on connect, every 60s).
-3. ~~**On-device screen mirroring rework**~~ — **Done** (see Implemented). It delivered the Shizuku-launched scrcpy server, the shell-UID relay and the token-authenticated WebSocket bridge that items 5 and 6 reuse for input injection and streaming; the Mac viewer, audio and a borderless window shipped with it. Still open and relevant to those items: encrypting the stream end to end (only the session token is Noise-protected today), a Shizuku "not running" onboarding state, and an Android-side viewer/other-platform viewers.
-4. **Off-LAN connectivity (tailcat)** — independent of #3, but foundational in its own right: improves reliability for every existing feature when devices aren't on the same LAN, and is a hard prerequisite for the Chrome extension (no raw TCP/BLE from a browser) below.
-5. **Universal Control** — depends on #3 for the Android target-side injection path (reuses the Shizuku/`InputManager` mechanism rather than inventing new plumbing).
-6. **Sidecar** — depends on both #3 (reversed streaming pipeline, Computer→Tablet instead of Phone→viewer) and #5 (reuses its per-pair arrangement UI and input-relay session wholesale). Must follow both.
-7. **Windows app** — launches with mirroring-as-WebSocket-viewer (#3) and a "Computer" input-control story (#5) already designed, instead of retrofitting either.
-8. **Linux app** — same rationale as #7; follows it mainly to spread the two large standalone clients apart rather than building both at once.
-9. **Chrome extension** — depends on #4 for a browser-reachable transport; benefits from #3 for its mirroring tab.
+3. ~~**On-device screen mirroring rework**~~ — **Done** (see Implemented). It delivered the Shizuku-launched scrcpy server, the shell-UID relay and the token-authenticated WebSocket bridge that items 4 and 5 reuse for input injection and streaming; the Mac viewer, audio and a borderless window shipped with it. Still open and relevant to those items: encrypting the stream end to end (only the session token is Noise-protected today), a Shizuku "not running" onboarding state, and an Android-side viewer/other-platform viewers.
+4. **Universal Control** — depends on #3 for the Android target-side injection path (reuses the Shizuku/`InputManager` mechanism rather than inventing new plumbing).
+5. **Sidecar** — depends on both #3 (reversed streaming pipeline, Computer→Tablet instead of Phone→viewer) and #4 (reuses its per-pair arrangement UI and input-relay session wholesale). Must follow both.
+6. **Windows app** — launches with mirroring-as-WebSocket-viewer (#3) and a "Computer" input-control story (#4) already designed, instead of retrofitting either.
+7. **Linux app** — same rationale as #6; follows it mainly to spread the two large standalone clients apart rather than building both at once.
+8. **Off-LAN connectivity (tailcat)** — independent of #3, but foundational in its own right: improves reliability for every existing feature when devices aren't on the same LAN, and is a hard prerequisite for the Chrome extension (no raw TCP/BLE from a browser) below.
+9. **Chrome extension** — depends on #8 for a browser-reachable transport; benefits from #3 for its mirroring tab.
 10. **Continuity Camera** — independent of everything above; nothing else depends on it, so it can slot in wherever capacity allows, but there's no dependency reason to front-load it.
 11. **Auto Unlock** — technically independent (the proximity/trust half already ships), ordered last deliberately: it's the most invasive item on this list (a custom PAM/AuthorizationPlugin storing the actual login credential) and deserves a dedicated security review before being scheduled, not just an open slot in the build queue.
 
