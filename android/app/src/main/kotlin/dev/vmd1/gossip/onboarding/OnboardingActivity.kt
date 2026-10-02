@@ -341,7 +341,8 @@ private fun PermissionsStep(
             onRequestNotificationPermission
         )
     }
-    if (!notificationAccessGranted) {
+    // Only phones forward notifications, so only a phone is asked for notification access.
+    if (myDeviceType == DeviceType.ANDROID_PHONE && !notificationAccessGranted) {
         PermissionRow(
             "Notification mirroring",
             "Mirrors this phone's notifications to your paired devices.",

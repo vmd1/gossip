@@ -17,7 +17,7 @@ enum class Feature(val title: String, val detail: String, val messagePrefixes: L
     DND("Do Not Disturb", "Keep Do Not Disturb in sync with your devices.", listOf("dnd.")),
     NOTIFICATIONS(
         "Notifications",
-        "Share this device's notifications with your paired devices and let them reply.",
+        "Phones share their notifications with your paired devices and let them reply; every device shows the ones it receives.",
         listOf("notification.")
     ),
     MEDIA("Media controls", "Share what's playing and let paired devices control it.", listOf("media.")),
