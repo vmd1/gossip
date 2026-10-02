@@ -259,8 +259,14 @@ private fun DeviceSettingsDialog(
     onDismiss: () -> Unit
 ) {
     var showForgetConfirmation by remember { mutableStateOf(false) }
+    // Hoisted so Done / tapping outside the dialog also saves it, not just the keyboard's Done key.
+    var fallbackText by remember(device.deviceId) { mutableStateOf(device.fallbackHost.orEmpty()) }
+    fun saveFallback() {
+        if (fallbackText.trim() != device.fallbackHost.orEmpty()) onSetFallbackHost(device.deviceId, fallbackText)
+    }
+    fun commitAndDismiss() { saveFallback(); onDismiss() }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = ::commitAndDismiss) {
         Surface(shape = RoundedCornerShape(16.dp)) {
             Column(
                 modifier = Modifier
@@ -270,7 +276,7 @@ private fun DeviceSettingsDialog(
             ) {
                 Text("${device.deviceName} Settings", style = MaterialTheme.typography.titleMedium)
 
-                FallbackHostField(device = device, onSetFallbackHost = onSetFallbackHost)
+                FallbackHostField(text = fallbackText, onTextChange = { fallbackText = it }, onCommit = ::saveFallback)
 
                 // Per-pair, BLE-driven: lock this specific Mac/tablet when this (phone) device
                 // leaves its BLE range (see docs/ble-proximity-protocol.md / schema/message-
@@ -296,7 +302,7 @@ private fun DeviceSettingsDialog(
                 }
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) {
+                    TextButton(onClick = ::commitAndDismiss) {
                         Text("Done")
                     }
                 }
@@ -319,24 +325,29 @@ private fun DeviceSettingsDialog(
     }
 }
 
-/** Editable field for [TrustedDevice.fallbackHost], committed on "Done"/IME action or
- *  focus loss rather than on every keystroke, so a fallback dial attempt never fires
- *  against a half-typed address. */
+/** Editable field for [TrustedDevice.fallbackHost]. The owner holds the text and saves it; this calls
+ *  [onCommit] on the keyboard's Done key and ~0.8s after the user stops typing (so a fallback dial
+ *  never fires against a half-typed address on every keystroke, but a value is never lost just
+ *  because the dialog was closed without pressing the keyboard's Done key). */
 @Composable
 private fun FallbackHostField(
-    device: TrustedDevice,
-    onSetFallbackHost: (deviceId: String, fallbackHost: String?) -> Unit,
+    text: String,
+    onTextChange: (String) -> Unit,
+    onCommit: () -> Unit,
     modifier: Modifier = Modifier.fillMaxWidth()
 ) {
-    var text by remember(device.deviceId) { mutableStateOf(device.fallbackHost.orEmpty()) }
+    androidx.compose.runtime.LaunchedEffect(text) {
+        kotlinx.coroutines.delay(800)
+        onCommit()
+    }
     OutlinedTextField(
         value = text,
-        onValueChange = { text = it },
+        onValueChange = onTextChange,
         label = { Text("Fallback IP (e.g. Tailscale)") },
         placeholder = { Text("100.x.x.x") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { onSetFallbackHost(device.deviceId, text) }),
+        keyboardActions = KeyboardActions(onDone = { onCommit() }),
         modifier = modifier
     )
 }

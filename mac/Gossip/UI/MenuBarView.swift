@@ -373,22 +373,24 @@ struct MenuBarView: View {
     }
 }
 
-/// Editable field for `TrustedDevice.fallbackHost`, committed on Return/focus loss rather
-/// than every keystroke, so a fallback dial attempt never fires against a half-typed
-/// address — matches Android's `PairedDevicesScreen.FallbackHostField`.
+/// Editable field for `TrustedDevice.fallbackHost`. The owner holds the text and saves it; this view
+/// calls `onCommit` on Return and ~0.8s after the user stops typing (so a fallback dial never fires
+/// against a half-typed address on every keystroke, but a value is never lost just because the user
+/// closed the window or clicked Done without pressing Return). Matches Android's
+/// `PairedDevicesScreen.FallbackHostField`.
 struct FallbackHostField: View {
-    let device: TrustedDevice
-    @ObservedObject var trustedDevicesStore: TrustedDevicesStore
-
-    @State private var text: String = ""
+    @Binding var text: String
+    var onCommit: () -> Void
 
     var body: some View {
         TextField("Fallback IP (e.g. Tailscale)", text: $text)
             .textFieldStyle(.roundedBorder)
             .font(.caption)
-            .onAppear { text = device.fallbackHost ?? "" }
-            .onSubmit {
-                trustedDevicesStore.setFallbackHost(deviceId: device.deviceId, fallbackHost: text)
+            .onSubmit { onCommit() }
+            .task(id: text) {
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                guard !Task.isCancelled else { return }
+                onCommit()
             }
     }
 }
