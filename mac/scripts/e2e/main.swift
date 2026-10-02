@@ -107,6 +107,19 @@ case "nav":
     marker("appswitch"); client.send(.action(.appSwitch)); pause(2.0)
     client.send(.action(.home)); pause(1.0)
     client.send(.leave); pause(0.6)
+case "slow":
+    // Very slow constant motion (2 px every 10 ms = 200 px/s, below Android's acceleration threshold) across the
+    // whole screen, paced by absolute deadlines. A steady stream: any stall seen on the device is not the sender.
+    client.send(.enter(edge: .left, position: 32768)); pause(1.5)
+    marker("slow-start")
+    let period = 0.010, start = Date()
+    for i in 0..<1000 {
+        client.send(.mouseMove(dx: 2, dy: 0))
+        let wait = start.addingTimeInterval(Double(i + 1) * period).timeIntervalSinceNow
+        if wait > 0 { Thread.sleep(forTimeInterval: wait) }
+    }
+    pause(0.5); marker("slow-stop")
+    client.send(.leave); pause(0.6)
 case "idle":
     marker("idle"); pause(5)
 default: print("unknown scenario"); exit(2)
