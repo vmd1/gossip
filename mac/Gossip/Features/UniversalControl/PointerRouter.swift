@@ -200,7 +200,7 @@ struct PointerRouter {
         var best: (String, CGRect, Double)?
         for (id, r) in layout.macDisplays {
             let dx = max(r.minX - p.x, 0, p.x - r.maxX), dy = max(r.minY - p.y, 0, p.y - r.maxY)
-            let d = dx * dx + dy * dy
+            let d = Double(dx * dx + dy * dy)
             if best == nil || d < best!.2 { best = (id, r, d) }
         }
         return best.map { ($0.0, $0.1) }
@@ -225,7 +225,7 @@ struct PointerRouter {
         var best: (CGRect, Double)?
         for (_, r) in layout.macDisplays {
             let dx = max(r.minX - rect.midX, 0, rect.midX - r.maxX), dy = max(r.minY - rect.midY, 0, rect.midY - r.maxY)
-            let d = dx * dx + dy * dy
+            let d = Double(dx * dx + dy * dy)
             if best == nil || d < best!.1 { best = (r, d) }
         }
         guard let r = best?.0 else { return nil }
