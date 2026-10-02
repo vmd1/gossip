@@ -111,20 +111,20 @@ class UhidInputBackend(
     }
 
     override fun mouseMove(dx: Int, dy: Int) {
-        if (!created) return
+        if (!inside) return
         if (dx == 0 && dy == 0) return
         write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(buttonMask, dx, dy)))
         moves.incrementAndGet()
     }
 
     override fun buttons(mask: Int) {
-        if (!created || mask == buttonMask) return // idempotent: a repeated state is not a new event
+        if (!inside || mask == buttonMask) return // idempotent: a repeated state is not a new event
         buttonMask = mask and 0x1f
         write(HidReports.input(HidReports.MOUSE_ID, HidReports.mouseReport(buttonMask, 0, 0)))
     }
 
     override fun scroll(dx: Int, dy: Int) {
-        if (!created) return
+        if (!inside) return
         wheelRemainderY += dy; wheelRemainderX += dx
         val ny = wheelRemainderY / 120; val nx = wheelRemainderX / 120
         wheelRemainderY -= ny * 120; wheelRemainderX -= nx * 120
@@ -132,7 +132,7 @@ class UhidInputBackend(
     }
 
     override fun key(usage: Int, down: Boolean, modifiers: Int) {
-        if (!created) return
+        if (!inside) return
         val changed = if (usage in 4..0x65) (if (down) pressed.add(usage) else pressed.remove(usage)) else true
         if (!changed && modifiers == heldModifiers) return
         heldModifiers = modifiers and 0xff

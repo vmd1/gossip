@@ -95,6 +95,13 @@ class HidAndBackendTest {
         assertEquals(2, r.msgs.count { it[0].toInt() == 12 })
     }
 
+    @Test fun strayInputAfterLeaveIsIgnoredWhileTheDevicesAreStillAlive() {
+        val r = Recorder(); val b = backend(r)
+        b.enter(ControlEdge.LEFT, 100, display); b.leave(); r.msgs.clear()
+        b.mouseMove(50, 50); b.buttons(1); b.scroll(0, 120); b.key(4, true, 0)
+        assertTrue("a late frame must not move the cursor on a device the Mac has left", r.msgs.isEmpty())
+    }
+
     @Test fun devicesAreNeverDestroyedWhileTheCursorIsOnThem() {
         val r = Recorder(); val b = backend(r)
         b.enter(ControlEdge.TOP, 0, display); r.msgs.clear()
