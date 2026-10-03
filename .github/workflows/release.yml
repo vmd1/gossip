@@ -28,14 +28,24 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      tag: ${{ steps.ver.outputs.tag }}
+      title: ${{ steps.ver.outputs.title }}
     steps:
-      # No semantic-versioning scheme exists anywhere in this repo yet and this project
-      # has no external users, so a date + run-number tag is the simplest thing that's
-      # actually unique across repeated same-day pushes to main, per the handoff's own
-      # "simplest starting point... rather than inventing semantic versioning" guidance.
-      - id: tag
-        run: echo "tag=v$(date -u +'%Y.%m.%d')-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      # Releases are numbered consecutively: tag `release-N`, title "Release N (YYYY-MM-DD)". N continues from the
+      # largest number at the end of any existing release tag (the older date-based tags like v2026.10.02-16 end in
+      # their run number), so numbering carries on instead of restarting. Runs are serialised by the `release`
+      # concurrency group below, so two releases can never compute the same number.
+      - id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          last="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName \
+            -q '[.[].tagName | (capture("(?<n>[0-9]+)$").n // empty) | tonumber] | max // 0')"
+          n=$((last + 1))
+          echo "Previous release number: $last -> this release: $n"
+          echo "tag=release-$n" >> "$GITHUB_OUTPUT"
+          echo "title=Release $n ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
 
   android-release:
     needs: version
@@ -222,10 +232,13 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          TITLE: ${{ needs.version.outputs.title }}
         run: |
-          gh release create "${{ needs.version.outputs.tag }}" \
+          gh release create "$TAG" \
             artifacts/android-apk/*.apk \
             artifacts/mac-zip/*.zip \
             --repo "${{ github.repository }}" \
-            --title "${{ needs.version.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
             --generate-notes
