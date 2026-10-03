@@ -92,9 +92,35 @@ adb shell pm grant dev.vmd1.gossip android.permission.WRITE_SECURE_SETTINGS
 - then use **Settings → Instant Hotspot** (or **Test Hotspot Methods** in setup) to see which method works on your phone
 - on Android 16 and newer this is not enough — Shizuku must be running
 
+## If Shizuku keeps stopping
+
+- tips from the Shizuku community wiki ([thedjchi/Shizuku wiki](https://github.com/thedjchi/Shizuku/wiki)) for when Shizuku stops unexpectedly
+- **Samsung devices**
+  - open the phone dialler and dial `*#0808#`
+  - select **MTP + ADB** (even if it already looks selected), then tap **OK**
+- **Other devices**
+  - go to **Developer options → Default USB configuration** and set it to **Charging only**
+- start Shizuku again afterwards (step 3)
+- more tips are listed on the wiki linked above
+
+## Optional: a community fork with auto-restart
+
+- [thedjchi/Shizuku](https://github.com/thedjchi/Shizuku) is a community **fork** of the official [RikkaApps/Shizuku](https://github.com/RikkaApps/Shizuku)
+  - a **watchdog** that automatically restarts Shizuku if it stops unexpectedly
+  - waits for a Wi-Fi connection before starting the service
+  - a TCP mode, so wireless debugging does not need continuous connectivity
+  - start/stop intents for automation apps such as Tasker
+  - beta features: a stealth mode that hides Shizuku from other apps, and auto-updates
+- download it from [its GitHub releases](https://github.com/thedjchi/Shizuku/releases) (it is not distributed on Google Play)
+- **a few cautions**
+  - it is a third-party app that runs with elevated privileges, so only install it if you trust its maintainer
+  - it is not part of Gossip, and Gossip has not been tested against it — Gossip uses Shizuku's standard API
+  - if you are unsure, use the official app
+
 ## Common problems
 
 - **Shizuku says "not running" after a reboot** — start it again (step 3)
+- **Shizuku stops on its own** — try the USB tips in [If Shizuku keeps stopping](#if-shizuku-keeps-stopping), or the [auto-restart fork](#optional-a-community-fork-with-auto-restart)
 - **Wireless debugging turns itself off** — it needs Wi-Fi; some devices switch it off when they leave the network, so reconnect and start Shizuku again
 - **The pairing code prompt disappears** — open the pairing dialog in split-screen or a floating window so it stays on screen
 - **Gossip does not show up in Shizuku's authorised list** — open Gossip's Shizuku setup row so it requests permission

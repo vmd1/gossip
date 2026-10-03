@@ -55,6 +55,7 @@
   - yes; notification mirroring, Do Not Disturb sync, media control, lock on leave, find my device, battery sync, foreground clipboard sync and Instant Hotspot on Android 10–15 all work without it
 - **Do I have to restart Shizuku?**
   - after every reboot of the device, unless it is rooted
+  - if it also stops on its own, see [If Shizuku keeps stopping](setup-shizuku.md#if-shizuku-keeps-stopping) (includes an optional community fork that restarts it automatically)
 
 ## Features
 

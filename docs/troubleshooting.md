@@ -119,6 +119,12 @@ tccutil reset ListenEvent dev.vmd1.gossip.Gossip
 - **The device's screen is off**
   - the cursor entering should wake it; if it doesn't, check Shizuku is running
 
+## Shizuku
+
+- **Shizuku is not running** — it stops after every reboot; start it again ([Setting up Shizuku](setup-shizuku.md#3-start-shizuku))
+- **Shizuku keeps stopping on its own** — see [If Shizuku keeps stopping](setup-shizuku.md#if-shizuku-keeps-stopping) for the USB-setting tips and an optional community fork with a watchdog
+- **Gossip is not listed in Shizuku** — open Gossip's Shizuku setup row so it asks for permission, then choose **Allow**
+
 ## Mac app issues
 
 - **No icon in the menu bar**
