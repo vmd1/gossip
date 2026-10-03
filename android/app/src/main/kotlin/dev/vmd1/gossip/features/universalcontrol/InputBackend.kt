@@ -26,6 +26,8 @@ interface InputBackend {
     fun text(text: String)
     /** Home / App Switcher / Notifications / Back. */
     fun action(action: ControlAction)
+    /** Turns the screen on if it is off (a wake keypress). */
+    fun wake()
     fun close()
 }
 
@@ -145,6 +147,8 @@ class UhidInputBackend(
         if (text.all { it.code in 0x20..0x7e }) write(HidReports.injectText(text)) else write(HidReports.pasteText(text))
     }
 
+    override fun wake() = write(HidReports.pressKeycode(KEYCODE_WAKEUP))
+
     override fun action(action: ControlAction) {
         when (action) {
             ControlAction.HOME -> write(HidReports.pressKeycode(KEYCODE_HOME))
@@ -158,6 +162,7 @@ class UhidInputBackend(
 
     private companion object {
         const val TAG = "UhidInput"
+        const val KEYCODE_WAKEUP = 224
         const val KEYCODE_HOME = 3
         const val KEYCODE_BACK = 4
         const val KEYCODE_APP_SWITCH = 187

@@ -4,6 +4,7 @@ import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import dev.vmd1.gossip.features.screenmirror.ScrcpyServerSession
 import java.io.Closeable
@@ -42,6 +43,8 @@ class ControlBridge(
     private val cursorLocator: CursorLocator = CursorLocator(),
     /** How long the virtual devices outlive a `leave`, so crossing back soon after is instant. */
     private val deviceGraceMs: Long = DEVICE_GRACE_MS,
+    /** Whether the screen is on; the cursor arriving on a dark screen wakes it. */
+    private val isScreenOn: () -> Boolean = { (context.getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive },
 ) : ControlSessionHandle {
     private val cipher = ControlCipher(secret, sessionId, deviceSide = true)
     private val sendLock = Any()
@@ -152,6 +155,8 @@ class ControlBridge(
             is ControlFrame.Hello, is ControlFrame.HelloAck, is ControlFrame.DisplayInfo, is ControlFrame.Error, ControlFrame.Pong, is ControlFrame.CursorPos -> Unit
             // Input is applied in order on one worker, so a slow `enter` (device creation) never reorders later frames.
             is ControlFrame.Enter -> {
+                // The cursor arriving on a dark screen wakes it (queued ahead of the placement below).
+                if (!runCatching { isScreenOn() }.getOrDefault(true)) run { it.wake() }
                 graceTask?.cancel(false)
                 synchronized(enterLock) { pendingEnters++; droppedMoves = 0 }
                 run {
