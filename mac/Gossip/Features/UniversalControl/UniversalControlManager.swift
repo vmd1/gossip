@@ -13,6 +13,9 @@ enum ControlInputEvent: Equatable {
     case key(keyCode: UInt16, down: Bool, isRepeat: Bool, characters: String?, flags: ControlModifierFlags)
     /// A modifier key changed state (`down` already resolved from the device-dependent flag bits).
     case modifier(keyCode: UInt16, down: Bool)
+    /// A trackpad gesture (swipe, pinch, rotate, Mission Control...): swallowed while the pointer is on a device,
+    /// never forwarded.
+    case gesture
 }
 
 struct ControlModifierFlags: OptionSet, Equatable {
@@ -281,6 +284,8 @@ final class UniversalControlManager: ObservableObject {
         var actions: [PointerRouter.Action] = []
 
         switch event {
+        case .gesture:
+            break // `disposition` above already swallows it while remote and passes it on the Mac
         case .mouseMoved(let delta, let location):
             if wasRemote {
                 actions = router.remoteMoved(delta: delta)

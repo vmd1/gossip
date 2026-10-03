@@ -50,15 +50,21 @@ final class ControlEventTap {
             .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
             .scrollWheel, .keyDown, .keyUp, .flagsChanged,
         ]
-        let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
+        let baseMask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
+        // Trackpad gestures too, so they can be swallowed while the pointer is on another device.
+        let gestureMask = Self.gestureEventTypes.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1)) }
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon else { return Unmanaged.passUnretained(event) }
             return Unmanaged<ControlEventTap>.fromOpaque(refcon).takeUnretainedValue().receive(type: type, event: event)
         }
-        guard let port = CGEvent.tapCreate(
-            tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-            eventsOfInterest: mask, callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { lock.unlock(); return false }
+        func create(_ mask: CGEventMask) -> CFMachPort? {
+            CGEvent.tapCreate(
+                tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+                eventsOfInterest: mask, callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque()
+            )
+        }
+        // If the system ever refuses the gesture types, run without them rather than lose input capture entirely.
+        guard let port = create(baseMask | gestureMask) ?? create(baseMask) else { lock.unlock(); return false }
         tap = port
 
         let ready = DispatchSemaphore(value: 0)
@@ -102,11 +108,20 @@ final class ControlEventTap {
         default:
             break
         }
+        if Self.isGesture(type) { return handler?(.gesture) == .swallow ? nil : Unmanaged.passUnretained(event) }
         // Events we post ourselves (none today) and synthetic test events carry this marker: never capture them.
         if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticMarker { return Unmanaged.passUnretained(event) }
         guard let converted = Self.convert(type: type, event: event), let handler else { return Unmanaged.passUnretained(event) }
         return handler(converted) == .swallow ? nil : Unmanaged.passUnretained(event)
     }
+
+    /// Raw `CGEventType`s of the multi-touch gesture family (there are no named cases): rotate 18, begin/end gesture
+    /// 19/20, gesture 29 (carries the Mission Control / Spaces / Launchpad swipes and pinches), magnify 30,
+    /// swipe 31, smart magnify 32, quick look 33, pressure 34, direct touch 37. A gesture hands the cursor to the
+    /// Dock, which shows it and re-attaches it to the mouse: with the pointer on a tablet that left two pointers
+    /// moving at once, so while the pointer is on a device the Mac never sees them.
+    static let gestureEventTypes: [UInt32] = [18, 19, 20, 29, 30, 31, 32, 33, 34, 37]
+    static func isGesture(_ type: CGEventType) -> Bool { gestureEventTypes.contains(type.rawValue) }
 
     /// Set on events a script posts to drive the tap in the E2E CLI is *not* skipped (it must exercise the tap);
     /// this marker is reserved for events Gossip itself synthesises.
