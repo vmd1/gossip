@@ -6,4 +6,8 @@
 // Config/Signing.local.xcconfig (git-ignored) that the optional include below picks up.
 //
 // Without that file the build falls back to Xcode's automatic signing, exactly as before.
+// Default (Xcode's automatic signing). Set here, not per target in project.yml: a target-level setting would beat
+// the local file below, which then could never take effect.
+CODE_SIGN_STYLE = Automatic
+
 #include? "Signing.local.xcconfig"
