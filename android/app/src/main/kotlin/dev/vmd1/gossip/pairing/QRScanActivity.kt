@@ -76,6 +76,10 @@ class QRScanActivity : ComponentActivity() {
                 bottomMargin = 64
             }
             setTextColor(android.graphics.Color.WHITE)
+            textSize = 22f
+            gravity = android.view.Gravity.CENTER
+            setBackgroundColor(0xAA000000.toInt())
+            setPadding(48, 32, 48, 32)
             text = "Point the camera at the device's pairing QR code"
         }
         root.addView(previewView)

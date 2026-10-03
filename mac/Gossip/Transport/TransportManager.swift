@@ -119,6 +119,8 @@ final class TransportManager: ObservableObject {
         var pendingPeer: HandshakePeerInfo?
         /// Token the initiator presented in its Noise payload (responder role only).
         var presentedPairingToken: String?
+        /// True while the user is looking at the trust prompt for this connection.
+        var awaitingConfirmation = false
         var expectedRemoteStaticKey: Curve25519.KeyAgreement.PublicKey?
         /// Set only for outbound dials, so teardown can clear `dialingDeviceIds`.
         var dialTargetDeviceId: String?
@@ -340,12 +342,15 @@ final class TransportManager: ObservableObject {
         let key = ObjectIdentifier(pending.connection)
         queue.asyncAfter(deadline: .now() + Self.pendingConnectionTimeout) { [weak self] in
             guard let self, self.pendingByObjectId[key] === pending else { return } // already resolved (either way)
+            // A connection waiting on the user's trust prompt gets longer (see `finalizeHandshake`).
+            guard !pending.awaitingConfirmation else { return }
             gossipError("Gossip: dial/handshake to \(pending.dialTargetDeviceId ?? "unknown peer") timed out after \(Self.pendingConnectionTimeout)s; tearing down")
             self.teardownPending(pending)
         }
     }
 
     private static let pendingConnectionTimeout: TimeInterval = 15
+    private static let confirmationTimeout: TimeInterval = 90
 
     /// Largest frame accepted once the Noise session is established (matches Android's cap).
     static let maxFrameBytes = 16 * 1024 * 1024
@@ -649,11 +654,18 @@ final class TransportManager: ObservableObject {
             }
             untrustedPromptActive = true
             armedPairing = nil // single use
+            pending.awaitingConfirmation = true
+            queue.asyncAfter(deadline: .now() + Self.confirmationTimeout) { [weak self, weak pending] in
+                guard let self, let pending, pending.awaitingConfirmation, self.pendingByObjectId[ObjectIdentifier(pending.connection)] === pending else { return }
+                gossipError("Gossip: pairing confirmation timed out; tearing down")
+                self.teardownPending(pending)
+            }
             onUntrustedHandshake(peer, publicKey) { [weak self] confirmed in
                 // The UI answers on the main thread; peers/Noise state live on `queue`.
                 self?.queue.async { [weak self] in
                     guard let self else { return }
                     self.untrustedPromptActive = false
+                    pending.awaitingConfirmation = false
                     if confirmed {
                         self.trustedDevices.addDevice(
                             deviceId: peer.deviceId,
@@ -935,7 +947,8 @@ final class TransportManager: ObservableObject {
         return EnvelopeSigning.verify(envelope, publicKey: key)
     }
 
-    private func send(envelope: Envelope, to peer: PeerConnection) throws {
+    private func send(envelope unsigned: Envelope, to peer: PeerConnection) throws {
+        let envelope = try signedForOrigination(unsigned) // heartbeats etc. go straight here
         try peer.sendQueue.sync {
             let plaintext = try envelope.encoded()
             let ciphertext = try peer.noiseSession.encrypt(plaintext)
@@ -951,7 +964,8 @@ final class TransportManager: ObservableObject {
     /// peer's "the very next frame is the raw payload" expectation — this holds at
     /// every hop, which is what makes relaying a raw-followup envelope safe (see
     /// `handleReceivedEnvelope`).
-    private func send(_ envelope: Envelope, withRawFollowup rawData: Data, to peer: PeerConnection) throws {
+    private func send(_ unsigned: Envelope, withRawFollowup rawData: Data, to peer: PeerConnection) throws {
+        let envelope = try signedForOrigination(unsigned)
         try peer.sendQueue.sync {
             let plaintext = try envelope.encoded()
             let ciphertext = try peer.noiseSession.encrypt(plaintext)

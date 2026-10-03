@@ -408,7 +408,8 @@ class TransportManager(
 
     /** Encrypts + writes [envelope] to one specific peer. Both the encrypt and the write
      *  must happen inside [PeerConnection.sendMutex] — see its doc for why. */
-    private suspend fun sendTo(envelope: Envelope, peer: PeerConnection) {
+    private suspend fun sendTo(unsigned: Envelope, peer: PeerConnection) {
+        val envelope = signedForOrigination(unsigned) // heartbeats etc. go straight here
         peer.sendMutex.withLock {
             val ciphertext = peer.noiseSession.encryptTransportMessage(envelope.encode())
             writeFrame(peer.output, ciphertext)
@@ -446,7 +447,8 @@ class TransportManager(
      *  peer's "the very next frame is the raw payload" expectation — this holds at
      *  every hop, which is what makes relaying a raw-followup envelope safe (see
      *  [handleReceivedEnvelope]). */
-    private suspend fun sendWithRawFollowup(envelope: Envelope, rawData: ByteArray, peer: PeerConnection) {
+    private suspend fun sendWithRawFollowup(unsigned: Envelope, rawData: ByteArray, peer: PeerConnection) {
+        val envelope = signedForOrigination(unsigned)
         peer.sendMutex.withLock {
             val ciphertext = peer.noiseSession.encryptTransportMessage(envelope.encode())
             writeFrame(peer.output, ciphertext)

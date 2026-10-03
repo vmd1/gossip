@@ -137,6 +137,12 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             .mapNotNull { (it.value as? String)?.let { json -> parse(json) } }
             .sortedBy { it.addedAt }
 
+    /** Drops a row without a tombstone — for a pairing that never completed, not a revocation. */
+    @Synchronized
+    fun remove(deviceId: String) {
+        prefs.edit().remove(rowKey(deviceId)).apply()
+    }
+
     /** Removes the device and records a sticky tombstone so gossip can't quietly bring it
      *  back. [revokedAt] is when the revocation happened (Unix ms); the later of two wins.
      *  Pairing the device directly again clears the tombstone (see [addDevice]). */
