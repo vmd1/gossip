@@ -16,7 +16,9 @@
 # key can sign an app that inherits those grants.
 #
 # The certificate is self-signed, so Gatekeeper does not trust builds on other users' Macs; it exists for
-# stable grants, not notarization. It is deliberately not marked trusted in your keychain.
+# stable grants, not notarization. Locally it IS marked trusted, for code signing only and in your own user
+# account: recent macOS versions make `codesign` refuse an untrusted identity ("no identity found"), even
+# though older ones (and the CI runners) accept it. macOS asks for your password when trust is set.
 set -euo pipefail
 
 NAME="gossip.vmd1.dev"
@@ -76,6 +78,15 @@ else
   echo "Allowing codesign to use the key (macOS may ask for your login password)..."
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN" >/dev/null 2>&1 \
     || security set-key-partition-list -S apple-tool:,apple:,codesign: -s "$KEYCHAIN"
+fi
+
+# Trust it for code signing (idempotent): `find-identity -v` only lists identities that are valid, i.e. trusted.
+if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "\"$NAME\""; then
+  CERT="$(mktemp)"; trap 'rm -f "$CERT"' EXIT
+  { openssl pkcs12 -legacy -in "$P12" -passin "file:$PASSFILE" -nokeys -clcerts 2>/dev/null \
+      || openssl pkcs12 -in "$P12" -passin "file:$PASSFILE" -nokeys -clcerts 2>/dev/null; } > "$CERT"
+  echo "Trusting \"$NAME\" for code signing in your account (macOS may ask for your password)..."
+  security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$CERT"
 fi
 
 cat > "$HERE/../Config/Signing.local.xcconfig" <<XC
