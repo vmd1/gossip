@@ -28,6 +28,7 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
+      number: ${{ steps.ver.outputs.number }}
       tag: ${{ steps.ver.outputs.tag }}
       title: ${{ steps.ver.outputs.title }}
     steps:
@@ -44,6 +45,7 @@ jobs:
             -q '[.[].tagName | (capture("(?<n>[0-9]+)$").n // empty) | tonumber] | max // 0')"
           n=$((last + 1))
           echo "Previous release number: $last -> this release: $n"
+          echo "number=$n" >> "$GITHUB_OUTPUT"
           echo "tag=release-$n" >> "$GITHUB_OUTPUT"
           echo "title=Release $n ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
 
@@ -90,6 +92,7 @@ jobs:
 
       - name: Assemble debug APK
         env:
+          GOSSIP_RELEASE_NUMBER: ${{ needs.version.outputs.number }}
           GOSSIP_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           GOSSIP_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           GOSSIP_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -106,6 +109,16 @@ jobs:
           echo "$OUT" | grep -E "Signer #1 certificate (DN|SHA-256)" || echo "$OUT"
           echo "$OUT" | grep -qi "SHA-256 digest: $EXPECTED_ANDROID_CERT_SHA256" \
             || { echo "::error::APK is not signed by the project key"; exit 1; }
+
+      # The app must carry this release's number (shown in Android's app info).
+      - name: Verify version
+        env:
+          RELEASE_NUMBER: ${{ needs.version.outputs.number }}
+        run: |
+          AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+          "$AAPT2" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -o "versionName='[^']*'"
+          "$AAPT2" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -q "versionName='$RELEASE_NUMBER'" \
+            || { echo "::error::APK versionName is not $RELEASE_NUMBER"; exit 1; }
 
       - name: Remove signing key
         if: always()
@@ -187,6 +200,8 @@ jobs:
           CODE_SIGN_IDENTITY=gossip.vmd1.dev
           DEVELOPMENT_TEAM=
           "OTHER_CODE_SIGN_FLAGS=--keychain $KEYCHAIN"
+          MARKETING_VERSION=${{ needs.version.outputs.number }}
+          CURRENT_PROJECT_VERSION=${{ needs.version.outputs.number }}
           CODE_SIGNING_REQUIRED=YES
           CODE_SIGNING_ALLOWED=YES
           build
@@ -200,6 +215,9 @@ jobs:
           echo "$INFO" | grep -E "Identifier|Authority|Signature|TeamIdentifier"
           if echo "$INFO" | grep -q "Signature=adhoc"; then echo "::error::app is ad-hoc signed"; exit 1; fi
           echo "$INFO" | grep -q "Authority=gossip.vmd1.dev" || { echo "::error::app not signed by gossip.vmd1.dev"; exit 1; }
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          echo "App version: $VERSION"
+          [ "$VERSION" = "${{ needs.version.outputs.number }}" ] || { echo "::error::app version $VERSION is not ${{ needs.version.outputs.number }}"; exit 1; }
           echo "Designated requirement (this must stay the same release to release):"
           codesign -d -r- "$APP" 2>&1 | grep designated
 

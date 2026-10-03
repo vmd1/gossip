@@ -41,8 +41,11 @@ android {
         applicationId = "dev.vmd1.gossip"
         minSdk = 29
         targetSdk = 34
+        // versionCode stays 1 on purpose: Android refuses to install a lower versionCode over a higher one, so
+        // stamping the release number into it would stop a local build from replacing a release APK. Only the
+        // human-readable name carries the release number (set by the release workflow); local builds are "dev".
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = System.getenv("GOSSIP_RELEASE_NUMBER")?.takeIf { it.isNotBlank() } ?: "dev"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
