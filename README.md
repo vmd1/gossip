@@ -44,7 +44,7 @@ device next to your Mac's display and push the cursor off that edge. It needs:
   `gossip.vmd1.dev` (not a paid Developer ID, so Gatekeeper still blocks a downloaded copy until you choose
   "Open Anyway" in System Settings → Privacy & Security). For local builds run `mac/scripts/create-signing-cert.sh`
   once (creates the key in `~/.gossip-signing/`, imports it into your login keychain and writes
-  `mac/Config/Signing.local.xcconfig`), then `xcodegen generate`. Back up `~/.gossip-signing/`: losing the key means
+  `mac/Config/Signing.local.xcconfig`; it also trusts the certificate for code signing in your account, which recent macOS needs before `codesign` will use it, so expect one password prompt), then `xcodegen generate`. Back up `~/.gossip-signing/`: losing the key means
   every user re-grants once. The release workflow signs with the same key, kept in the `release` GitHub
   environment (restricted to `main`; load it with `mac/scripts/set-ci-signing-secrets.sh`). Never commit the key.
   Gossip is not sandboxed (a sandboxed app cannot capture input), which also means a Mac that used an older,
