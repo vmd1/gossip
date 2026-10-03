@@ -147,6 +147,10 @@ tccutil reset ListenEvent dev.vmd1.gossip.Gossip
 
 ## Getting logs
 
+- **what the downloaded (release) apps log**
+  - they log failures only: warnings and errors on Android, error-level messages on the Mac
+  - they deliberately do not log routine activity, addresses, device names or network names
+  - for full detail, run a debug build ([Building and signing](building-and-signing.md)); debug builds log everything
 - **Mac**
   - open **Console.app**, select your Mac, and filter on `Gossip`
   - or stream from Terminal:
