@@ -64,6 +64,15 @@ class HidAndBackendTest {
         assertArrayEquals(byteArrayOf(5), r.msgs.single())
     }
 
+    @Test fun wakeIsAWakeupKeypress() {
+        val r = Recorder(); val b = backend(r)
+        b.wake()
+        // one write holding two INJECT_KEYCODE messages (down, up) for KEYCODE_WAKEUP = 224
+        val down = byteArrayOf(0, 0, 0, 0, 0, 224.toByte(), 0, 0, 0, 0, 0, 0, 0, 0)
+        val up = byteArrayOf(0, 1, 0, 0, 0, 224.toByte(), 0, 0, 0, 0, 0, 0, 0, 0)
+        assertArrayEquals(down + up, r.msgs.single())
+    }
+
     @Test fun leaveReleasesButKeepsTheDevicesUntilDestroyed() {
         val r = Recorder(); val b = backend(r)
         b.enter(ControlEdge.RIGHT, 0, display)
