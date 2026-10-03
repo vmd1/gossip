@@ -107,7 +107,7 @@ final class TrustedDevicesStore: ObservableObject {
             // paired device, forcing a full re-pair across the whole mesh for no
             // benefit — not part of the Connect→Gossip rebrand's scope.
             let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            PrivateFile.ensureDirectory(dir)
             self.fileURL = dir.appendingPathComponent("trusted-devices.json")
         }
         load()
@@ -216,7 +216,7 @@ final class TrustedDevicesStore: ObservableObject {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             guard let data = try? encoder.encode(devices) else { return }
-            try? data.write(to: fileURL, options: .atomic)
+            PrivateFile.write(data, to: fileURL)
         }
     }
 

@@ -18,7 +18,7 @@ Every frame on the socket has the same shape:
 
 - The 4-byte length prefix is an unsigned big-endian integer giving the length of `payload` in bytes (not including the 4-byte header itself).
 - `payload` is `Noise`-encrypted ciphertext (post-handshake transport messages), except for the handshake frames themselves, whose payload is the raw Noise handshake message bytes as defined by the `Noise_IK` pattern.
-- Readers must buffer until they have the full 4-byte length, then buffer until they have that many additional bytes, before attempting to process a frame. There is no maximum frame size defined in Wave 1; implementations should apply a sane upper bound (e.g. reject/close on an implausibly large length) as a defensive measure.
+- Readers must buffer until they have the full 4-byte length, then buffer until they have that many additional bytes, before attempting to process a frame. Readers must enforce a maximum: **16 KiB** for the two handshake frames (before the peer is authenticated) and **16 MiB** for transport frames; a larger declared length closes the connection. Implementations also bound the number of simultaneous not-yet-handshaken inbound connections (32 total, 4 per source address) and must not allocate a declared frame length up front. After the handshake, a peer that is already trusted must have presented the same Noise static key it was paired with; a different key closes the connection.
 
 ## Decrypted plaintext: the JSON envelope
 

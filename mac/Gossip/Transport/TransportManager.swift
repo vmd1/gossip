@@ -345,6 +345,14 @@ final class TransportManager: ObservableObject {
 
     private static let pendingConnectionTimeout: TimeInterval = 15
 
+    /// Largest frame accepted once the Noise session is established (matches Android's cap).
+    static let maxFrameBytes = 16 * 1024 * 1024
+    /// Largest frame accepted before the handshake completes; the hello/ack envelopes are a few hundred bytes.
+    static let maxHandshakeFrameBytes = 16 * 1024
+    /// Caps on simultaneously pending (not yet handshaken) inbound connections, overall and per source IP.
+    static let maxPendingInbound = 32
+    static let maxPendingInboundPerHost = 4
+
     private func handleConnectionState(_ state: NWConnection.State, pending: PeerConnection) {
         switch state {
         case .ready:
@@ -388,6 +396,14 @@ final class TransportManager: ObservableObject {
     // MARK: - Inbound connection (responder role)
 
     private func accept(connection: NWConnection) {
+        let host = Self.hostString(of: connection.endpoint)
+        let pendingInbound = pendingByObjectId.values.filter { $0.deviceId == nil && $0.dialTargetDeviceId == nil }
+        if pendingInbound.count >= Self.maxPendingInbound
+            || (host != nil && pendingInbound.filter { Self.hostString(of: $0.connection.endpoint) == host }.count >= Self.maxPendingInboundPerHost) {
+            gossipError("Gossip: too many pending inbound connections; refusing one")
+            connection.cancel()
+            return
+        }
         // Responder doesn't know the initiator's static key yet; it's
         // learned from message 1.
         let session = NoiseSession(
@@ -412,6 +428,11 @@ final class TransportManager: ObservableObject {
         resolvePeerIPAddress(pending)
         startReceiveLoop(pending: pending)
         scheduleTimeout(for: pending)
+    }
+
+    private static func hostString(of endpoint: NWEndpoint) -> String? {
+        guard case .hostPort(let host, _) = endpoint else { return nil }
+        return "\(host)".split(separator: "%").first.map(String.init)
     }
 
     /// Extracts the remote endpoint's bare IP address (stripping any zone
@@ -483,6 +504,12 @@ final class TransportManager: ObservableObject {
         while pending.receiveBuffer.count >= 4 {
             let lengthBytes = pending.receiveBuffer.prefix(4)
             let length = lengthBytes.withUnsafeBytes { $0.load(as: UInt32.self) }.bigEndian
+            let limit = pending.noiseSession.state == .established ? Self.maxFrameBytes : Self.maxHandshakeFrameBytes
+            guard Int(length) <= limit else {
+                gossipError("Gossip: frame length \(length) exceeds limit; closing")
+                teardownAny(pending)
+                return
+            }
             let total = 4 + Int(length)
             guard pending.receiveBuffer.count >= total else { break }
             let framePayload = pending.receiveBuffer.subdata(in: 4..<total)
@@ -573,7 +600,14 @@ final class TransportManager: ObservableObject {
     private func finalizeHandshake(pending: PeerConnection) {
         guard let peer = pending.pendingPeer, let publicKey = pending.noiseSession.peerStaticKey else { return }
 
-        if trustedDevices.isTrusted(deviceId: peer.deviceId) {
+        if let stored = trustedDevices.device(for: peer.deviceId) {
+            // The claimed deviceId travels in plaintext; only the Noise static key is
+            // authenticated, so it must be the one this device was paired with.
+            guard Self.keysMatch(stored.publicKeyBase64, publicKey) else {
+                gossipError("Gossip: handshake for \(peer.deviceId) presented a different key than the one it was paired with; closing")
+                teardownAny(pending)
+                return
+            }
             promote(pending, peer: peer)
             trustedConnectedHandlers.forEach { $0(peer) }
             sendPresence(online: true)
@@ -612,6 +646,15 @@ final class TransportManager: ObservableObject {
             // No pairing UI registered to confirm trust; refuse to proceed silently connected.
             teardownAny(pending)
         }
+    }
+
+    static func keysMatch(_ storedBase64: String, _ presented: Curve25519.KeyAgreement.PublicKey) -> Bool {
+        guard let stored = Data(base64Encoded: storedBase64) else { return false }
+        let presentedBytes = presented.rawRepresentation
+        guard stored.count == presentedBytes.count else { return false }
+        var diff: UInt8 = 0
+        for (a, b) in zip(stored, presentedBytes) { diff |= a ^ b }
+        return diff == 0
     }
 
     /// Moves a connection that just finished handshaking from `pendingByObjectId`
@@ -993,17 +1036,20 @@ final class TransportManager: ObservableObject {
 /// Bounded FIFO of still-encrypted transport frames, see `PeerConnection.queuedFrames`.
 struct PendingFrameQueue {
     static let limit = 256
+    static let byteLimit = 4 * 1024 * 1024
     private var frames: [Data] = []
+    private var bytes = 0
 
-    /// Returns false (frame not stored) once the cap is hit.
+    /// Returns false (frame not stored) once either the frame-count or total-size cap is hit.
     mutating func enqueue(_ frame: Data) -> Bool {
-        guard frames.count < Self.limit else { return false }
+        guard frames.count < Self.limit, bytes + frame.count <= Self.byteLimit else { return false }
         frames.append(frame)
+        bytes += frame.count
         return true
     }
 
     mutating func drain() -> [Data] {
-        defer { frames.removeAll() }
+        defer { frames.removeAll(); bytes = 0 }
         return frames
     }
 }

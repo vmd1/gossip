@@ -44,4 +44,20 @@ final class PendingFrameQueueTests: XCTestCase {
         for _ in 0..<PendingFrameQueue.limit { XCTAssertTrue(queue.enqueue(Data([1]))) }
         XCTAssertFalse(queue.enqueue(Data([1])))
     }
+
+    func testQueueIsBoundedByTotalBytes() {
+        var queue = PendingFrameQueue()
+        XCTAssertTrue(queue.enqueue(Data(count: PendingFrameQueue.byteLimit)))
+        XCTAssertFalse(queue.enqueue(Data([1])))
+        _ = queue.drain()
+        XCTAssertTrue(queue.enqueue(Data([1])))
+    }
+
+    func testKeysMatchOnlyForTheStoredKey() {
+        let a = Curve25519.KeyAgreement.PrivateKey().publicKey
+        let b = Curve25519.KeyAgreement.PrivateKey().publicKey
+        XCTAssertTrue(TransportManager.keysMatch(a.rawRepresentation.base64EncodedString(), a))
+        XCTAssertFalse(TransportManager.keysMatch(a.rawRepresentation.base64EncodedString(), b))
+        XCTAssertFalse(TransportManager.keysMatch("not base64!", a))
+    }
 }
