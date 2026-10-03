@@ -171,6 +171,26 @@ final class UniversalControlManagerTests: XCTestCase {
         XCTAssertEqual(manager.layout.devices["B"]?.x ?? 0, 2240, accuracy: 0.01, "snapped")
     }
 
+    // MARK: Trackpad gestures
+
+    func testGesturesAreSwallowedWhileThePointerIsOnADeviceAndPassOnTheMac() {
+        makeReady("A", "B")
+        XCTAssertEqual(manager.handle(.gesture), .pass, "on the Mac, gestures work as usual")
+        pushIntoA()
+        let before = sessions["A"]!.frames.count
+        XCTAssertEqual(manager.handle(.gesture), .swallow, "a 3-finger swipe must not reach the Dock and re-show the Mac cursor")
+        XCTAssertEqual(sessions["A"]!.frames.count, before, "and is not forwarded to the device")
+    }
+
+    func testTheGestureEventTypesAreTheMultiTouchFamily() {
+        for raw: UInt32 in [18, 19, 20, 29, 30, 31, 32, 33, 34, 37] {
+            XCTAssertTrue(ControlEventTap.isGesture(CGEventType(rawValue: raw)!), "\(raw)")
+        }
+        for type in [CGEventType.mouseMoved, .scrollWheel, .keyDown, .leftMouseDown, .flagsChanged] {
+            XCTAssertFalse(ControlEventTap.isGesture(type), "\(type.rawValue)")
+        }
+    }
+
     // MARK: Navigation shortcuts
 
     func testCommandNumberShortcutsSendDeviceActionsInsteadOfKeys() {
