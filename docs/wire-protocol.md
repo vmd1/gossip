@@ -20,6 +20,10 @@ Every frame on the socket has the same shape:
 - `payload` is `Noise`-encrypted ciphertext (post-handshake transport messages), except for the handshake frames themselves, whose payload is the raw Noise handshake message bytes as defined by the `Noise_IK` pattern.
 - Readers must buffer until they have the full 4-byte length, then buffer until they have that many additional bytes, before attempting to process a frame. Readers must enforce a maximum: **16 KiB** for the two handshake frames (before the peer is authenticated) and **16 MiB** for transport frames; a larger declared length closes the connection. Implementations also bound the number of simultaneous not-yet-handshaken inbound connections (32 total, 4 per source address) and must not allocate a declared frame length up front. After the handshake, a peer that is already trusted must have presented the same Noise static key it was paired with; a different key closes the connection.
 
+## Origin authentication
+
+Hop-by-hop Noise only proves who the *adjacent* peer is. To stop any member from forging a message "from" another device (or re-targeting one), every envelope except the two handshake messages carries `sig`: an Ed25519 signature by `senderId`'s signing key over the envelope's canonical form (see `schema/envelope.schema.json` and `schema/envelope-signing-vectors.json`). The originator signs once; relays forward the envelope unchanged apart from `ttl` (not signed). Receivers verify **before** de-duplicating, acting or relaying, using the signing key stored for `senderId`; a missing key or bad signature drops the envelope (a raw follow-up frame that is already on the wire is still drained and discarded). Payloads therefore may only contain integer numbers.
+
 ## Decrypted plaintext: the JSON envelope
 
 Once a transport frame's ciphertext is decrypted via the established Noise session, the resulting plaintext is a single JSON document matching `schema/envelope.schema.json` — the envelope described in that schema (`v`, `id`, `type`, `senderId`, `recipientId`, `broadcast`, `ts`, `payload`).

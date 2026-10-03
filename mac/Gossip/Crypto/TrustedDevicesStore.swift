@@ -93,11 +93,17 @@ final class TrustedDevicesStore: ObservableObject {
     @Published private(set) var devices: [TrustedDevice] = []
 
     private let fileURL: URL
+    private let revokedFileURL: URL
+    /// Sticky tombstones: deviceId -> when it was revoked (Unix ms). Gossip can't re-add a
+    /// revoked device unless the introduction is newer than the revocation, and pairing it
+    /// directly again clears the tombstone.
+    private var revoked: [String: Int64] = [:]
     private let queue = DispatchQueue(label: "dev.vmd1.gossip.trusteddevicesstore")
 
     init(fileURL: URL? = nil) {
         if let fileURL {
             self.fileURL = fileURL
+            self.revokedFileURL = fileURL.deletingLastPathComponent().appendingPathComponent(fileURL.deletingPathExtension().lastPathComponent + "-revoked.json")
         } else {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             // Deliberately still "Connect", not "Gossip" — this is the on-disk
@@ -109,6 +115,7 @@ final class TrustedDevicesStore: ObservableObject {
             let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
             PrivateFile.ensureDirectory(dir)
             self.fileURL = dir.appendingPathComponent("trusted-devices.json")
+            self.revokedFileURL = dir.appendingPathComponent("revoked-devices.json")
         }
         load()
     }
@@ -146,34 +153,42 @@ final class TrustedDevicesStore: ObservableObject {
         queue.sync {
             devices.removeAll { $0.deviceId == deviceId }
             devices.append(device)
+            revoked.removeValue(forKey: deviceId)
         }
         persist()
         publishOnMain()
         return device
     }
 
-    /// Fills in `TrustedDevice.signingPublicKeyBase64` for a row paired before that
-    /// field existed, learned later via `trust.roster_update` gossip. No-ops if
-    /// `deviceId` isn't trusted or already has a signing key on file — never
-    /// overwrites an already-known key with a gossiped one, same "never clobber" rule
-    /// `RosterGossipManager` applies to every other field on an already-trusted row.
-    /// Idempotent: re-applying the same key is a no-op after the first call.
-    func backfillSigningPublicKey(deviceId: String, signingPublicKeyBase64: String) {
+    /// Records the signing key a device presented inside an authenticated Noise
+    /// handshake (it was bound to the static key this device was paired with). Replaces a
+    /// missing value or one learned second-hand via gossip. Idempotent.
+    func setSigningPublicKey(deviceId: String, signingPublicKeyBase64: String) {
+        var changed = false
         queue.sync {
             guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }),
-                  devices[index].signingPublicKeyBase64 == nil else { return }
+                  devices[index].signingPublicKeyBase64 != signingPublicKeyBase64 else { return }
             devices[index].signingPublicKeyBase64 = signingPublicKeyBase64
+            changed = true
+        }
+        guard changed else { return }
+        persist()
+        publishOnMain()
+    }
+
+    /// Removes the device and records a tombstone so gossip can't quietly bring it back.
+    /// `revokedAt` is when the revocation happened (Unix ms); keeps the later of two.
+    func revoke(deviceId: String, revokedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
+        queue.sync {
+            devices.removeAll { $0.deviceId == deviceId }
+            revoked[deviceId] = max(revoked[deviceId] ?? 0, revokedAt)
         }
         persist()
         publishOnMain()
     }
 
-    func revoke(deviceId: String) {
-        queue.sync {
-            devices.removeAll { $0.deviceId == deviceId }
-        }
-        persist()
-        publishOnMain()
+    func revokedAt(deviceId: String) -> Int64? {
+        queue.sync { revoked[deviceId] }
     }
 
     func setFallbackHost(deviceId: String, fallbackHost: String?) {
@@ -207,6 +222,10 @@ final class TrustedDevicesStore: ObservableObject {
             if let decoded = try? decoder.decode([TrustedDevice].self, from: data) {
                 devices = decoded
             }
+            if let data = try? Data(contentsOf: revokedFileURL),
+               let decoded = try? JSONDecoder().decode([String: Int64].self, from: data) {
+                revoked = decoded
+            }
         }
     }
 
@@ -217,6 +236,9 @@ final class TrustedDevicesStore: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             guard let data = try? encoder.encode(devices) else { return }
             PrivateFile.write(data, to: fileURL)
+            if let revokedData = try? JSONEncoder().encode(revoked) {
+                PrivateFile.write(revokedData, to: revokedFileURL)
+            }
         }
     }
 

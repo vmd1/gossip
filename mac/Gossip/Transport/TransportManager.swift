@@ -117,6 +117,8 @@ final class TransportManager: ObservableObject {
         var noiseSession: NoiseSession
         var receiveBuffer = Data()
         var pendingPeer: HandshakePeerInfo?
+        /// Token the initiator presented in its Noise payload (responder role only).
+        var presentedPairingToken: String?
         var expectedRemoteStaticKey: Curve25519.KeyAgreement.PublicKey?
         /// Set only for outbound dials, so teardown can clear `dialingDeviceIds`.
         var dialTargetDeviceId: String?
@@ -378,19 +380,48 @@ final class TransportManager: ObservableObject {
     /// both are independently-implemented Noise state machines that only agree on wire bytes,
     /// not on Swift/Kotlin types.
     private func sendHandshakeMessage1(pending: PeerConnection) {
-        guard let message = try? pending.noiseSession.createMessage1(payload: Data()) else { return }
+        guard let identityPayload = try? localHandshakeIdentity().encoded(),
+              let message = try? pending.noiseSession.createMessage1(payload: identityPayload) else { return }
         let envelope = Envelope(
             type: "handshake.hello",
             senderId: identity.deviceId,
-            payload: .object([
-                "noise": .string(message.base64EncodedString()),
-                "deviceName": .string(currentDeviceName()),
-                "deviceType": .string(DeviceType.mac.rawValue),
-                "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
-            ])
+            payload: .object(["noise": .string(message.base64EncodedString())])
         )
         guard let framed = try? envelope.encoded() else { return }
         sendFramed(framed, over: pending.connection)
+    }
+
+    private func localHandshakeIdentity() -> HandshakeIdentity {
+        HandshakeIdentity(
+            deviceId: identity.deviceId,
+            deviceName: currentDeviceName(),
+            deviceType: DeviceType.mac.rawValue,
+            signingPublicKey: identity.signingKey.publicKey.rawRepresentation.base64EncodedString(),
+            pairingToken: nil
+        )
+    }
+
+    // MARK: - Pairing gate
+
+    /// While a pairing QR is on screen, the token it encodes. An untrusted peer is only
+    /// ever offered to the user while this is armed and the peer presents it.
+    private var armedPairing: (token: String, expires: Date)?
+    private var untrustedPromptActive = false
+    private static let pairingArmDuration: TimeInterval = 300
+
+    func armPairing(token: String) {
+        queue.async { [weak self] in
+            self?.armedPairing = (token, Date().addingTimeInterval(Self.pairingArmDuration))
+        }
+    }
+
+    func disarmPairing() {
+        queue.async { [weak self] in self?.armedPairing = nil }
+    }
+
+    private func pairingAllows(_ presented: String?) -> Bool {
+        guard let armed = armedPairing, armed.expires > Date() else { return false }
+        return PairingCode.tokenMatches(armed: armed.token, presented: presented)
     }
 
     // MARK: - Inbound connection (responder role)
@@ -543,25 +574,20 @@ final class TransportManager: ObservableObject {
                   let noiseBytes = Data(base64Encoded: noiseBase64) else {
                 throw NoiseError.invalidMessage
             }
-            _ = try pending.noiseSession.consumeMessage1(noiseBytes)
+            let helloPayload = try pending.noiseSession.consumeMessage1(noiseBytes)
 
-            let deviceName = helloEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
-            let deviceTypeRaw = helloEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
-            let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
-            let signingPublicKey = helloEnvelope.payload["signingPublicKey"]?.stringValue.flatMap { Data(base64Encoded: $0) } ?? Data()
-            pending.pendingPeer = HandshakePeerInfo(deviceId: helloEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
+            // Identity comes from the authenticated Noise payload, not the plaintext envelope.
+            let claimed = try HandshakeIdentity.decode(helloPayload)
+            guard claimed.deviceId == helloEnvelope.senderId else { throw NoiseError.invalidMessage }
+            pending.pendingPeer = claimed.peerInfo
+            pending.presentedPairingToken = claimed.pairingToken
 
-            let message2 = try pending.noiseSession.createMessage2(payload: Data())
+            let message2 = try pending.noiseSession.createMessage2(payload: try localHandshakeIdentity().encoded())
             let ackEnvelope = Envelope(
                 type: "handshake.ack",
                 senderId: identity.deviceId,
                 recipientId: helloEnvelope.senderId,
-                payload: .object([
-                    "noise": .string(message2.base64EncodedString()),
-                    "deviceName": .string(currentDeviceName()),
-                    "deviceType": .string(DeviceType.mac.rawValue),
-                    "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
-                ])
+                payload: .object(["noise": .string(message2.base64EncodedString())])
             )
             let framed = try ackEnvelope.encoded()
             sendFramed(framed, over: pending.connection)
@@ -583,13 +609,10 @@ final class TransportManager: ObservableObject {
                   let noiseBytes = Data(base64Encoded: noiseBase64) else {
                 throw NoiseError.invalidMessage
             }
-            _ = try pending.noiseSession.consumeMessage2(noiseBytes)
-
-            let deviceName = ackEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
-            let deviceTypeRaw = ackEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
-            let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
-            let signingPublicKey = ackEnvelope.payload["signingPublicKey"]?.stringValue.flatMap { Data(base64Encoded: $0) } ?? Data()
-            pending.pendingPeer = HandshakePeerInfo(deviceId: ackEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
+            let ackPayload = try pending.noiseSession.consumeMessage2(noiseBytes)
+            let claimed = try HandshakeIdentity.decode(ackPayload)
+            guard claimed.deviceId == ackEnvelope.senderId else { throw NoiseError.invalidMessage }
+            pending.pendingPeer = claimed.peerInfo
             finalizeHandshake(pending: pending)
         } catch {
             gossipError("Gossip: handshake message 2 failed: \(error)")
@@ -608,16 +631,29 @@ final class TransportManager: ObservableObject {
                 teardownAny(pending)
                 return
             }
+            // The signing key arrived inside the authenticated handshake, so it is the
+            // one to trust for this device (replaces a missing or gossiped value).
+            trustedDevices.setSigningPublicKey(deviceId: peer.deviceId, signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString())
             promote(pending, peer: peer)
             trustedConnectedHandlers.forEach { $0(peer) }
             sendPresence(online: true)
             startHeartbeatMonitoring(for: pending)
             replayQueuedFrames(for: pending)
         } else if let onUntrustedHandshake {
+            // An unknown device is only offered to the user while a pairing QR is showing,
+            // it must present that QR's token, and only one prompt may be open at a time.
+            guard pairingAllows(pending.presentedPairingToken), !untrustedPromptActive else {
+                gossipError("Gossip: refused an untrusted handshake outside an active pairing")
+                teardownAny(pending)
+                return
+            }
+            untrustedPromptActive = true
+            armedPairing = nil // single use
             onUntrustedHandshake(peer, publicKey) { [weak self] confirmed in
                 // The UI answers on the main thread; peers/Noise state live on `queue`.
                 self?.queue.async { [weak self] in
                     guard let self else { return }
+                    self.untrustedPromptActive = false
                     if confirmed {
                         self.trustedDevices.addDevice(
                             deviceId: peer.deviceId,
@@ -740,6 +776,14 @@ final class TransportManager: ObservableObject {
     /// downstream hop's own "next frame is raw" expectation if some other
     /// message interleaved in between.
     private func handleReceivedEnvelope(_ envelope: Envelope, arrivedFrom: String) {
+        // Verified before anything else so a forged copy can neither be acted on, relayed,
+        // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that
+        // is physically coming next on this connection is still drained, just discarded.
+        guard isAuthentic(envelope) else {
+            gossipError("Gossip: dropped \(envelope.type) with an invalid or unverifiable signature")
+            if envelope.hasRawFollowup { pendingRawFrameHandlers[arrivedFrom] = { _ in } }
+            return
+        }
         // Any message from a device — even one relayed through another — proves it is reachable.
         if envelope.senderId != identity.deviceId {
             let sender = envelope.senderId
@@ -850,8 +894,9 @@ final class TransportManager: ObservableObject {
     /// envelope's own `id` as seen so a self-addressed loop (e.g. a broadcast that
     /// somehow finds its way back around the mesh) is dropped rather than
     /// re-delivered to whoever just sent it.
-    func send(envelope: Envelope) throws {
-        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
+    func send(envelope unsigned: Envelope) throws {
+        guard featureSettings.isMessageAllowed(type: unsigned.type) else { return }
+        let envelope = try signedForOrigination(unsigned)
         recordSeen(envelope.id)
         let targets = forwardTargets(for: envelope, arrivedFrom: nil)
         guard !targets.isEmpty else { throw SendError.notConnected }
@@ -866,6 +911,28 @@ final class TransportManager: ObservableObject {
         if let lastError {
             throw lastError
         }
+    }
+
+    /// Signs a locally-originated envelope with this device's key (relays forward the
+    /// original signature untouched).
+    private func signedForOrigination(_ envelope: Envelope) throws -> Envelope {
+        guard envelope.sig == nil, envelope.senderId == identity.deviceId else { return envelope }
+        return try EnvelopeSigning.sign(envelope, with: identity.signingKey)
+    }
+
+    /// Whether `envelope` really was produced by its claimed `senderId`. A sender we hold
+    /// no signing key for can't be verified, so its messages are dropped.
+    private func isAuthentic(_ envelope: Envelope) -> Bool {
+        let key: Curve25519.Signing.PublicKey?
+        if envelope.senderId == identity.deviceId {
+            key = identity.signingKey.publicKey
+        } else {
+            key = trustedDevices.device(for: envelope.senderId)?.signingPublicKeyBase64
+                .flatMap { Data(base64Encoded: $0) }
+                .flatMap { try? Curve25519.Signing.PublicKey(rawRepresentation: $0) }
+        }
+        guard let key else { return false }
+        return EnvelopeSigning.verify(envelope, publicKey: key)
     }
 
     private func send(envelope: Envelope, to peer: PeerConnection) throws {
@@ -900,8 +967,9 @@ final class TransportManager: ObservableObject {
     /// from `envelope.broadcast`/`recipientId` exactly like `send(envelope:)`; devices
     /// with no direct connection to any of those targets receive it via each target's
     /// own relay (see `handleReceivedEnvelope`), not directly from here.
-    func send(_ envelope: Envelope, withRawFollowup rawData: Data) throws {
-        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
+    func send(_ unsigned: Envelope, withRawFollowup rawData: Data) throws {
+        guard featureSettings.isMessageAllowed(type: unsigned.type) else { return }
+        let envelope = try signedForOrigination(unsigned)
         recordSeen(envelope.id)
         let targets = forwardTargets(for: envelope, arrivedFrom: nil)
         guard !targets.isEmpty else { throw SendError.notConnected }

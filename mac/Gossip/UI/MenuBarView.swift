@@ -521,10 +521,15 @@ struct PairingSheetView: View {
                 Text("Waiting for phone to connect…")
                     .foregroundStyle(.secondary)
                 ProgressView()
-            case .confirmingTrust(let deviceName):
+            case .confirmingTrust(let deviceName, let code):
                 Text("Trust this device?")
                     .font(.headline)
                 Text(deviceName)
+                Text(code)
+                    .font(.system(.title2, design: .monospaced))
+                Text("Check that the other device shows this same code.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack {
                     Button("Reject") { pairingViewModel.rejectTrust() }
                     Button("Confirm") { pairingViewModel.confirmTrust() }

@@ -45,7 +45,8 @@ data class PairingQrPayload(
 sealed class PairingUiState {
     data object Idle : PairingUiState()
     data object Discovering : PairingUiState()
-    data object Handshaking : PairingUiState()
+    /** [code] is the short code the other device shows too, so the user can check both screens match. */
+    data class Handshaking(val code: String) : PairingUiState()
     data class Success(val deviceId: String, val deviceName: String) : PairingUiState()
     data class Failed(val reason: String) : PairingUiState()
 }
@@ -84,9 +85,12 @@ class PairingViewModel(
                 return@launch
             }
 
-            _uiState.value = PairingUiState.Handshaking
             val remoteStaticKey = Base64.decode(payload.responderPublicKey, Base64.NO_WRAP)
-            transportManager.connect(peer.host, peer.port, remoteStaticKey, deviceId = payload.responderDeviceId)
+            _uiState.value = PairingUiState.Handshaking(transportManager.pairingCodeFor(remoteStaticKey))
+            transportManager.connect(
+                peer.host, peer.port, remoteStaticKey,
+                deviceId = payload.responderDeviceId, pairingToken = payload.pairingToken
+            )
 
             // Wait for *this specific* device to show up as connected, not just "connected
             // to anything" — with a mesh, this device may already be connected to some

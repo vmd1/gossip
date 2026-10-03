@@ -147,11 +147,11 @@ Everything from "Not yet built" in the previous version of this doc is now imple
 newest/most-load-bearing first:
 
 - **`TrustedDevice` Ed25519-public-key schema extension**: `signingPublicKey` travels in
-  `handshake.hello`/`handshake.ack` (both directions, every pairing and every reconnect handshake)
+  the Noise payload of `handshake.hello`/`handshake.ack` (both directions, every pairing and every reconnect handshake)
   and in the pairing QR payload (`responderSigningPublicKey`). Persisted as
   `TrustedDevice.signingPublicKey` (Android, nullable `ByteArray`) / `.signingPublicKeyBase64`
-  (Mac, nullable `String`); a row paired before this field existed gets backfilled via
-  `trust.roster_update` gossip (see that row in `schema/message-types.md`) rather than needing a
+  (Mac, nullable `String`); a row paired before this field existed gets it from that device's next authenticated
+  handshake (it is no longer taken from `trust.roster_update` gossip; see `schema/message-types.md`) rather than needing a
   re-pair. **Live-verified**: real Mac↔phone handshakes this session actually carried and consumed
   this field (see the "Live end-to-end test" section below).
 - **Multi-device requester role flexibility**: a phone can run an on-demand secondary BLE scan

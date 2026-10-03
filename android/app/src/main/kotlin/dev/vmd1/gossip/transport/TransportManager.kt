@@ -11,7 +11,10 @@ import dev.vmd1.gossip.crypto.TrustedDevice
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
 import dev.vmd1.gossip.protocol.DeviceType
 import dev.vmd1.gossip.protocol.Envelope
+import dev.vmd1.gossip.protocol.EnvelopeSigning
+import dev.vmd1.gossip.protocol.HandshakeIdentity
 import dev.vmd1.gossip.protocol.HandshakePayload
+import dev.vmd1.gossip.protocol.PairingCode
 import dev.vmd1.gossip.protocol.MessageType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +55,9 @@ data class HandshakePeerInfo(
     val deviceId: String,
     val deviceName: String,
     val deviceType: DeviceType,
-    val signingPublicKey: ByteArray
+    val signingPublicKey: ByteArray,
+    /** Token the initiator presented inside its Noise payload (responder role only). */
+    val pairingToken: String? = null
 )
 
 /**
@@ -235,6 +240,31 @@ class TransportManager(
         }
     }
 
+    /** While a pairing QR is on screen, its token. An untrusted peer is only ever offered to
+     *  the user while this is armed and the peer presents it (see [armPairing]). */
+    @Volatile private var armedPairingToken: String? = null
+    @Volatile private var armedPairingExpiresAt = 0L
+    private val untrustedPromptActive = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun armPairing(token: String) {
+        armedPairingToken = token
+        armedPairingExpiresAt = System.currentTimeMillis() + PAIRING_ARM_MS
+    }
+
+    fun disarmPairing() = clearArmedPairing()
+
+    /** The code both devices derive for this pairing; see [PairingCode]. */
+    fun pairingCodeFor(remoteStaticKey: ByteArray): String =
+        PairingCode.make(identityKeyStore.x25519KeyPair.publicKey, remoteStaticKey)
+
+    private fun clearArmedPairing() {
+        armedPairingToken = null
+        armedPairingExpiresAt = 0L
+    }
+
+    private fun pairingAllows(presented: String?): Boolean =
+        System.currentTimeMillis() < armedPairingExpiresAt && PairingCode.tokenMatches(armedPairingToken, presented)
+
     /** Pre-authentication limits on inbound connections: overall and per source address. */
     private val pendingInboundByHost = ConcurrentHashMap<String, AtomicInteger>()
     private val pendingInboundTotal = AtomicInteger(0)
@@ -311,7 +341,7 @@ class TransportManager(
      * to skip redundant dials when already connected/connecting to this exact peer,
      * without blocking dials to any *other* trusted device.
      */
-    fun connect(host: String, port: Int, remoteStaticPublicKey: ByteArray, deviceId: String) {
+    fun connect(host: String, port: Int, remoteStaticPublicKey: ByteArray, deviceId: String, pairingToken: String? = null) {
         if (peers.containsKey(deviceId) || !dialingDeviceIds.add(deviceId)) return
         recomputeConnectionState()
         scope.launch {
@@ -328,7 +358,7 @@ class TransportManager(
                 recomputeConnectionState()
                 return@launch
             }
-            launchConnectionLoop(client, role = NoiseRole.INITIATOR, remoteStaticPublicKey = remoteStaticPublicKey, dialTargetDeviceId = deviceId)
+            launchConnectionLoop(client, role = NoiseRole.INITIATOR, remoteStaticPublicKey = remoteStaticPublicKey, dialTargetDeviceId = deviceId, pairingToken = pairingToken)
         }
     }
 
@@ -341,8 +371,9 @@ class TransportManager(
      *  envelope). Records the envelope's own `id` as seen so a self-addressed loop (e.g. a
      *  broadcast that somehow finds its way back around the mesh) is dropped rather than
      *  re-delivered back to whoever just sent it. */
-    suspend fun send(envelope: Envelope) = withContext(Dispatchers.IO) {
-        if (!isMessageAllowed(envelope.type)) return@withContext
+    suspend fun send(unsigned: Envelope) = withContext(Dispatchers.IO) {
+        if (!isMessageAllowed(unsigned.type)) return@withContext
+        val envelope = signedForOrigination(unsigned)
         recordSeen(envelope.id)
         val targets = forwardTargets(envelope, arrivedFrom = null)
         if (targets.isEmpty()) throw IllegalStateException("Not connected")
@@ -355,6 +386,24 @@ class TransportManager(
             }
         }
         lastError?.let { throw it }
+    }
+
+    /** Signs a locally-originated envelope with this device's key (relays forward the
+     *  original signature untouched). */
+    private fun signedForOrigination(envelope: Envelope): Envelope =
+        if (envelope.sig == null && envelope.senderId == identityKeyStore.deviceId) {
+            EnvelopeSigning.sign(envelope, identityKeyStore.ed25519PrivateKey)
+        } else envelope
+
+    /** Whether [envelope] really was produced by its claimed `senderId`. A sender we hold
+     *  no signing key for can't be verified, so its messages are dropped. */
+    private fun isAuthentic(envelope: Envelope): Boolean {
+        val key = if (envelope.senderId == identityKeyStore.deviceId) {
+            identityKeyStore.ed25519PublicKey
+        } else {
+            trustedDevicesStore.getDevice(envelope.senderId)?.signingPublicKey
+        } ?: return false
+        return EnvelopeSigning.verify(envelope, key)
     }
 
     /** Encrypts + writes [envelope] to one specific peer. Both the encrypt and the write
@@ -372,8 +421,9 @@ class TransportManager(
      *  `envelope.broadcast`/`recipientId` exactly like [send]; devices with no direct
      *  connection to any of those targets receive it via each target's own relay (see
      *  [handleReceivedEnvelope]), not directly from here. */
-    suspend fun send(envelope: Envelope, rawFollowup: ByteArray) = withContext(Dispatchers.IO) {
-        if (!isMessageAllowed(envelope.type)) return@withContext
+    suspend fun send(unsigned: Envelope, rawFollowup: ByteArray) = withContext(Dispatchers.IO) {
+        if (!isMessageAllowed(unsigned.type)) return@withContext
+        val envelope = signedForOrigination(unsigned)
         recordSeen(envelope.id)
         val targets = forwardTargets(envelope, arrivedFrom = null)
         if (targets.isEmpty()) throw IllegalStateException("Not connected")
@@ -434,7 +484,8 @@ class TransportManager(
         client: Socket,
         role: NoiseRole,
         remoteStaticPublicKey: ByteArray?,
-        dialTargetDeviceId: String? = null
+        dialTargetDeviceId: String? = null,
+        pairingToken: String? = null
     ) {
         inFlightHandshakes.incrementAndGet()
         recomputeConnectionState()
@@ -465,7 +516,7 @@ class TransportManager(
 
                 val session = NoiseSession(role, identityKeyStore.x25519KeyPair, remoteStaticPublicKey)
                 val peerInfo = if (role == NoiseRole.INITIATOR) {
-                    performInitiatorHandshake(session, out, input)
+                    performInitiatorHandshake(session, out, input, pairingToken)
                 } else {
                     performResponderHandshake(session, out, input)
                 }
@@ -494,14 +545,32 @@ class TransportManager(
                         return@launch
                     }
                 }
+                if (trustedDevicesStore.isTrusted(remoteId)) {
+                    // The signing key arrived inside the authenticated handshake, so it is the
+                    // one to trust for this device (replaces a missing or gossiped value).
+                    trustedDevicesStore.setSigningPublicKey(remoteId, peerInfo.signingPublicKey)
+                }
                 if (role == NoiseRole.RESPONDER && !trustedDevicesStore.isTrusted(remoteId)) {
+                    // An unknown device is only offered to the user while a pairing QR is
+                    // showing, it must present that QR's token, and only one prompt may be
+                    // open at a time.
+                    if (!pairingAllows(peerInfo.pairingToken) || !untrustedPromptActive.compareAndSet(false, true)) {
+                        Log.w(TAG, "Refused an untrusted handshake outside an active pairing")
+                        runCatching { client.close() }
+                        return@launch
+                    }
+                    clearArmedPairing() // single use
                     val remotePublicKey = session.remoteStaticKey
                     if (remotePublicKey == null) {
                         Log.w(TAG, "Handshake with $remoteId completed without a resolved remote static key")
                         runCatching { client.close() }
                         return@launch
                     }
-                    val confirmed = onUntrustedHandshake?.invoke(peerInfo, remotePublicKey) ?: false
+                    val confirmed = try {
+                        onUntrustedHandshake?.invoke(peerInfo, remotePublicKey) ?: false
+                    } finally {
+                        untrustedPromptActive.set(false)
+                    }
                     if (!confirmed) {
                         Log.i(TAG, "Untrusted handshake with $remoteId not confirmed; closing")
                         runCatching { client.close() }
@@ -606,6 +675,14 @@ class TransportManager(
      *  would desync a downstream hop's own "next frame is raw" expectation if some other
      *  message interleaved in between. */
     private suspend fun handleReceivedEnvelope(envelope: Envelope, arrivedFrom: String) {
+        // Verified before anything else so a forged copy can neither be acted on, relayed,
+        // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that is
+        // physically coming next on this connection is still drained, just discarded.
+        if (!isAuthentic(envelope)) {
+            Log.w(TAG, "Dropped ${envelope.type} with an invalid or unverifiable signature")
+            if (envelope.hasRawFollowup) pendingRawFrameHandlers[arrivedFrom] = {}
+            return
+        }
         // Any message from a device — even one relayed through another — proves it is reachable.
         if (envelope.senderId != identityKeyStore.deviceId) {
             val first = lastHeard.put(envelope.senderId, System.currentTimeMillis()) == null
@@ -703,17 +780,33 @@ class TransportManager(
         }
     }
 
-    private fun performInitiatorHandshake(session: NoiseSession, out: DataOutputStream, input: DataInputStream): HandshakePeerInfo {
-        val message1 = session.writeMessage1(ByteArray(0))
+    private fun localHandshakeIdentity(pairingToken: String?) = HandshakeIdentity(
+        deviceId = identityKeyStore.deviceId,
+        deviceName = deviceName,
+        deviceType = deviceType.wireValue,
+        signingPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP),
+        pairingToken = pairingToken
+    )
+
+    private fun HandshakeIdentity.toPeerInfo() = HandshakePeerInfo(
+        deviceId = deviceId,
+        deviceName = deviceName.take(80),
+        deviceType = DeviceType.fromWire(deviceType),
+        signingPublicKey = Base64.decode(signingPublicKey, Base64.NO_WRAP),
+        pairingToken = pairingToken
+    )
+
+    private fun performInitiatorHandshake(
+        session: NoiseSession,
+        out: DataOutputStream,
+        input: DataInputStream,
+        pairingToken: String?
+    ): HandshakePeerInfo {
+        val message1 = session.writeMessage1(localHandshakeIdentity(pairingToken).encode())
         val helloEnvelope = Envelope(
             type = MessageType.HANDSHAKE_HELLO,
             senderId = identityKeyStore.deviceId,
-            payload = HandshakePayload(
-                noise = Base64.encodeToString(message1, Base64.NO_WRAP),
-                deviceName = deviceName,
-                deviceType = deviceType.wireValue,
-                signingPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)
-            ).toJsonObject()
+            payload = HandshakePayload(noise = Base64.encodeToString(message1, Base64.NO_WRAP)).toJsonObject()
         )
         writeFrame(out, helloEnvelope.encode())
 
@@ -722,13 +815,10 @@ class TransportManager(
         require(ackEnvelope.type == MessageType.HANDSHAKE_ACK) { "Expected handshake.ack, got ${ackEnvelope.type}" }
         val ackPayload = HandshakePayload.fromJsonObject(ackEnvelope.payload)
         val message2 = Base64.decode(ackPayload.noise, Base64.NO_WRAP)
-        session.readMessage2(message2)
-        return HandshakePeerInfo(
-            deviceId = ackEnvelope.senderId,
-            deviceName = ackPayload.deviceName,
-            deviceType = DeviceType.fromWire(ackPayload.deviceType),
-            signingPublicKey = Base64.decode(ackPayload.signingPublicKey, Base64.NO_WRAP)
-        )
+        // Identity comes from the authenticated Noise payload, not the plaintext envelope.
+        val claimed = HandshakeIdentity.decode(session.readMessage2(message2))
+        require(claimed.deviceId == ackEnvelope.senderId) { "handshake identity mismatch" }
+        return claimed.toPeerInfo()
     }
 
     private fun performResponderHandshake(session: NoiseSession, out: DataOutputStream, input: DataInputStream): HandshakePeerInfo {
@@ -737,27 +827,18 @@ class TransportManager(
         require(helloEnvelope.type == MessageType.HANDSHAKE_HELLO) { "Expected handshake.hello, got ${helloEnvelope.type}" }
         val helloPayload = HandshakePayload.fromJsonObject(helloEnvelope.payload)
         val message1 = Base64.decode(helloPayload.noise, Base64.NO_WRAP)
-        session.readMessage1(message1)
+        val claimed = HandshakeIdentity.decode(session.readMessage1(message1).payload)
+        require(claimed.deviceId == helloEnvelope.senderId) { "handshake identity mismatch" }
 
-        val message2 = session.writeMessage2(ByteArray(0))
+        val message2 = session.writeMessage2(localHandshakeIdentity(null).encode())
         val ackEnvelope = Envelope(
             type = MessageType.HANDSHAKE_ACK,
             senderId = identityKeyStore.deviceId,
             recipientId = helloEnvelope.senderId,
-            payload = HandshakePayload(
-                noise = Base64.encodeToString(message2, Base64.NO_WRAP),
-                deviceName = deviceName,
-                deviceType = deviceType.wireValue,
-                signingPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)
-            ).toJsonObject()
+            payload = HandshakePayload(noise = Base64.encodeToString(message2, Base64.NO_WRAP)).toJsonObject()
         )
         writeFrame(out, ackEnvelope.encode())
-        return HandshakePeerInfo(
-            deviceId = helloEnvelope.senderId,
-            deviceName = helloPayload.deviceName,
-            deviceType = DeviceType.fromWire(helloPayload.deviceType),
-            signingPublicKey = Base64.decode(helloPayload.signingPublicKey, Base64.NO_WRAP)
-        )
+        return claimed.toPeerInfo()
     }
 
     private suspend fun sendPresence(type: String, recipientId: String) {
@@ -776,6 +857,7 @@ class TransportManager(
         private const val MAX_FRAME_BYTES = 16 * 1024 * 1024
         /** Hello/ack envelopes are a few hundred bytes; anything larger before auth is hostile. */
         internal const val MAX_HANDSHAKE_FRAME_BYTES = 16 * 1024
+        private const val PAIRING_ARM_MS = 5 * 60_000L
         private const val MAX_PENDING_INBOUND = 32
         private const val MAX_PENDING_INBOUND_PER_HOST = 4
         private const val LISTEN_BIND_ATTEMPTS = 5

@@ -107,7 +107,7 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
                 AlertDialog(
                     onDismissRequest = { viewModel.rejectTrust() },
                     title = { Text("Trust this device?") },
-                    text = { Text("${current.deviceName} wants to pair with this device.") },
+                    text = { Text("${current.deviceName} wants to pair with this device.\n\nCheck that the other device shows ${current.code}.") },
                     confirmButton = {
                         Button(onClick = { viewModel.confirmTrust() }) { Text("Confirm") }
                     },
