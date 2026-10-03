@@ -88,9 +88,13 @@ jobs:
       # Fail the release if the APK is not signed by the project key.
       - name: Verify signature
         run: |
+          set -uo pipefail
           APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
-          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | grep -E "Signer #1 certificate (DN|SHA-256)"
-          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | grep -q "SHA-256 digest: $EXPECTED_ANDROID_CERT_SHA256" \
+          echo "apksigner: $APKSIGNER"
+          OUT="$("$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk 2>&1)" \
+            || { echo "$OUT"; echo "::error::apksigner could not verify the APK"; exit 1; }
+          echo "$OUT" | grep -E "Signer #1 certificate (DN|SHA-256)" || echo "$OUT"
+          echo "$OUT" | grep -qi "SHA-256 digest: $EXPECTED_ANDROID_CERT_SHA256" \
             || { echo "::error::APK is not signed by the project key"; exit 1; }
 
       - name: Remove signing key
