@@ -161,7 +161,7 @@ final class DeviceControlSession: ControlSession {
     }
 
     private func fail(_ reason: String) {
-        NSLog("Gossip: universal control session to \(deviceId) failed: \(reason)")
+        gossipError("Gossip: universal control session to \(deviceId) failed: \(reason)")
         let wasLongLived = readySince.map { Date().timeIntervalSince($0) > 10 } ?? false
         endAttempt(notifyDevice: true)
         guard wanted else { return set(.idle) }

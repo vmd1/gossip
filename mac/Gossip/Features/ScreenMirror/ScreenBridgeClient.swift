@@ -64,10 +64,10 @@ final class ScreenBridgeClient {
             case .waiting(let error):
                 // Can't reach the host right now (no route, local-network permission denied, ...).
                 // For a direct LAN address this doesn't resolve itself, so fail fast instead of spinning.
-                NSLog("Gossip: screen bridge connection waiting: \(error)")
+                gossipError("Gossip: screen bridge connection waiting: \(error)")
                 self.finish(error)
             case .failed(let error):
-                NSLog("Gossip: screen bridge connection failed: \(error)")
+                gossipError("Gossip: screen bridge connection failed: \(error)")
                 self.finish(error)
             case .cancelled:
                 self.finish(nil)

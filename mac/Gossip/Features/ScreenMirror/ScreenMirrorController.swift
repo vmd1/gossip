@@ -229,7 +229,7 @@ final class ScreenMirrorController: ObservableObject {
     // MARK: - Teardown
 
     private func fail(_ s: Session, _ message: String) {
-        NSLog("Gossip: screen mirroring failed: \(message)")
+        gossipError("Gossip: screen mirroring failed: \(message)")
         send(type: "screen.stop", for: s)
         teardown(s)
         lastError = message

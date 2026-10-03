@@ -7,7 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dev.vmd1.gossip.R
@@ -257,150 +257,155 @@ class SyncForegroundService : Service() {
             readSize = { dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync.readFromSystem(applicationContext) }
         )
 
-        // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
-        // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val enable = intent.getBooleanExtra("enable", true)
-                    serviceScope.launch {
-                        val preferredMechanismId = dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext)
-                            .preferredHotspotMechanismId
-                        val result = dev.vmd1.gossip.features.hotspot.TetherHelper.setHotspotEnabled(
-                            applicationContext, enable, shizukuManager, preferredMechanismId = preferredMechanismId
-                        )
-                        Log.i("HotspotDebug", "setHotspotEnabled(enable=$enable) -> $result")
-                    }
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_TOGGLE_HOTSPOT"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hook to flip "Provide Instant Hotspot" without touching the
-        // real UI, for live end-to-end GATT testing — remove once the toggle's real UI
-        // is exercised directly instead.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val enable = intent.getBooleanExtra("enable", true)
-                    dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled = enable
-                    bleProximityMonitor.setHotspotAvailable(enable)
-                    Log.i("HotspotDebug", "provideHotspotEnabled -> $enable")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_SET_PROVIDE_HOTSPOT"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hook to verify HotspotCredentialReader's reflection-based
-        // getSoftApConfiguration() call against a real device before the real GATT
-        // response path exists — remove once Instant Hotspot's credential-delivery path
-        // is live-tested end-to-end via GATT instead.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val credentials = dev.vmd1.gossip.features.hotspot.HotspotCredentialReader.readCredentials(applicationContext, shizukuManager)
-                    Log.i("HotspotDebug", "readCredentials() -> $credentials")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_READ_HOTSPOT_CREDENTIALS"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hook to trigger the one-time Shizuku permission dialog before
-        // there's a real onboarding UI for it — remove once that UI lands.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    Log.i("HotspotDebug", "Shizuku state before request: ${shizukuManager?.state?.value}")
-                    shizukuManager?.requestPermission()
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_REQUEST_SHIZUKU"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hooks (registered only in debuggable builds): inject a screen.start /
-        // screen.stop envelope as if from a paired viewer, so the capture bridge can be exercised on
-        // an emulator with no Mac paired. `screen.ready`'s token is logged under tag ScreenMirror.
+        // Developer hooks (adb broadcasts that toggle the hotspot, read hotspot credentials and the clipboard, drive
+        // screen mirroring...). They are exported receivers that log sensitive values, so they exist ONLY in
+        // debuggable builds: the app that ships is a non-debuggable release build, where none of this is registered.
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            // Plays a 2 s 440 Hz tone on the media stream so audio capture can be verified without
-            // needing a music app: `am broadcast -a dev.vmd1.gossip.DEBUG_PLAY_TONE`.
+            // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
+            // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
                     override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                        Thread {
-                            val rate = 48_000
-                            val samples = ShortArray(rate * 2) { (Math.sin(2 * Math.PI * 440 * it / rate) * 8000).toInt().toShort() }
-                            val track = android.media.AudioTrack.Builder()
-                                .setAudioAttributes(android.media.AudioAttributes.Builder()
-                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
-                                .setAudioFormat(android.media.AudioFormat.Builder()
-                                    .setSampleRate(rate).setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
-                                .setBufferSizeInBytes(samples.size * 2).build()
-                            track.write(samples, 0, samples.size); track.play()
-                            Thread.sleep(2300); track.release()
-                        }.start()
+                        val enable = intent.getBooleanExtra("enable", true)
+                        serviceScope.launch {
+                            val preferredMechanismId = dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext)
+                                .preferredHotspotMechanismId
+                            val result = dev.vmd1.gossip.features.hotspot.TetherHelper.setHotspotEnabled(
+                                applicationContext, enable, shizukuManager, preferredMechanismId = preferredMechanismId
+                            )
+                            Log.i("HotspotDebug", "setHotspotEnabled(enable=$enable) -> $result")
+                        }
                     }
                 },
-                IntentFilter("dev.vmd1.gossip.DEBUG_PLAY_TONE"),
+                IntentFilter("dev.vmd1.gossip.DEBUG_TOGGLE_HOTSPOT"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hook to flip "Provide Instant Hotspot" without touching the
+            // real UI, for live end-to-end GATT testing — remove once the toggle's real UI
+            // is exercised directly instead.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val enable = intent.getBooleanExtra("enable", true)
+                        dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled = enable
+                        bleProximityMonitor.setHotspotAvailable(enable)
+                        Log.i("HotspotDebug", "provideHotspotEnabled -> $enable")
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_SET_PROVIDE_HOTSPOT"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hook to verify HotspotCredentialReader's reflection-based
+            // getSoftApConfiguration() call against a real device before the real GATT
+            // response path exists — remove once Instant Hotspot's credential-delivery path
+            // is live-tested end-to-end via GATT instead.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val credentials = dev.vmd1.gossip.features.hotspot.HotspotCredentialReader.readCredentials(applicationContext, shizukuManager)
+                        Log.i("HotspotDebug", "readCredentials() -> $credentials")
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_READ_HOTSPOT_CREDENTIALS"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hook to trigger the one-time Shizuku permission dialog before
+            // there's a real onboarding UI for it — remove once that UI lands.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        Log.i("HotspotDebug", "Shizuku state before request: ${shizukuManager?.state?.value}")
+                        shizukuManager?.requestPermission()
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_REQUEST_SHIZUKU"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hooks (registered only in debuggable builds): inject a screen.start /
+            // screen.stop envelope as if from a paired viewer, so the capture bridge can be exercised on
+            // an emulator with no Mac paired. `screen.ready`'s token is logged under tag ScreenMirror.
+            if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                // Plays a 2 s 440 Hz tone on the media stream so audio capture can be verified without
+                // needing a music app: `am broadcast -a dev.vmd1.gossip.DEBUG_PLAY_TONE`.
+                registerReceiver(
+                    object : android.content.BroadcastReceiver() {
+                        override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                            Thread {
+                                val rate = 48_000
+                                val samples = ShortArray(rate * 2) { (Math.sin(2 * Math.PI * 440 * it / rate) * 8000).toInt().toShort() }
+                                val track = android.media.AudioTrack.Builder()
+                                    .setAudioAttributes(android.media.AudioAttributes.Builder()
+                                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
+                                    .setAudioFormat(android.media.AudioFormat.Builder()
+                                        .setSampleRate(rate).setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
+                                    .setBufferSizeInBytes(samples.size * 2).build()
+                                track.write(samples, 0, samples.size); track.play()
+                                Thread.sleep(2300); track.release()
+                            }.start()
+                        }
+                    },
+                    IntentFilter("dev.vmd1.gossip.DEBUG_PLAY_TONE"),
+                    android.content.Context.RECEIVER_EXPORTED
+                )
+                registerReceiver(
+                    object : android.content.BroadcastReceiver() {
+                        override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                            val start = intent.action == "dev.vmd1.gossip.DEBUG_SCREEN_START"
+                            val payload = kotlinx.serialization.json.buildJsonObject {
+                                intent.getStringExtra("sessionId")?.let { put("sessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                                for (k in listOf("maxSize", "bitRate", "maxFps")) {
+                                    if (intent.hasExtra(k)) put(k, kotlinx.serialization.json.JsonPrimitive(intent.getIntExtra(k, 0)))
+                                }
+                                if (intent.hasExtra("audio")) put("audio", kotlinx.serialization.json.JsonPrimitive(intent.getBooleanExtra("audio", false)))
+                            }
+                            val env = Envelope(
+                                type = if (start) MessageType.SCREEN_START else MessageType.SCREEN_STOP,
+                                senderId = "debug-viewer", recipientId = identity.deviceId, payload = payload
+                            )
+                            messageRouter.dispatch(env)
+                        }
+                    },
+                    IntentFilter().apply {
+                        addAction("dev.vmd1.gossip.DEBUG_SCREEN_START"); addAction("dev.vmd1.gossip.DEBUG_SCREEN_STOP")
+                    },
+                    android.content.Context.RECEIVER_EXPORTED
+                )
+            }
+
+            // TEMPORARY debug hooks to verify ShizukuClipboardReader's background read works —
+            // remove once this has real test coverage.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val text = intent.getStringExtra("text") ?: return
+                        (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                            .setPrimaryClip(android.content.ClipData.newPlainText("debug", text))
+                        Log.i("ClipboardDebug", "Set clipboard to: $text")
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_SET_CLIPBOARD"),
                 android.content.Context.RECEIVER_EXPORTED
             )
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
                     override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                        val start = intent.action == "dev.vmd1.gossip.DEBUG_SCREEN_START"
-                        val payload = kotlinx.serialization.json.buildJsonObject {
-                            intent.getStringExtra("sessionId")?.let { put("sessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
-                            for (k in listOf("maxSize", "bitRate", "maxFps")) {
-                                if (intent.hasExtra(k)) put(k, kotlinx.serialization.json.JsonPrimitive(intent.getIntExtra(k, 0)))
-                            }
-                            if (intent.hasExtra("audio")) put("audio", kotlinx.serialization.json.JsonPrimitive(intent.getBooleanExtra("audio", false)))
-                        }
-                        val env = Envelope(
-                            type = if (start) MessageType.SCREEN_START else MessageType.SCREEN_STOP,
-                            senderId = "debug-viewer", recipientId = identity.deviceId, payload = payload
-                        )
-                        messageRouter.dispatch(env)
+                        val focusedRead = runCatching {
+                            (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                                .primaryClip?.getItemAt(0)?.coerceToText(applicationContext)?.toString()
+                        }.getOrNull()
+                        val shizukuRead = dev.vmd1.gossip.features.clipboard.ShizukuClipboardReader.readText()
+                        Log.i("ClipboardDebug", "Focus-gated read: $focusedRead | Shizuku read: $shizukuRead")
                     }
                 },
-                IntentFilter().apply {
-                    addAction("dev.vmd1.gossip.DEBUG_SCREEN_START"); addAction("dev.vmd1.gossip.DEBUG_SCREEN_STOP")
-                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_READ_CLIPBOARD"),
                 android.content.Context.RECEIVER_EXPORTED
             )
         }
-
-        // TEMPORARY debug hooks to verify ShizukuClipboardReader's background read works —
-        // remove once this has real test coverage.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val text = intent.getStringExtra("text") ?: return
-                    (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                        .setPrimaryClip(android.content.ClipData.newPlainText("debug", text))
-                    Log.i("ClipboardDebug", "Set clipboard to: $text")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_SET_CLIPBOARD"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val focusedRead = runCatching {
-                        (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                            .primaryClip?.getItemAt(0)?.coerceToText(applicationContext)?.toString()
-                    }.getOrNull()
-                    val shizukuRead = dev.vmd1.gossip.features.clipboard.ShizukuClipboardReader.readText()
-                    Log.i("ClipboardDebug", "Focus-gated read: $focusedRead | Shizuku read: $shizukuRead")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_READ_CLIPBOARD"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
 
         // Start/stop clipboard sync in lockstep with the transport connection, same as
         // the loop-suppression contract in schema/message-types.md requires.

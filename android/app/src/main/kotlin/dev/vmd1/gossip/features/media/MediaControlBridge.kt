@@ -8,7 +8,7 @@ import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.util.Base64
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.transport.EnvelopeHandler

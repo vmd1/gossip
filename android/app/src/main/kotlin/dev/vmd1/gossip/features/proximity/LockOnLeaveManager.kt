@@ -3,7 +3,7 @@ package dev.vmd1.gossip.features.proximity
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
 import dev.vmd1.gossip.protocol.DeviceType

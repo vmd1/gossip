@@ -26,7 +26,7 @@ final class ScreenAudioPlayer {
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         do { try engine.start() } catch {
-            NSLog("Gossip: audio engine failed to start: \(error)")
+            gossipError("Gossip: audio engine failed to start: \(error)")
             return nil
         }
     }

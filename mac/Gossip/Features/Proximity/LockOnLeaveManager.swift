@@ -80,12 +80,12 @@ final class LockOnLeaveManager {
     private static func lockScreen() {
         typealias LockFunction = @convention(c) () -> Void
         guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/Versions/A/login", RTLD_NOW) else {
-            NSLog("Gossip: " + "lockScreen: dlopen login.framework failed: \(dlerror().map { String(cString: $0) } ?? "unknown")")
+            gossipError("Gossip: " + "lockScreen: dlopen login.framework failed: \(dlerror().map { String(cString: $0) } ?? "unknown")")
             return
         }
         defer { dlclose(handle) }
         guard let sym = dlsym(handle, "SACLockScreenImmediate") else {
-            NSLog("Gossip: " + "lockScreen: dlsym SACLockScreenImmediate failed")
+            gossipError("Gossip: " + "lockScreen: dlsym SACLockScreenImmediate failed")
             return
         }
         unsafeBitCast(sym, to: LockFunction.self)()

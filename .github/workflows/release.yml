@@ -78,10 +78,10 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      # Signed with the project's stable key (the same one local builds use, android/scripts/signing.sh) so this
-      # APK updates an installed Gossip in place: Android refuses an update signed with a different key, and a
-      # fresh runner would otherwise generate a new debug keystore every time. It is still a *debug* build type
-      # signed with a self-made key, not a Play Store release key.
+      # The `release` build type, not `debug`: it is not debuggable, its log statements for debug/info are compiled out
+      # (util/Log.kt) and the developer adb hooks are not registered. Signed with the project's stable key (the same
+      # one local builds use, android/scripts/signing.sh) so this APK updates an installed Gossip in place: Android
+      # refuses an update signed with a different key. It is a self-made key, not a Play Store release key.
       - name: Install signing key
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -90,13 +90,13 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/gossip-android.keystore"
           echo "GOSSIP_ANDROID_KEYSTORE=$RUNNER_TEMP/gossip-android.keystore" >> "$GITHUB_ENV"
 
-      - name: Assemble debug APK
+      - name: Assemble release APK
         env:
           GOSSIP_RELEASE_NUMBER: ${{ needs.version.outputs.number }}
           GOSSIP_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           GOSSIP_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           GOSSIP_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleRelease
 
       # Fail the release if the APK is not signed by the project key.
       - name: Verify signature
@@ -104,11 +104,20 @@ jobs:
           set -uo pipefail
           APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
           echo "apksigner: $APKSIGNER"
-          OUT="$("$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk 2>&1)" \
+          OUT="$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk 2>&1)" \
             || { echo "$OUT"; echo "::error::apksigner could not verify the APK"; exit 1; }
           echo "$OUT" | grep -E "Signer #1 certificate (DN|SHA-256)" || echo "$OUT"
           echo "$OUT" | grep -qi "SHA-256 digest: $EXPECTED_ANDROID_CERT_SHA256" \
             || { echo "::error::APK is not signed by the project key"; exit 1; }
+
+      # The shipped app must not be debuggable (a debuggable app exposes its private data to `adb run-as`).
+      - name: Verify the APK is not debuggable
+        run: |
+          AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+          if "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "application-debuggable"; then
+            echo "::error::the release APK is debuggable"; exit 1
+          fi
+          echo "APK is not debuggable"
 
       # The app must carry this release's number (shown in Android's app info).
       - name: Verify version
@@ -116,8 +125,8 @@ jobs:
           RELEASE_NUMBER: ${{ needs.version.outputs.number }}
         run: |
           AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
-          "$AAPT2" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -o "versionName='[^']*'"
-          "$AAPT2" dump badging app/build/outputs/apk/debug/app-debug.apk | grep -q "versionName='$RELEASE_NUMBER'" \
+          "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk | grep -o "versionName='[^']*'"
+          "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "versionName='$RELEASE_NUMBER'" \
             || { echo "::error::APK versionName is not $RELEASE_NUMBER"; exit 1; }
 
       - name: Remove signing key
@@ -127,7 +136,7 @@ jobs:
       # No ABI splits configured (app/build.gradle.kts) — this is a single universal APK
       # bundling all ABIs, not an arch-specific build.
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Gossip-Android-universal.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Gossip-Android-universal.apk
 
       - uses: actions/upload-artifact@v4
         with:

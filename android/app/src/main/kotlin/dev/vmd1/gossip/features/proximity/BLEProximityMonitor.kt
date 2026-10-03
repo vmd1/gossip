@@ -19,7 +19,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import androidx.core.content.ContextCompat
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevicesStore

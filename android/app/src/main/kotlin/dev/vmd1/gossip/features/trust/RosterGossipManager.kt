@@ -1,7 +1,7 @@
 package dev.vmd1.gossip.features.trust
 
 import android.util.Base64
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevice
 import dev.vmd1.gossip.crypto.TrustedDevicesStore

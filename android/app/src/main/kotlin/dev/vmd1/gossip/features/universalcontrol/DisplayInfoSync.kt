@@ -3,7 +3,7 @@ package dev.vmd1.gossip.features.universalcontrol
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.util.DisplayMetrics
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import android.view.Display
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.MessageType
