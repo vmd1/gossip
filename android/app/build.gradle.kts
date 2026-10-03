@@ -1,9 +1,32 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("dev.rikka.tools.refine")
+}
+
+// Stable project signing key, so an APK built on any machine or on CI updates the app installed from any other
+// in place (Android refuses an update signed with a different key). Found through environment variables (CI) or
+// ~/.gossip-signing/gossip-android.{keystore,properties} (local; see scripts/signing.sh). Without either, builds
+// fall back to the default debug keystore, so contributors can still build.
+val gossipSigning: Map<String, String>? = run {
+    val store = File(System.getProperty("user.home"), ".gossip-signing")
+    val props = Properties().also { p ->
+        File(store, "gossip-android.properties").takeIf { it.isFile }?.inputStream()?.use { p.load(it) }
+    }
+    fun setting(env: String, prop: String): String? = System.getenv(env)?.takeIf { it.isNotEmpty() } ?: props.getProperty(prop)
+    val keystore = System.getenv("GOSSIP_ANDROID_KEYSTORE")?.takeIf { it.isNotEmpty() }
+        ?: File(store, "gossip-android.keystore").takeIf { it.isFile }?.path
+    val values = mapOf(
+        "storeFile" to keystore,
+        "storePassword" to setting("GOSSIP_ANDROID_KEYSTORE_PASSWORD", "storePassword"),
+        "keyAlias" to setting("GOSSIP_ANDROID_KEY_ALIAS", "keyAlias"),
+        "keyPassword" to setting("GOSSIP_ANDROID_KEY_PASSWORD", "keyPassword"),
+    )
+    if (values.values.all { it != null }) values.mapValues { it.value!! } else null
 }
 
 android {
@@ -24,13 +47,26 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        gossipSigning?.let { k ->
+            create("project") {
+                storeFile = file(k.getValue("storeFile"))
+                storePassword = k.getValue("storePassword")
+                keyAlias = k.getValue("keyAlias")
+                keyPassword = k.getValue("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            gossipSigning?.let { signingConfig = signingConfigs.getByName("project") }
         }
         debug {
             isMinifyEnabled = false
+            gossipSigning?.let { signingConfig = signingConfigs.getByName("project") }
         }
     }
 

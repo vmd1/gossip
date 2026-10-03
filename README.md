@@ -49,6 +49,12 @@ device next to your Mac's display and push the cursor off that edge. It needs:
   environment (restricted to `main`; load it with `mac/scripts/set-ci-signing-secrets.sh`). Never commit the key.
   Gossip is not sandboxed (a sandboxed app cannot capture input), which also means a Mac that used an older,
   sandboxed build gets a new identity: choose "Forget" for the old Mac on each Android device and pair again.
+- **Android signing:** every APK, local or CI, is signed with one project key, so a build from any machine updates
+  the installed app in place (Android refuses an update signed with a different key). Local builds pick it up from
+  `~/.gossip-signing/` (`android/scripts/signing.sh adopt` copies your existing `~/.android/debug.keystore` there, so
+  apps already installed keep updating; without it Gradle falls back to the default debug keystore). The release
+  workflow signs with the same key from the `release` environment (`android/scripts/signing.sh upload`). Back up
+  `~/.gossip-signing/` and never commit it; PR builds use the default debug key, so they are not update-compatible.
 - **Android device:** Shizuku running (the virtual mouse and keyboard are created at shell privilege). The
   device must be directly connected to the Mac over the LAN (a device reachable only through the mesh, shown
   with a blue icon, cannot be controlled).
