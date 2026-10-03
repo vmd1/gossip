@@ -82,6 +82,9 @@ jobs:
     needs: version
     runs-on: macos-15
     timeout-minutes: 25
+    # The signing key lives in this environment, which is restricted to the main branch (see
+    # mac/scripts/set-ci-signing-secrets.sh). Nothing else in this repo can read it.
+    environment: release
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -103,16 +106,33 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # Ad-hoc signed ("Sign to Run Locally"), matching this project's existing local-dev
-      # signing approach (see IdentityKeyStore.swift's doc comment) — there is no paid
-      # Apple Developer ID configured for this project. CODE_SIGN_STYLE=Manual +
-      # CODE_SIGN_IDENTITY=- overrides project.yml's `Automatic` style, which would
-      # otherwise require a real team/account that CI doesn't have. The resulting .app is
-      # runnable locally but not notarized, so macOS Gatekeeper will quarantine-block it
-      # on first launch until the user right-click-opens it once (or runs
-      # `xattr -cr Gossip.app`) — expected and acceptable for an unsigned personal build,
-      # not a bug in this workflow.
-      - name: Build (ad-hoc signed Release)
+      # Signed with the project's stable self-signed identity (gossip.vmd1.dev), the same one local builds use
+      # (mac/scripts/create-signing-cert.sh), so macOS keeps users' Accessibility / Input Monitoring grants
+      # across updates: those grants are tied to the code signature, and an ad-hoc signature changes on every
+      # build. It is NOT a Developer ID and the app is not notarized, so Gatekeeper still blocks a downloaded
+      # copy until the user opens it via System Settings -> Privacy & Security -> Open Anyway.
+      # The key is imported into a throwaway keychain that is deleted at the end of the job.
+      - name: Import signing certificate
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/gossip-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$SIGNING_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          security find-identity -p codesigning "$KEYCHAIN"
+
+      - name: Build (signed Release)
         run: >
           xcodebuild
           -project Gossip.xcodeproj
@@ -121,11 +141,24 @@ jobs:
           -destination 'platform=macOS'
           -derivedDataPath build
           CODE_SIGN_STYLE=Manual
-          CODE_SIGN_IDENTITY=-
+          CODE_SIGN_IDENTITY=gossip.vmd1.dev
           DEVELOPMENT_TEAM=
-          CODE_SIGNING_REQUIRED=NO
+          "OTHER_CODE_SIGN_FLAGS=--keychain $KEYCHAIN"
+          CODE_SIGNING_REQUIRED=YES
           CODE_SIGNING_ALLOWED=YES
           build
+
+      # Fail the release if the app came out ad-hoc signed or with a different identity.
+      - name: Verify signature
+        run: |
+          APP=build/Build/Products/Release/Gossip.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          echo "$INFO" | grep -E "Identifier|Authority|Signature|TeamIdentifier"
+          if echo "$INFO" | grep -q "Signature=adhoc"; then echo "::error::app is ad-hoc signed"; exit 1; fi
+          echo "$INFO" | grep -q "Authority=gossip.vmd1.dev" || { echo "::error::app not signed by gossip.vmd1.dev"; exit 1; }
+          echo "Designated requirement (this must stay the same release to release):"
+          codesign -d -r- "$APP" 2>&1 | grep designated
 
       # macos-15 runners are Apple Silicon (arm64) only — no Intel build is produced.
       - name: Zip app bundle
@@ -138,8 +171,15 @@ jobs:
           name: mac-zip
           path: mac/Gossip-Mac-AppleSilicon.zip
 
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+
   publish:
     needs: [version, android-release, mac-release]
+    # A manual run on another branch (e.g. to test signing) builds everything but never creates a release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

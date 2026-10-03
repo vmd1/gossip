@@ -177,7 +177,7 @@ struct ControlLayout: Equatable {
                 CGPoint(x: clampedX, y: o.maxY), CGPoint(x: clampedX, y: o.minY - size.height),
             ]
             for c in candidates where isLegal(CGRect(origin: c, size: size), against: others) {
-                let d = hypot(c.x - proposed.x, c.y - proposed.y)
+                let d = Double(hypot(c.x - proposed.x, c.y - proposed.y))
                 if d <= limit, best == nil || d < best!.distance { best = (c, d) }
             }
         }
