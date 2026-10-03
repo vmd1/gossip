@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.provider.Settings
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull

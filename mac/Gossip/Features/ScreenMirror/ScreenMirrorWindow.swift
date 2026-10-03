@@ -56,7 +56,7 @@ final class H264SampleFeeder {
             }
         }
         guard status == noErr, let newDescription else {
-            NSLog("Gossip: could not build H.264 format description (OSStatus \(status))")
+            gossipError("Gossip: could not build H.264 format description (OSStatus \(status))")
             return
         }
         formatDescription = newDescription

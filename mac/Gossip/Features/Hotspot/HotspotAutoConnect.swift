@@ -105,7 +105,7 @@ final class HotspotAutoConnect: NSObject, CLLocationManagerDelegate {
                 try interface.associate(to: network, password: passphrase)
                 DispatchQueue.main.async { completion(true) }
             } catch {
-                NSLog("Gossip: " + "HotspotAutoConnect: failed: \(error)")
+                gossipError("Gossip: " + "HotspotAutoConnect: failed: \(error)")
                 DispatchQueue.main.async { completion(false) }
             }
         }

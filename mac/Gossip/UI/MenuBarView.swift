@@ -156,7 +156,7 @@ struct MenuBarView: View {
                 hotspotGattClients[device.deviceId] = nil
                 switch result {
                 case .failed(let reason):
-                    NSLog("Gossip: " + "requestHotspot failed: \(reason)")
+                    gossipError("Gossip: " + "requestHotspot failed: \(reason)")
                 case .success(let enabled, let ssid, let passphrase):
                     hotspotOverrides[device.deviceId] = (enabled, Date())
                     guard enable, enabled, let ssid, let passphrase else { return }

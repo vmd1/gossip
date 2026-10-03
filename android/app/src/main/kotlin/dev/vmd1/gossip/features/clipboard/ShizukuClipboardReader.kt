@@ -1,6 +1,6 @@
 package dev.vmd1.gossip.features.clipboard
 
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.features.hotspot.ShizukuManager
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import rikka.shizuku.ShizukuBinderWrapper

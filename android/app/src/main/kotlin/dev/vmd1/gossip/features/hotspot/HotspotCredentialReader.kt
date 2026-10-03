@@ -3,7 +3,7 @@ package dev.vmd1.gossip.features.hotspot
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 

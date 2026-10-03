@@ -5,7 +5,7 @@ import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.features.screenmirror.ScrcpyServerSession
 import java.io.Closeable
 import java.io.IOException

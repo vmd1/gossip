@@ -1,7 +1,7 @@
 package dev.vmd1.gossip.features.screenmirror
 
 import android.content.Context
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream

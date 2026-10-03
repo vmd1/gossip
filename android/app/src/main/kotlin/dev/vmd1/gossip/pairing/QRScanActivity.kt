@@ -7,7 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView

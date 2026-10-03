@@ -3,7 +3,7 @@ package dev.vmd1.gossip.transport
 import android.content.Context
 import android.os.Build
 import android.util.Base64
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.NoiseRole
 import dev.vmd1.gossip.crypto.NoiseSession

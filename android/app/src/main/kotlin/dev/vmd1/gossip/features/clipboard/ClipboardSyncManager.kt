@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import androidx.core.content.FileProvider
 import dev.vmd1.gossip.features.hotspot.ShizukuManager
 import dev.vmd1.gossip.protocol.Envelope

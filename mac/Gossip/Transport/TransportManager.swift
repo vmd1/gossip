@@ -223,7 +223,7 @@ final class TransportManager: ObservableObject {
             // (e.g. a second Connect instance during development). Fall back to an
             // ephemeral port so on-LAN pairing/discovery still works — only the
             // fallback-address dial path from Android needs the fixed port.
-            NSLog("Gossip: failed to advertise on fixed port \(Self.defaultPort), falling back to an ephemeral port: \(error)")
+            gossipError("Gossip: failed to advertise on fixed port \(Self.defaultPort), falling back to an ephemeral port: \(error)")
             do {
                 try discovery.startAdvertising(
                     deviceId: identity.deviceId,
@@ -231,7 +231,7 @@ final class TransportManager: ObservableObject {
                     publicKeyFingerprint: identity.publicKeyFingerprint
                 )
             } catch {
-                NSLog("Gossip: failed to start advertising: \(error)")
+                gossipError("Gossip: failed to start advertising: \(error)")
             }
         }
         discovery.startBrowsing()
@@ -338,7 +338,7 @@ final class TransportManager: ObservableObject {
         let key = ObjectIdentifier(pending.connection)
         queue.asyncAfter(deadline: .now() + Self.pendingConnectionTimeout) { [weak self] in
             guard let self, self.pendingByObjectId[key] === pending else { return } // already resolved (either way)
-            NSLog("Gossip: dial/handshake to \(pending.dialTargetDeviceId ?? "unknown peer") timed out after \(Self.pendingConnectionTimeout)s; tearing down")
+            gossipError("Gossip: dial/handshake to \(pending.dialTargetDeviceId ?? "unknown peer") timed out after \(Self.pendingConnectionTimeout)s; tearing down")
             self.teardownPending(pending)
         }
     }
@@ -352,7 +352,7 @@ final class TransportManager: ObservableObject {
             sendHandshakeMessage1(pending: pending)
             startReceiveLoop(pending: pending)
         case .failed(let error):
-            NSLog("Gossip: connection failed: \(error)")
+            gossipError("Gossip: connection failed: \(error)")
             teardownAny(pending)
         case .cancelled:
             break
@@ -402,7 +402,7 @@ final class TransportManager: ObservableObject {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed(let error):
-                NSLog("Gossip: inbound connection failed: \(error)")
+                gossipError("Gossip: inbound connection failed: \(error)")
                 self?.teardownAny(pending)
             default:
                 break
@@ -454,7 +454,7 @@ final class TransportManager: ObservableObject {
         framed.append(payload)
         connection.send(content: framed, completion: .contentProcessed { error in
             if let error {
-                NSLog("Gossip: send failed: \(error)")
+                gossipError("Gossip: send failed: \(error)")
             }
         })
     }
@@ -467,7 +467,7 @@ final class TransportManager: ObservableObject {
                 self.drainFrames(pending: pending)
             }
             if let error {
-                NSLog("Gossip: receive error: \(error)")
+                gossipError("Gossip: receive error: \(error)")
                 self.teardownAny(pending)
                 return
             }
@@ -541,7 +541,7 @@ final class TransportManager: ObservableObject {
 
             finalizeHandshake(pending: pending)
         } catch {
-            NSLog("Gossip: handshake message 1 failed: \(error)")
+            gossipError("Gossip: handshake message 1 failed: \(error)")
             teardownAny(pending)
         }
     }
@@ -565,7 +565,7 @@ final class TransportManager: ObservableObject {
             pending.pendingPeer = HandshakePeerInfo(deviceId: ackEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
             finalizeHandshake(pending: pending)
         } catch {
-            NSLog("Gossip: handshake message 2 failed: \(error)")
+            gossipError("Gossip: handshake message 2 failed: \(error)")
             teardownAny(pending)
         }
     }
@@ -633,7 +633,7 @@ final class TransportManager: ObservableObject {
         guard pending.deviceId != nil else {
             // Not promoted yet (awaiting trust confirmation): hold the frame, don't drop it.
             if !pending.queuedFrames.enqueue(payload) {
-                NSLog("Gossip: too many frames before trust confirmation; closing")
+                gossipError("Gossip: too many frames before trust confirmation; closing")
                 teardownAny(pending)
             }
             return
@@ -665,7 +665,7 @@ final class TransportManager: ObservableObject {
             let envelope = try Envelope.decode(plaintext)
             handleReceivedEnvelope(envelope, arrivedFrom: arrivedFrom)
         } catch {
-            NSLog("Gossip: failed to decrypt/decode incoming envelope: \(error)")
+            gossipError("Gossip: failed to decrypt/decode incoming envelope: \(error)")
         }
     }
 
@@ -919,7 +919,7 @@ final class TransportManager: ObservableObject {
         }
         let stale = Date().timeIntervalSince(peer.lastReceivedAt) > Self.heartbeatTimeout
         guard sendFailed || stale else { return }
-        NSLog("Gossip: heartbeat failed or peer \(deviceId) went stale (sendFailed=\(sendFailed), stale=\(stale)); closing connection")
+        gossipError("Gossip: heartbeat failed or peer \(deviceId) went stale (sendFailed=\(sendFailed), stale=\(stale)); closing connection")
         teardown(peer: peer, deviceId: deviceId)
     }
 

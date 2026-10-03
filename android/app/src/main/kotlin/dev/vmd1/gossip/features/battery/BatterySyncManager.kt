@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.MessageType
 import dev.vmd1.gossip.transport.EnvelopeHandler

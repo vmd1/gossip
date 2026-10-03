@@ -2,7 +2,7 @@ package dev.vmd1.gossip.features.screenmirror
 
 import android.content.Context
 import android.util.Base64
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.IOException

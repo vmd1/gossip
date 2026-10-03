@@ -50,7 +50,7 @@ final class LocalDiscovery {
         listener.stateUpdateHandler = { state in
             switch state {
             case .failed(let error):
-                NSLog("Gossip: Bonjour listener failed: \(error)")
+                gossipError("Gossip: Bonjour listener failed: \(error)")
             default:
                 break
             }
@@ -88,7 +88,7 @@ final class LocalDiscovery {
         browser.stateUpdateHandler = { state in
             switch state {
             case .failed(let error):
-                NSLog("Gossip: Bonjour browser failed: \(error)")
+                gossipError("Gossip: Bonjour browser failed: \(error)")
             default:
                 break
             }

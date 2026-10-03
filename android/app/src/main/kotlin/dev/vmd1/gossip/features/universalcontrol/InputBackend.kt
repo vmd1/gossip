@@ -1,6 +1,6 @@
 package dev.vmd1.gossip.features.universalcontrol
 
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import java.util.TreeSet
 
 /** What a Universal Control session needs to turn the Mac's input into input on this device. */

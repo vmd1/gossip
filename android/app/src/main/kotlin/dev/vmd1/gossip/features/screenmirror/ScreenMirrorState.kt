@@ -1,6 +1,6 @@
 package dev.vmd1.gossip.features.screenmirror
 
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.MessageType
 import dev.vmd1.gossip.transport.EnvelopeHandler

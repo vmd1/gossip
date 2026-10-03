@@ -83,7 +83,7 @@ final class DNDSyncManager {
     func handleIncomingURL(_ url: URL) -> Bool {
         guard url.scheme == "connect", url.host == "dnd" else { return false }
         guard let enabled = Self.parseState(from: url) else {
-            NSLog("Gossip: dnd URL missing/invalid 'state' query item: \(url)")
+            gossipError("Gossip: dnd URL missing/invalid 'state' query item: \(url)")
             return false
         }
 
@@ -146,7 +146,7 @@ final class DNDSyncManager {
         do {
             try transportManager.send(envelope: envelope)
         } catch {
-            NSLog("Gossip: failed to send dnd.update: \(error)")
+            gossipError("Gossip: failed to send dnd.update: \(error)")
         }
     }
 
@@ -154,7 +154,7 @@ final class DNDSyncManager {
 
     private func handleDndSet(_ envelope: Envelope) {
         guard case .bool(let enabled)? = envelope.payload["enabled"] else {
-            NSLog("Gossip: dnd.set missing boolean 'enabled' payload field")
+            gossipError("Gossip: dnd.set missing boolean 'enabled' payload field")
             return
         }
         applyPeerState(enabled: enabled)
@@ -167,7 +167,7 @@ final class DNDSyncManager {
     /// doc for why a blind mirror is wrong for that case.
     private func handleDndUpdate(_ envelope: Envelope) {
         guard case .bool(let enabled)? = envelope.payload["enabled"] else {
-            NSLog("Gossip: dnd.update missing boolean 'enabled' payload field")
+            gossipError("Gossip: dnd.update missing boolean 'enabled' payload field")
             return
         }
         if case .bool(true)? = envelope.payload["isInitialSync"] {
@@ -210,7 +210,7 @@ final class DNDSyncManager {
         do {
             try process.run()
         } catch {
-            NSLog("Gossip: failed to run Shortcut \"\(name)\": \(error)")
+            gossipError("Gossip: failed to run Shortcut \"\(name)\": \(error)")
         }
     }
 }
