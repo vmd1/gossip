@@ -14,6 +14,12 @@ settings:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     ENABLE_HARDENED_RUNTIME: YES
+  configs:
+    Debug:
+      # Hardened Runtime library validation needs matching Team IDs, and the self-signed local identity
+      # (Config/Signing.local.xcconfig) has none, so a hardened Debug app cannot load the Xcode debug dylib or the
+      # unit-test bundle and the test host crashes at launch. Debug builds are never distributed; Release keeps it.
+      ENABLE_HARDENED_RUNTIME: NO
 
 targets:
   Gossip:
