@@ -88,15 +88,17 @@ android/scripts/signing.sh adopt     # copies ~/.android/debug.keystore into ~/.
   - build and run the unit tests; the Mac job builds unsigned, the Android job uses the default debug key
   - they upload a debug build as an artifact; those artifacts are not update-compatible with release builds
 - **Releases** (`release.yml`)
-  - runs on a push to `main` that changes shippable code, or manually
+  - runs when the `VERSION` file changes on `main` (a merge that leaves it alone ships nothing), or manually to retry the current version
   - jobs
-    - `version` — works out the release number
+    - `version` — reads `VERSION` and refuses a version whose tag already exists
     - `android-release` — builds and signs the APK, then checks it was signed by the expected certificate
     - `mac-release` — builds and signs `Gossip.app`, then checks the signature and version
     - `publish` — creates the GitHub Release (only on `main`)
-  - naming: tag `release-N`, title `Release N (YYYY-MM-DD)`
-    - N continues from the largest number at the end of any existing release tag, and runs are serialised so two cannot pick the same number
-  - versions: the release number becomes Android's `versionName` and the Mac app's version (`MARKETING_VERSION`); local builds show `dev` on Android and `1.0` on the Mac
+  - versioning: `VERSION` holds `MAJOR.MINOR` (e.g. `1.1`); tag `v1.1`, title `Gossip 1.1 (YYYY-MM-DD)`
+    - bump the minor for a normal release and the major for a wire-protocol break: every device must run the same version
+    - `version-check.yml` runs on every pull request: `VERSION` must be well formed and never go down, and a PR that changes `schema/` must raise the major above the one on `main` unless it carries the `schema-compatible` label (for edits that don't change the wire format, such as wording fixes)
+    - to release: open a PR that edits `VERSION`, merge it to `main`
+  - versions: the version becomes Android's `versionName` and the Mac app's version (`MARKETING_VERSION`); local builds show `dev` on Android and `1.0` on the Mac
     - Android's `versionCode` stays 1 on purpose, so a local build can still replace a release APK
 - **Where the signing keys live (public repo)**
   - in a GitHub **environment** named `release`, restricted to the `main` branch, so only jobs running on `main` that declare `environment: release` can read them
@@ -108,7 +110,7 @@ android/scripts/signing.sh adopt     # copies ~/.android/debug.keystore into ~/.
 
 ## Contributing
 
-- development happens on `dev`: open pull requests against it; merging to `main` is what cuts a release
+- development happens on `dev`: open pull requests against it; merging to `main` ships nothing by itself; a release is cut by bumping `VERSION` (see above)
 - the Mac and Android apps share no code — keep them in sync through [`schema/message-types.md`](../schema/message-types.md)
   - any change to what a message carries, when it is sent or how it is handled updates that file in the same change
   - handlers must be idempotent, and messages that configure persistent state need a resync, so a dropped message heals itself
