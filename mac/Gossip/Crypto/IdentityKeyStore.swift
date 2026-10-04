@@ -42,7 +42,7 @@ final class IdentityKeyStore {
             // paired device, forcing a full re-pair across the whole mesh for no
             // benefit — not part of the Connect→Gossip rebrand's scope.
             let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            PrivateFile.ensureDirectory(dir)
             self.fileURL = dir.appendingPathComponent("identity.json")
         }
     }
@@ -107,7 +107,6 @@ final class IdentityKeyStore {
 
     private func persist(_ identity: StoredIdentity) {
         guard let data = try? JSONEncoder().encode(identity) else { return }
-        try? data.write(to: fileURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        PrivateFile.write(data, to: fileURL)
     }
 }

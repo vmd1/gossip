@@ -37,6 +37,7 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -225,9 +226,37 @@ class TransportManager(
                 } catch (e: IOException) {
                     if (server.isClosed) break else continue
                 }
+                if (!admitInbound(client)) {
+                    runCatching { client.close() }
+                    continue
+                }
                 launchConnectionLoop(client, role = NoiseRole.RESPONDER, remoteStaticPublicKey = null)
             }
         }
+    }
+
+    /** Pre-authentication limits on inbound connections: overall and per source address. */
+    private val pendingInboundByHost = ConcurrentHashMap<String, AtomicInteger>()
+    private val pendingInboundTotal = AtomicInteger(0)
+
+    private fun hostKey(client: Socket): String = client.inetAddress?.hostAddress ?: "unknown"
+
+    private fun admitInbound(client: Socket): Boolean {
+        val host = hostKey(client)
+        val perHost = pendingInboundByHost.computeIfAbsent(host) { AtomicInteger(0) }
+        if (pendingInboundTotal.get() >= MAX_PENDING_INBOUND || perHost.get() >= MAX_PENDING_INBOUND_PER_HOST) {
+            Log.w(TAG, "Too many pending inbound connections; refusing one")
+            return false
+        }
+        pendingInboundTotal.incrementAndGet()
+        perHost.incrementAndGet()
+        return true
+    }
+
+    private fun releaseInbound(client: Socket) {
+        val host = hostKey(client)
+        pendingInboundTotal.decrementAndGet()
+        pendingInboundByHost[host]?.let { if (it.decrementAndGet() <= 0) pendingInboundByHost.remove(host, it) }
     }
 
     private suspend fun bindServerSocket(port: Int): ServerSocket? {
@@ -414,6 +443,7 @@ class TransportManager(
             if (handshakeSettled) return
             handshakeSettled = true
             dialTargetDeviceId?.let { dialingDeviceIds.remove(it) }
+            if (role == NoiseRole.RESPONDER) releaseInbound(client)
             inFlightHandshakes.decrementAndGet()
         }
 
@@ -454,6 +484,16 @@ class TransportManager(
                 // pair" safe, mirroring Mac's `onUntrustedHandshake` (previously Android
                 // had no equivalent at all, since nothing untrusted ever dialed in before
                 // mesh support and QR-display existed).
+                // The claimed deviceId arrives in plaintext; only the Noise static key is
+                // authenticated, so for an already-trusted device it must be the paired key.
+                trustedDevicesStore.getDevice(remoteId)?.let { stored ->
+                    val presented = session.remoteStaticKey
+                    if (presented == null || !MessageDigest.isEqual(stored.publicKey, presented)) {
+                        Log.w(TAG, "Handshake for $remoteId presented a different key than the one it was paired with; closing")
+                        runCatching { client.close() }
+                        return@launch
+                    }
+                }
                 if (role == NoiseRole.RESPONDER && !trustedDevicesStore.isTrusted(remoteId)) {
                     val remotePublicKey = session.remoteStaticKey
                     if (remotePublicKey == null) {
@@ -677,7 +717,7 @@ class TransportManager(
         )
         writeFrame(out, helloEnvelope.encode())
 
-        val ackBytes = readFrame(input)
+        val ackBytes = readFrame(input, MAX_HANDSHAKE_FRAME_BYTES)
         val ackEnvelope = Envelope.decode(ackBytes)
         require(ackEnvelope.type == MessageType.HANDSHAKE_ACK) { "Expected handshake.ack, got ${ackEnvelope.type}" }
         val ackPayload = HandshakePayload.fromJsonObject(ackEnvelope.payload)
@@ -692,7 +732,7 @@ class TransportManager(
     }
 
     private fun performResponderHandshake(session: NoiseSession, out: DataOutputStream, input: DataInputStream): HandshakePeerInfo {
-        val helloBytes = readFrame(input)
+        val helloBytes = readFrame(input, MAX_HANDSHAKE_FRAME_BYTES)
         val helloEnvelope = Envelope.decode(helloBytes)
         require(helloEnvelope.type == MessageType.HANDSHAKE_HELLO) { "Expected handshake.hello, got ${helloEnvelope.type}" }
         val helloPayload = HandshakePayload.fromJsonObject(helloEnvelope.payload)
@@ -734,6 +774,10 @@ class TransportManager(
     companion object {
         const val DEFAULT_PORT = 7913
         private const val MAX_FRAME_BYTES = 16 * 1024 * 1024
+        /** Hello/ack envelopes are a few hundred bytes; anything larger before auth is hostile. */
+        internal const val MAX_HANDSHAKE_FRAME_BYTES = 16 * 1024
+        private const val MAX_PENDING_INBOUND = 32
+        private const val MAX_PENDING_INBOUND_PER_HOST = 4
         private const val LISTEN_BIND_ATTEMPTS = 5
         private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
         private const val HEARTBEAT_INTERVAL_MS = 20_000L
@@ -748,12 +792,21 @@ class TransportManager(
             out.flush()
         }
 
-        private fun readFrame(input: DataInputStream): ByteArray {
+        internal fun readFrame(input: DataInputStream, maxBytes: Int = MAX_FRAME_BYTES): ByteArray {
             val length = input.readInt()
-            require(length in 0..MAX_FRAME_BYTES) { "Invalid frame length $length" }
-            val buffer = ByteArray(length)
-            input.readFully(buffer)
-            return buffer
+            require(length in 0..maxBytes) { "Invalid frame length $length" }
+            // Grow as bytes actually arrive rather than trusting the declared length up front,
+            // so a peer that declares a large frame and sends nothing costs us nothing.
+            val out = java.io.ByteArrayOutputStream(minOf(length, 8192))
+            val chunk = ByteArray(8192)
+            var remaining = length
+            while (remaining > 0) {
+                val n = input.read(chunk, 0, minOf(chunk.size, remaining))
+                if (n < 0) throw java.io.EOFException()
+                out.write(chunk, 0, n)
+                remaining -= n
+            }
+            return out.toByteArray()
         }
     }
 }
