@@ -28,7 +28,7 @@ Each feature has its own per-device switch in Settings. The full list, mapped ag
 - **Mac:** macOS 14 or newer; the prebuilt app is Apple Silicon only (Intel: building from source is untested)
 - **Android:** Android 10 or newer
 - **Network:** both devices on the same local network (no account, no cloud — see the [FAQ](docs/faq.md))
-- **Shizuku (optional):** unlocks screen mirroring, Universal Control, Instant Hotspot on Android 16+ and background clipboard reading — see [Setting up Shizuku](docs/setup-shizuku.md)
+- **Shizuku (heavily recommended):** the app works without it, but screen mirroring, Universal Control, Instant Hotspot on Android 16+ and background clipboard reading all need it — see [Setting up Shizuku](docs/setup-shizuku.md)
 
 ## Quick start
 
@@ -41,6 +41,7 @@ Each feature has its own per-device switch in Settings. The full list, mapped ag
 - **Pair them**
   - Mac: menu bar icon → **Pair New Device…** shows a QR code
   - Android: **Pair New Device** (or **Scan a QR Code** during setup), then confirm on both screens
+- **Set up Shizuku** on the Android device (heavily recommended) — [Setting up Shizuku](docs/setup-shizuku.md)
 - **Grant permissions** on each device as prompted — each one unlocks one feature and all are skippable
 
 The step-by-step version, with every permission explained, is in [Getting started](docs/getting-started.md).
