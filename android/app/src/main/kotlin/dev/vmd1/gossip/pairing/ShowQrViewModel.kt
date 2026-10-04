@@ -20,7 +20,7 @@ import java.util.UUID
 sealed class ShowQrUiState {
     data object Idle : ShowQrUiState()
     data class ShowingQr(val payload: PairingQrPayload) : ShowQrUiState()
-    data class ConfirmingTrust(val deviceName: String) : ShowQrUiState()
+    data class ConfirmingTrust(val deviceName: String, val code: String) : ShowQrUiState()
     data class Success(val deviceName: String) : ShowQrUiState()
     data class Failed(val reason: String) : ShowQrUiState()
 }
@@ -52,7 +52,7 @@ class ShowQrViewModel(
     private var pendingConfirmation: CompletableDeferred<Boolean>? = null
 
     init {
-        transportManager.onUntrustedHandshake = { peer, _ -> handleUntrustedHandshake(peer) }
+        transportManager.onUntrustedHandshake = { peer, publicKey -> handleUntrustedHandshake(peer, publicKey) }
     }
 
     fun startShowingQr() {
@@ -65,6 +65,7 @@ class ShowQrViewModel(
             pairingToken = UUID.randomUUID().toString(),
             responderSigningPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP)
         )
+        transportManager.armPairing(payload.pairingToken)
         _uiState.value = ShowQrUiState.ShowingQr(payload)
     }
 
@@ -82,6 +83,7 @@ class ShowQrViewModel(
     }
 
     fun reset() {
+        transportManager.disarmPairing()
         failureClearJob?.cancel()
         _uiState.value = ShowQrUiState.Idle
     }
@@ -103,10 +105,10 @@ class ShowQrViewModel(
     /** Called from [TransportManager]'s own connection-handling coroutine — suspends
      *  (blocking that one connection's handshake, not the rest of the app) until the
      *  user answers via [confirmTrust]/[rejectTrust]. */
-    private suspend fun handleUntrustedHandshake(peer: HandshakePeerInfo): Boolean {
+    private suspend fun handleUntrustedHandshake(peer: HandshakePeerInfo, publicKey: ByteArray): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         pendingConfirmation = deferred
-        _uiState.value = ShowQrUiState.ConfirmingTrust(peer.deviceName)
+        _uiState.value = ShowQrUiState.ConfirmingTrust(peer.deviceName, transportManager.pairingCodeFor(publicKey))
         val confirmed = deferred.await()
         if (confirmed) {
             viewModelScope.launch {
@@ -129,6 +131,7 @@ class ShowQrViewModel(
         // (e.g. screen recreated) may have already replaced us.
         pendingConfirmation?.complete(false)
         pendingConfirmation = null
+        transportManager.disarmPairing()
     }
 
     companion object {

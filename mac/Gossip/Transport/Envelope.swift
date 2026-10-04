@@ -35,6 +35,9 @@ struct Envelope: Codable, Equatable {
     let ts: Int64
     /// Arbitrary, type-specific payload.
     let payload: JSONValue
+    /// Base64 Ed25519 signature by `senderId` over the envelope's canonical form
+    /// (see `EnvelopeSigning`); `nil` only on the `handshake.*` envelopes.
+    let sig: String?
 
     /// Default hop budget for an originating send — generous relative to any
     /// realistically-sized mesh of a handful of devices.
@@ -49,7 +52,8 @@ struct Envelope: Codable, Equatable {
         ttl: Int = Envelope.defaultTTL,
         hasRawFollowup: Bool = false,
         ts: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
-        payload: JSONValue = .object([:])
+        payload: JSONValue = .object([:]),
+        sig: String? = nil
     ) {
         self.v = 1
         self.id = id
@@ -61,6 +65,7 @@ struct Envelope: Codable, Equatable {
         self.hasRawFollowup = hasRawFollowup
         self.ts = ts
         self.payload = payload
+        self.sig = sig
     }
 
     func encoded() throws -> Data {
@@ -76,7 +81,14 @@ struct Envelope: Codable, Equatable {
     func withTTL(_ newTTL: Int) -> Envelope {
         Envelope(
             id: id, type: type, senderId: senderId, recipientId: recipientId,
-            broadcast: broadcast, ttl: newTTL, hasRawFollowup: hasRawFollowup, ts: ts, payload: payload
+            broadcast: broadcast, ttl: newTTL, hasRawFollowup: hasRawFollowup, ts: ts, payload: payload, sig: sig
+        )
+    }
+
+    func withSignature(_ signature: String) -> Envelope {
+        Envelope(
+            id: id, type: type, senderId: senderId, recipientId: recipientId,
+            broadcast: broadcast, ttl: ttl, hasRawFollowup: hasRawFollowup, ts: ts, payload: payload, sig: signature
         )
     }
 

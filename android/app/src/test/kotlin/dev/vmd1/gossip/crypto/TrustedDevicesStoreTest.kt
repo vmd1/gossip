@@ -88,4 +88,37 @@ class TrustedDevicesStoreTest {
         assertEquals("Old phone", loaded?.deviceName)
         assertTrue(loaded!!.lockOnLeaveEnabled)
     }
+
+    private fun device(id: String, signing: ByteArray? = null) = TrustedDevice(
+        deviceId = id, publicKey = byteArrayOf(9), deviceName = "d", deviceType = DeviceType.ANDROID_PHONE,
+        addedAt = 100L, signingPublicKey = signing
+    )
+
+    @Test
+    fun `revoking leaves a tombstone that pairing again clears`() {
+        store.addDevice(device("a"))
+        assertNull(store.revokedAt("a"))
+
+        store.revoke("a", revokedAt = 500L)
+        assertFalse(store.isTrusted("a"))
+        assertEquals(500L, store.revokedAt("a"))
+
+        // The later of two revocations wins; an older one never moves it back.
+        store.revoke("a", revokedAt = 300L)
+        assertEquals(500L, store.revokedAt("a"))
+
+        store.addDevice(device("a"))
+        assertNull(store.revokedAt("a"))
+    }
+
+    @Test
+    fun `the handshake signing key replaces a missing or different one`() {
+        store.addDevice(device("a"))
+        store.setSigningPublicKey("a", byteArrayOf(1))
+        assertTrue(store.getDevice("a")!!.signingPublicKey!!.contentEquals(byteArrayOf(1)))
+        store.setSigningPublicKey("a", byteArrayOf(2))
+        assertTrue(store.getDevice("a")!!.signingPublicKey!!.contentEquals(byteArrayOf(2)))
+        store.setSigningPublicKey("unknown", byteArrayOf(3))
+        assertFalse(store.isTrusted("unknown"))
+    }
 }

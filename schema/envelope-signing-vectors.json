@@ -1,0 +1,36 @@
+{
+  "description": "Envelope signing vectors. canonical = exact bytes signed (UTF-8). Ed25519 key seed is bytes 1..32. Generated independently with Python's json canonicalisation; signature produced with CryptoKit.",
+  "signingPublicKey": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+  "canonical": "gossip-envelope-v1\n{\"broadcast\":true,\"hasRawFollowup\":false,\"id\":\"33333333-3333-3333-3333-333333333333\",\"payload\":{\"a\":{\"n\":9007199254740991},\"b\":[1,-2,0,true,false,null,{\"a\":[],\"z\":1}],\"id\":\"x/y\",\"title\":\"Héllo \\\"q\\\" \\\\ back\\nnew\\ttab é 日本 😀\"},\"recipientId\":null,\"senderId\":\"11111111-1111-1111-1111-111111111111\",\"ts\":1759500000123,\"type\":\"notification.posted\",\"v\":1}",
+  "signature": "zmBDWD/iVAMeK9KQCOedjB93mCq3ic+Nftatcr3v93YrRA9bQbI82l4HD3EF09ipnWu8SB2EAIcxV1EDMxBXCg==",
+  "envelope": {
+    "v": 1,
+    "id": "33333333-3333-3333-3333-333333333333",
+    "type": "notification.posted",
+    "senderId": "11111111-1111-1111-1111-111111111111",
+    "recipientId": null,
+    "broadcast": true,
+    "hasRawFollowup": false,
+    "ts": 1759500000123,
+    "payload": {
+      "title": "Héllo \"q\" \\ back\nnew\ttab é 日本 😀",
+      "b": [
+        1,
+        -2,
+        0,
+        true,
+        false,
+        null,
+        {
+          "z": 1,
+          "a": []
+        }
+      ],
+      "a": {
+        "n": 9007199254740991
+      },
+      "id": "x/y"
+    },
+    "ttl": 8
+  }
+}

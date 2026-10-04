@@ -91,7 +91,10 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             lockOnLeaveEnabled = device.lockOnLeaveEnabled,
             signingPublicKeyBase64 = device.signingPublicKey?.let { Base64.getEncoder().encodeToString(it) }
         )
-        prefs.edit().putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row)).apply()
+        prefs.edit()
+            .putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row))
+            .remove(revokedKey(device.deviceId))
+            .apply()
     }
 
     /** Updates just the fallback address for an already-trusted device (see
@@ -102,16 +105,13 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
         addDevice(existing.copy(fallbackHost = fallbackHost?.trim()?.takeIf { it.isNotEmpty() }))
     }
 
-    /** Fills in [TrustedDevice.signingPublicKey] for a row paired before that field
-     *  existed, learned later via `trust.roster_update` gossip. No-ops if [deviceId]
-     *  isn't trusted or already has a signing key on file — never overwrites an
-     *  already-known key with a gossiped one, same "never clobber" rule
-     *  [RosterGossipManager] applies to every other field on an already-trusted row.
-     *  Idempotent: re-applying the same key is a no-op after the first call. */
+    /** Records the signing key a device presented inside an authenticated Noise handshake
+     *  (bound to the static key this device was paired with). Replaces a missing value or
+     *  one learned second-hand via gossip. Idempotent; no-ops if [deviceId] isn't trusted. */
     @Synchronized
-    fun backfillSigningPublicKey(deviceId: String, signingPublicKey: ByteArray) {
+    fun setSigningPublicKey(deviceId: String, signingPublicKey: ByteArray) {
         val existing = getDevice(deviceId) ?: return
-        if (existing.signingPublicKey != null) return
+        if (existing.signingPublicKey?.contentEquals(signingPublicKey) == true) return
         addDevice(existing.copy(signingPublicKey = signingPublicKey))
     }
 
@@ -137,10 +137,24 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             .mapNotNull { (it.value as? String)?.let { json -> parse(json) } }
             .sortedBy { it.addedAt }
 
+    /** Drops a row without a tombstone — for a pairing that never completed, not a revocation. */
     @Synchronized
-    fun revoke(deviceId: String) {
+    fun remove(deviceId: String) {
         prefs.edit().remove(rowKey(deviceId)).apply()
     }
+
+    /** Removes the device and records a sticky tombstone so gossip can't quietly bring it
+     *  back. [revokedAt] is when the revocation happened (Unix ms); the later of two wins.
+     *  Pairing the device directly again clears the tombstone (see [addDevice]). */
+    @Synchronized
+    fun revoke(deviceId: String, revokedAt: Long = System.currentTimeMillis()) {
+        val latest = maxOf(revokedAt(deviceId) ?: 0L, revokedAt)
+        prefs.edit().remove(rowKey(deviceId)).putLong(revokedKey(deviceId), latest).apply()
+    }
+
+    @Synchronized
+    fun revokedAt(deviceId: String): Long? =
+        if (prefs.contains(revokedKey(deviceId))) prefs.getLong(revokedKey(deviceId), 0L) else null
 
     private fun parse(json: String): TrustedDevice {
         val row = rowJson.decodeFromString(TrustedDeviceRow.serializer(), json)
@@ -161,10 +175,12 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     private val rowJson = Json { ignoreUnknownKeys = true }
 
     private fun rowKey(deviceId: String) = "$ROW_PREFIX$deviceId"
+    private fun revokedKey(deviceId: String) = "$REVOKED_PREFIX$deviceId"
 
     companion object {
         private const val PREFS_FILE = "connect_trusted_devices"
         private const val ROW_PREFIX = "device_"
+        private const val REVOKED_PREFIX = "revoked_"
 
         @Volatile
         private var instance: TrustedDevicesStore? = null

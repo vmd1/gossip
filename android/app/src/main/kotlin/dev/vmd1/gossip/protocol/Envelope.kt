@@ -38,7 +38,10 @@ data class Envelope(
      *  [TransportManager]'s receive loop. */
     val hasRawFollowup: Boolean = false,
     val ts: Long = System.currentTimeMillis(),
-    val payload: JsonObject = JsonObject(emptyMap())
+    val payload: JsonObject = JsonObject(emptyMap()),
+    /** Base64 Ed25519 signature by [senderId] over the envelope's canonical form (see
+     *  [EnvelopeSigning]); `null` only on the `handshake.*` envelopes. */
+    val sig: String? = null
 ) {
     companion object {
         val json = Json {
