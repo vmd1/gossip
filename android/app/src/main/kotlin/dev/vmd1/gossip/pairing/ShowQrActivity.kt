@@ -68,7 +68,11 @@ class ShowQrActivity : ComponentActivity() {
                 setContent {
                     dev.vmd1.gossip.ui.theme.ConnectTheme {
                         Surface(modifier = Modifier.fillMaxSize()) {
-                            ShowQrScreen(viewModel = viewModel, onDone = { finish() })
+                            ShowQrScreen(
+                                viewModel = viewModel,
+                                onDone = { setResult(RESULT_OK); finish() },
+                                onCancel = { viewModel.reset(); setResult(RESULT_CANCELED); finish() }
+                            )
                         }
                     }
                 }
@@ -90,7 +94,7 @@ class ShowQrActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
+private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit, onCancel: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
 
     Column(
@@ -104,6 +108,7 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
                 val bitmap = remember(current.payload) { QRCodeGenerator.bitmap(current.payload) }
                 Text("Scan this on another device to pair", style = MaterialTheme.typography.titleMedium)
                 Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Pairing QR code")
+                androidx.compose.material3.OutlinedButton(onClick = onCancel) { Text("Cancel") }
             }
             is ShowQrUiState.ConfirmingTrust -> {
                 Text("Waiting for confirmation…")
@@ -130,7 +135,8 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
             }
             is ShowQrUiState.Success -> {
                 Text("Paired with ${current.deviceName}", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = onDone) { Text("Done") }
+                // Both sides are paired: carry straight on to the next step.
+                androidx.compose.runtime.LaunchedEffect(Unit) { onDone() }
             }
             is ShowQrUiState.Failed -> {
                 Text("Pairing failed: ${current.reason}", style = MaterialTheme.typography.titleMedium)
