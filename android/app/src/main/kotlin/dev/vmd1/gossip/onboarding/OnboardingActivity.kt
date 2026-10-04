@@ -372,9 +372,9 @@ private fun PermissionsStep(
     }
     if (shizukuState != null && shizukuState != ShizukuManager.State.CONNECTED) {
         PermissionRow(
-            "Shizuku (optional)",
-            "Enables Instant Hotspot and background clipboard sync on newer Android " +
-                "versions. Skippable — everything else works without it.",
+            "Shizuku (heavily recommended)",
+            "Needed for screen mirroring, Universal Control, Instant Hotspot on newer Android " +
+                "versions and background clipboard sync. You can skip it — everything else works without it.",
             onRequestShizuku
         )
     }
