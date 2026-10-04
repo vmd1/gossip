@@ -41,6 +41,6 @@ class BeaconTagTest {
         val other = BeaconTag.acceptableTags(ByteArray(32) { 8 }, now).map { it.toList() }
         assertTrue(tags.intersect(other.toSet()).isEmpty())
         val left = BeaconTag.millisUntilNextWindow(now)
-        assertTrue(left in 1..120_000)
+        assertTrue(left in 1..60_000)
     }
 }

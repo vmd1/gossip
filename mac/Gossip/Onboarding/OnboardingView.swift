@@ -54,6 +54,10 @@ struct OnboardingView: View {
         .padding(24)
         .frame(width: 420)
         .onAppear { notificationStatus = notificationAuthorizationStatus() }
+        // A pairing finished from the first step: carry straight on.
+        .onReceive(NotificationCenter.default.publisher(for: .gossipDevicePaired)) { _ in
+            if step == .otherDevice { step = .permissions }
+        }
     }
 
     @ViewBuilder

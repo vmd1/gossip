@@ -42,10 +42,18 @@ final class PairingViewModel: ObservableObject {
                 self.state = .confirmingTrust(deviceName: peer.deviceName, code: code)
             }
         }
+        transportManager?.onUntrustedPromptCancelled = { [weak self] in
+            guard let self, self.pendingConfirmation != nil else { return }
+            self.pendingConfirmation = nil
+            self.state = .failed("The other device disconnected before pairing finished")
+        }
         transportManager?.addOnTrustedConnected { [weak self] peer in
             DispatchQueue.main.async {
-                self?.pendingConfirmation = nil
-                self?.state = .paired(deviceName: peer.deviceName)
+                // Every reconnect of a trusted device lands here too; only a pairing that is actually in progress counts.
+                guard let self, self.state != .idle else { return }
+                self.pendingConfirmation = nil
+                self.state = .paired(deviceName: peer.deviceName)
+                NotificationCenter.default.post(name: .gossipDevicePaired, object: nil)
             }
         }
     }
@@ -85,7 +93,14 @@ final class PairingViewModel: ObservableObject {
         transportManager?.disarmPairing()
         currentPayload = nil
         qrImage = nil
+        // Answer an open prompt (as a rejection) so the transport releases its single prompt slot.
+        pendingConfirmation?(false)
         pendingConfirmation = nil
         state = .idle
     }
+}
+
+extension Notification.Name {
+    /// Posted (main thread) when a pairing the user started finished; onboarding uses it to move on by itself.
+    static let gossipDevicePaired = Notification.Name("dev.vmd1.gossip.devicePaired")
 }

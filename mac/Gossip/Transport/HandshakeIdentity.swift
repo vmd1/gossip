@@ -50,6 +50,13 @@ enum PairingCode {
         return "\(s.prefix(3)) \(s.suffix(3))"
     }
 
+    /// Whether what the user typed is the displayed code (spaces and other separators ignored).
+    static func entryMatches(_ entry: String, expected: String) -> Bool {
+        let digits = { (s: String) in s.filter(\.isNumber) }
+        let typed = digits(entry), want = digits(expected)
+        return want.count == 6 && typed == want
+    }
+
     /// Constant-time token comparison; nil on either side never matches.
     static func tokenMatches(armed: String?, presented: String?) -> Bool {
         guard let armed, let presented else { return false }

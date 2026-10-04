@@ -69,6 +69,13 @@ object PairingCode {
         return "${s.substring(0, 3)} ${s.substring(3)}"
     }
 
+    /** Whether what the user typed is the displayed code (spaces and other separators ignored). */
+    fun entryMatches(entry: String, expected: String): Boolean {
+        val typed = entry.filter { it.isDigit() }
+        val want = expected.filter { it.isDigit() }
+        return want.length == 6 && typed == want
+    }
+
     /** Constant-time token comparison; null on either side never matches. */
     fun tokenMatches(armed: String?, presented: String?): Boolean {
         if (armed == null || presented == null) return false

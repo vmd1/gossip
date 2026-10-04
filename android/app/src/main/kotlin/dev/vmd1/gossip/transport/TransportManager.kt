@@ -34,6 +34,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -269,7 +272,12 @@ class TransportManager(
     private val pendingInboundByHost = ConcurrentHashMap<String, AtomicInteger>()
     private val pendingInboundTotal = AtomicInteger(0)
 
-    private fun hostKey(client: Socket): String = client.inetAddress?.hostAddress ?: "unknown"
+    /** IPv6 peers are limited per /64 (one host can own billions of addresses in its prefix); IPv4 per address. */
+    private fun hostKey(client: Socket): String {
+        val address = client.inetAddress ?: return "unknown"
+        return if (address is java.net.Inet6Address) address.address.copyOf(8).joinToString("") { "%02x".format(it) }
+        else address.hostAddress ?: "unknown"
+    }
 
     private fun admitInbound(client: Socket): Boolean {
         val host = hostKey(client)
@@ -330,7 +338,10 @@ class TransportManager(
         if (!trustedDevicesStore.isTrusted(deviceId)) return
         if (peers.containsKey(deviceId) || dialingDeviceIds.contains(deviceId)) return
         val trusted = trustedDevicesStore.getDevice(deviceId) ?: return
-        connect(host = host, port = peer.port, remoteStaticPublicKey = trusted.publicKey, deviceId = deviceId)
+        // Anyone on the LAN can advertise a trusted device's id; only dial an advertisement whose key fingerprint
+        // matches the key we pinned, so a squatter can't tie up the per-device dial slot.
+        if (!fingerprintMatches(peer.publicKeyFingerprint, trusted.publicKey)) return
+        connect(host, port = peer.port, remoteStaticPublicKey = trusted.publicKey, deviceId = deviceId)
     }
 
     /**
@@ -424,7 +435,8 @@ class TransportManager(
      *  [handleReceivedEnvelope]), not directly from here. */
     suspend fun send(unsigned: Envelope, rawFollowup: ByteArray) = withContext(Dispatchers.IO) {
         if (!isMessageAllowed(unsigned.type)) return@withContext
-        val envelope = signedForOrigination(unsigned)
+        // The raw frame isn't covered by the envelope signature, so its hash rides in the signed payload.
+        val envelope = signedForOrigination(bindingRawFrame(rawFollowup, unsigned))
         recordSeen(envelope.id)
         val targets = forwardTargets(envelope, arrivedFrom = null)
         if (targets.isEmpty()) throw IllegalStateException("Not connected")
@@ -524,7 +536,8 @@ class TransportManager(
                 }
                 client.soTimeout = 0
                 val remoteId = peerInfo.deviceId
-                settleDialing()
+                // A responder keeps its pending-inbound slot until the peer proves possession of its key (below).
+                if (role == NoiseRole.INITIATOR) settleDialing()
                 recomputeConnectionState()
 
                 // Only the RESPONDER role is trust-gated here. The initiator role only
@@ -591,6 +604,16 @@ class TransportManager(
                     onNewDevicePaired?.invoke(peerInfo)
                 }
 
+                // Noise message 1 can be replayed by anyone who recorded it, so a responder only lets this connection
+                // replace a live one once the peer's first transport frame decrypts (which needs its ephemeral key).
+                var firstPlaintext: ByteArray? = null
+                if (role == NoiseRole.RESPONDER) {
+                    client.soTimeout = HANDSHAKE_TIMEOUT_MS.toInt()
+                    firstPlaintext = session.decryptTransportMessage(readFrame(input, MAX_FRAME_BYTES))
+                    client.soTimeout = 0
+                    settleDialing()
+                }
+
                 val newPeer = PeerConnection(remoteId, client, out, session)
                 peer = newPeer
                 peers[remoteId]?.let { stale -> teardown(stale) }
@@ -604,10 +627,7 @@ class TransportManager(
 
                 try {
                     val rateLimiter = InboundRateLimiter()
-                    while (true) {
-                        val frame = readFrame(input)
-                        if (!rateLimiter.allow()) throw IOException("$remoteId is sending too fast")
-                        val plaintext = session.decryptTransportMessage(frame)
+                    suspend fun handlePlaintext(plaintext: ByteArray) {
                         newPeer.lastReceivedAt = System.currentTimeMillis()
                         // A raw (non-envelope) frame armed while handling the metadata
                         // envelope that announced it (`hasRawFollowup = true`) — see
@@ -616,11 +636,21 @@ class TransportManager(
                         // `Envelope.decode`, since a raw frame isn't JSON at all.
                         val rawHandler = pendingRawFrameHandlers.remove(remoteId)
                         if (rawHandler != null) {
-                            rawHandler(plaintext)
-                            continue
+                            runCatching { rawHandler(plaintext) }.onFailure { Log.w(TAG, "Raw frame handler failed: ${it.message}") }
+                            return
                         }
-                        val envelope = Envelope.decode(plaintext)
+                        // One undecodable message must not take the whole connection (and everything relayed over it) down.
+                        val envelope = try { Envelope.decode(plaintext) } catch (e: Exception) {
+                            Log.w(TAG, "Dropped an undecodable envelope: ${e.message}")
+                            return
+                        }
                         handleReceivedEnvelope(envelope, arrivedFrom = remoteId)
+                    }
+                    firstPlaintext?.let { handlePlaintext(it) }
+                    while (true) {
+                        val frame = readFrame(input)
+                        if (!rateLimiter.allow()) throw IOException("$remoteId is sending too fast")
+                        handlePlaintext(session.decryptTransportMessage(frame))
                     }
                 } finally {
                     heartbeatJob.cancel()
@@ -684,6 +714,11 @@ class TransportManager(
         // Verified before anything else so a forged copy can neither be acted on, relayed,
         // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that is
         // physically coming next on this connection is still drained, just discarded.
+        if (!isWellFormed(envelope)) {
+            Log.w(TAG, "Dropped an envelope with an oversized identifier or an implausible timestamp")
+            if (envelope.hasRawFollowup) pendingRawFrameHandlers[arrivedFrom] = {}
+            return
+        }
         if (!isAuthentic(envelope)) {
             Log.w(TAG, "Dropped ${envelope.type} with an invalid or unverifiable signature")
             if (envelope.hasRawFollowup) pendingRawFrameHandlers[arrivedFrom] = {}
@@ -709,6 +744,11 @@ class TransportManager(
 
         if (envelope.hasRawFollowup) {
             pendingRawFrameHandlers[arrivedFrom] = handler@{ data ->
+                // The raw frame is outside the signature; the signed payload carries its hash.
+                if (!rawFrameMatches(data, envelope)) {
+                    Log.w(TAG, "Dropped a raw frame that doesn't match its signed hash")
+                    return@handler
+                }
                 if (isForMe) {
                     _incoming.emit(envelope)
                     messageRouter.dispatch(envelope)
@@ -734,6 +774,12 @@ class TransportManager(
         }
     }
 
+    /** Cheap structural checks run before anything is cached, verified or relayed: identifiers are tiny (so the
+     *  seen-id cache can't be used to pin memory) and `ts` is recent (so old signed messages can't be replayed). */
+    private fun isWellFormed(e: Envelope, now: Long = System.currentTimeMillis()): Boolean =
+        e.id.length <= 64 && e.type.length <= 64 && e.senderId.length <= 64 &&
+            (e.recipientId?.length ?: 0) <= 64 && kotlin.math.abs(now - e.ts) <= MAX_CLOCK_SKEW_MS
+
     /** Resolves which currently-connected peers an envelope should be sent/forwarded to.
      *  [arrivedFrom] is the peer this envelope was just relayed from (excluded from
      *  re-forwarding back to); pass `null` for a locally-originated send. */
@@ -746,6 +792,8 @@ class TransportManager(
             return emptyList()
         }
         peers[recipientId]?.let { return listOf(it) }
+        // `ttl: 0` envelopes (key material) are direct-only: never flood them to bystanders.
+        if (envelope.ttl <= 0) return emptyList()
         // Not directly connected to the recipient — flood so it can find a multi-hop
         // path through whatever else we're connected to.
         return peers.values.filter { it.deviceId != arrivedFrom }
@@ -860,6 +908,31 @@ class TransportManager(
 
     companion object {
         const val DEFAULT_PORT = 7913
+        /** Envelopes older/newer than this are rejected; generous so ordinary clock drift never matters. */
+        const val MAX_CLOCK_SKEW_MS = 15 * 60 * 1000L
+        const val RAW_HASH_FIELD = "rawSha256"
+
+        fun rawFrameHash(data: ByteArray): String =
+            java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(data))
+
+        /** [envelope] with the SHA-256 of [raw] added to its payload (before signing). */
+        internal fun bindingRawFrame(raw: ByteArray, envelope: Envelope): Envelope =
+            if (envelope.sig != null) envelope
+            else envelope.copy(payload = JsonObject(envelope.payload + (RAW_HASH_FIELD to JsonPrimitive(rawFrameHash(raw)))))
+
+        /** Whether [data] is the raw frame the signed [envelope] committed to. */
+        internal fun rawFrameMatches(data: ByteArray, envelope: Envelope): Boolean =
+            envelope.payload[RAW_HASH_FIELD]?.jsonPrimitive?.contentOrNull == rawFrameHash(data)
+
+        /** The two advertisement formats in use: the Mac's (base64 of the first 8 digest bytes) and this app's
+         *  (first 16 characters of the unpadded base64 of the whole SHA-256 digest). */
+        internal fun fingerprintMatches(advertised: String?, publicKey: ByteArray): Boolean {
+            if (advertised == null) return false
+            val digest = MessageDigest.getInstance("SHA-256").digest(publicKey)
+            val macStyle = java.util.Base64.getEncoder().encodeToString(digest.copyOf(8))
+            val androidStyle = java.util.Base64.getEncoder().withoutPadding().encodeToString(digest).take(16)
+            return advertised == macStyle || advertised == androidStyle
+        }
         private const val MAX_FRAME_BYTES = 16 * 1024 * 1024
         /** Hello/ack envelopes are a few hundred bytes; anything larger before auth is hostile. */
         internal const val MAX_HANDSHAKE_FRAME_BYTES = 16 * 1024

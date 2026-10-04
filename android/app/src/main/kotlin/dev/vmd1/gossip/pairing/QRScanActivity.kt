@@ -7,11 +7,8 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
-import dev.vmd1.gossip.util.Log
-import android.view.ViewGroup
-import android.widget.FrameLayout
-import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.camera.core.CameraSelector
@@ -19,15 +16,40 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import dev.vmd1.gossip.crypto.IdentityKeyStore
-import dev.vmd1.gossip.crypto.TrustedDevicesStore
-import dev.vmd1.gossip.service.SyncForegroundService
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import dev.vmd1.gossip.crypto.IdentityKeyStore
+import dev.vmd1.gossip.crypto.TrustedDevicesStore
+import dev.vmd1.gossip.service.SyncForegroundService
+import dev.vmd1.gossip.util.Log
 import kotlinx.coroutines.launch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -36,9 +58,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 private const val TAG = "QRScanActivity"
 
 /**
- * CameraX preview + ML Kit barcode scanning to read the Mac's pairing QR code, then
- * hands the decoded payload to [PairingViewModel] to resolve the peer over NSD and
- * run the Noise_IK handshake.
+ * Scans the other device's pairing QR. As soon as a code is read the screen changes to the pairing screen, which
+ * only shows the safety code to type on the other device (and a Cancel button); when both sides have paired the
+ * activity finishes with `RESULT_OK` so the caller can move on by itself.
  */
 class QRScanActivity : ComponentActivity() {
 
@@ -46,7 +68,11 @@ class QRScanActivity : ComponentActivity() {
     private var serviceConnection: ServiceConnection? = null
     private val handledScan = AtomicBoolean(false)
     private lateinit var cameraExecutor: ExecutorService
-    private lateinit var statusView: TextView
+    private var cameraProvider: ProcessCameraProvider? = null
+
+    private var uiState by mutableStateOf<PairingUiState>(PairingUiState.Idle)
+    private var cameraGranted by mutableStateOf(false)
+    private var viewModelReady by mutableStateOf(false)
 
     private val viewModel: PairingViewModel by viewModels {
         val service = boundService ?: error("Service not bound yet")
@@ -58,7 +84,7 @@ class QRScanActivity : ComponentActivity() {
     }
 
     private val requestCameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startCamera() else statusView.text = "Camera permission is required to scan a QR code."
+        cameraGranted = granted
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -66,37 +92,85 @@ class QRScanActivity : ComponentActivity() {
         IdentityKeyStore.ensureInitialized(applicationContext)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        val root = FrameLayout(this)
-        val previewView = PreviewView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        statusView = TextView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                gravity = android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
-                bottomMargin = 64
+        setContent {
+            dev.vmd1.gossip.ui.theme.ConnectTheme {
+                Surface(modifier = Modifier.fillMaxSize()) { Content() }
             }
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 22f
-            gravity = android.view.Gravity.CENTER
-            setBackgroundColor(0xAA000000.toInt())
-            setPadding(48, 32, 48, 32)
-            text = "Point the camera at the device's pairing QR code"
         }
-        root.addView(previewView)
-        root.addView(statusView)
-        setContentView(root)
-        this.previewView = previewView
 
         bindTransportService()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            startCamera()
+            cameraGranted = true
         } else {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
-    private lateinit var previewView: PreviewView
+    @Composable
+    private fun Content() {
+        val state = uiState
+        when {
+            !viewModelReady -> Centered { CircularProgressIndicator() }
+            state is PairingUiState.Idle -> ScanScreen()
+            state is PairingUiState.Discovering -> Centered {
+                CircularProgressIndicator(modifier = Modifier.size(48.dp))
+                Text("Looking for the other device…", style = MaterialTheme.typography.titleMedium)
+                OutlinedButton(onClick = ::cancelAndClose) { Text("Cancel") }
+            }
+            state is PairingUiState.Handshaking -> Centered {
+                Text("Enter this code on the other device", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+                Text(state.code, fontSize = 48.sp, fontFamily = FontFamily.Monospace, textAlign = TextAlign.Center)
+                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                OutlinedButton(onClick = ::cancelAndClose) { Text("Cancel") }
+            }
+            state is PairingUiState.Success -> Centered {
+                Text("Paired with ${state.deviceName}", style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            }
+            state is PairingUiState.Failed -> Centered {
+                Text("Pairing didn't work", style = MaterialTheme.typography.titleMedium)
+                Text(state.reason, textAlign = TextAlign.Center)
+                Button(onClick = { viewModel.cancel() }) { Text("Try again") }
+                OutlinedButton(onClick = ::cancelAndClose) { Text("Cancel") }
+            }
+        }
+    }
+
+    @Composable
+    private fun ScanScreen() {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (cameraGranted) {
+                AndroidView(modifier = Modifier.fillMaxSize(), factory = { ctx -> PreviewView(ctx).also { startCamera(it) } })
+                DisposableEffect(Unit) { onDispose { cameraProvider?.unbindAll() } }
+            }
+            Column(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    if (cameraGranted) "Point the camera at the other device's QR code" else "Camera permission is required to scan a QR code.",
+                    style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center
+                )
+                OutlinedButton(onClick = ::cancelAndClose) { Text("Cancel") }
+            }
+        }
+    }
+
+    @Composable
+    private fun Centered(body: @Composable () -> Unit) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) { body() }
+    }
+
+    private fun cancelAndClose() {
+        if (viewModelReady) viewModel.cancel()
+        setResult(RESULT_CANCELED)
+        finish()
+    }
 
     private fun bindTransportService() {
         val connection = object : ServiceConnection {
@@ -115,16 +189,11 @@ class QRScanActivity : ComponentActivity() {
     }
 
     private fun observeViewModel() {
+        viewModelReady = true
         lifecycleScope.launch {
             viewModel.uiState.collect { state ->
-                statusView.text = when (state) {
-                    is PairingUiState.Idle -> "Point the camera at the device's pairing QR code"
-                    is PairingUiState.Discovering -> "Looking for the device on your network…"
-                    is PairingUiState.Handshaking -> "Connecting securely…\nCheck that the other device shows ${state.code}"
-                    is PairingUiState.Success -> "Paired with ${state.deviceName}"
-                    is PairingUiState.Failed -> "Pairing failed: ${state.reason}"
-                }
-                // Back to ready after a failure cleared itself: allow scanning again.
+                uiState = state
+                // Back to ready after a failure cleared itself or was dismissed: allow scanning again.
                 if (state is PairingUiState.Idle) handledScan.set(false)
                 if (state is PairingUiState.Success) {
                     setResult(RESULT_OK)
@@ -134,10 +203,11 @@ class QRScanActivity : ComponentActivity() {
         }
     }
 
-    private fun startCamera() {
+    private fun startCamera(previewView: PreviewView) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
+            val provider = cameraProviderFuture.get()
+            cameraProvider = provider
             val preview = androidx.camera.core.Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
@@ -155,8 +225,8 @@ class QRScanActivity : ComponentActivity() {
             }
 
             try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                provider.unbindAll()
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
             } catch (e: Exception) {
                 Log.e(TAG, "CameraX bind failed", e)
             }

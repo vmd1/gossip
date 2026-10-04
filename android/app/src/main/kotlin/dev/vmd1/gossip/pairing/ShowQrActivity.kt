@@ -17,12 +17,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -65,7 +68,11 @@ class ShowQrActivity : ComponentActivity() {
                 setContent {
                     dev.vmd1.gossip.ui.theme.ConnectTheme {
                         Surface(modifier = Modifier.fillMaxSize()) {
-                            ShowQrScreen(viewModel = viewModel, onDone = { finish() })
+                            ShowQrScreen(
+                                viewModel = viewModel,
+                                onDone = { setResult(RESULT_OK); finish() },
+                                onCancel = { viewModel.reset(); setResult(RESULT_CANCELED); finish() }
+                            )
                         }
                     }
                 }
@@ -87,7 +94,7 @@ class ShowQrActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
+private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit, onCancel: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
 
     Column(
@@ -101,15 +108,25 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
                 val bitmap = remember(current.payload) { QRCodeGenerator.bitmap(current.payload) }
                 Text("Scan this on another device to pair", style = MaterialTheme.typography.titleMedium)
                 Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Pairing QR code")
+                androidx.compose.material3.OutlinedButton(onClick = onCancel) { Text("Cancel") }
             }
             is ShowQrUiState.ConfirmingTrust -> {
                 Text("Waiting for confirmation…")
+                var entered by remember { mutableStateOf("") }
                 AlertDialog(
                     onDismissRequest = { viewModel.rejectTrust() },
                     title = { Text("Trust this device?") },
-                    text = { Text("${current.deviceName} wants to pair with this device.\n\nCheck that the other device shows ${current.code}.") },
+                    text = {
+                        Column {
+                            Text("${current.deviceName} wants to pair with this device.\n\nType the 6-digit code shown on that device. Only continue if you are looking at it right now.")
+                            OutlinedTextField(value = entered, onValueChange = { entered = it.take(7) }, singleLine = true, label = { Text("123 456") })
+                        }
+                    },
                     confirmButton = {
-                        Button(onClick = { viewModel.confirmTrust() }) { Text("Confirm") }
+                        Button(
+                            onClick = { viewModel.confirmTrust() },
+                            enabled = dev.vmd1.gossip.protocol.PairingCode.entryMatches(entered, current.code)
+                        ) { Text("Confirm") }
                     },
                     dismissButton = {
                         Button(onClick = { viewModel.rejectTrust() }) { Text("Reject") }
@@ -118,7 +135,8 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit) {
             }
             is ShowQrUiState.Success -> {
                 Text("Paired with ${current.deviceName}", style = MaterialTheme.typography.titleMedium)
-                Button(onClick = onDone) { Text("Done") }
+                // Both sides are paired: carry straight on to the next step.
+                androidx.compose.runtime.LaunchedEffect(Unit) { onDone() }
             }
             is ShowQrUiState.Failed -> {
                 Text("Pairing failed: ${current.reason}", style = MaterialTheme.typography.titleMedium)

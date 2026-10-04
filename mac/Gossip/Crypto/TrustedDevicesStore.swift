@@ -96,7 +96,11 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
 final class TrustedDevicesStore: ObservableObject {
     static let shared = TrustedDevicesStore()
 
+    /// What the UI observes. Only ever assigned on the main thread (see `publishOnMain`): publishing it from the
+    /// transport/gossip threads that mutate the store crashed SwiftUI's menu-bar item (`NSStatusItem.setVisible` off main).
     @Published private(set) var devices: [TrustedDevice] = []
+    /// The source of truth, guarded by `queue`.
+    private var storage: [TrustedDevice] = []
 
     private let fileURL: URL
     private let revokedFileURL: URL
@@ -124,20 +128,21 @@ final class TrustedDevicesStore: ObservableObject {
             self.revokedFileURL = dir.appendingPathComponent("revoked-devices.json")
         }
         load()
+        devices = storage
     }
 
     // MARK: - Public API
 
     func isTrusted(deviceId: String) -> Bool {
-        queue.sync { devices.contains { $0.deviceId == deviceId } }
+        queue.sync { storage.contains { $0.deviceId == deviceId } }
     }
 
     func device(for deviceId: String) -> TrustedDevice? {
-        queue.sync { devices.first { $0.deviceId == deviceId } }
+        queue.sync { storage.first { $0.deviceId == deviceId } }
     }
 
     func allDevices() -> [TrustedDevice] {
-        queue.sync { devices }
+        queue.sync { storage }
     }
 
     @discardableResult
@@ -157,8 +162,8 @@ final class TrustedDevicesStore: ObservableObject {
             signingPublicKeyBase64: signingPublicKeyBase64
         )
         queue.sync {
-            devices.removeAll { $0.deviceId == deviceId }
-            devices.append(device)
+            storage.removeAll { $0.deviceId == deviceId }
+            storage.append(device)
             revoked.removeValue(forKey: deviceId)
         }
         persist()
@@ -172,9 +177,9 @@ final class TrustedDevicesStore: ObservableObject {
     func setSigningPublicKey(deviceId: String, signingPublicKeyBase64: String) {
         var changed = false
         queue.sync {
-            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }),
-                  devices[index].signingPublicKeyBase64 != signingPublicKeyBase64 else { return }
-            devices[index].signingPublicKeyBase64 = signingPublicKeyBase64
+            guard let index = storage.firstIndex(where: { $0.deviceId == deviceId }),
+                  storage[index].signingPublicKeyBase64 != signingPublicKeyBase64 else { return }
+            storage[index].signingPublicKeyBase64 = signingPublicKeyBase64
             changed = true
         }
         guard changed else { return }
@@ -188,9 +193,9 @@ final class TrustedDevicesStore: ObservableObject {
     func setBeaconKey(deviceId: String, beaconKeyBase64: String) {
         var changed = false
         queue.sync {
-            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }),
-                  devices[index].beaconKeyBase64 != beaconKeyBase64 else { return }
-            devices[index].beaconKeyBase64 = beaconKeyBase64
+            guard let index = storage.firstIndex(where: { $0.deviceId == deviceId }),
+                  storage[index].beaconKeyBase64 != beaconKeyBase64 else { return }
+            storage[index].beaconKeyBase64 = beaconKeyBase64
             changed = true
         }
         guard changed else { return }
@@ -200,7 +205,7 @@ final class TrustedDevicesStore: ObservableObject {
 
     func revoke(deviceId: String, revokedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
         queue.sync {
-            devices.removeAll { $0.deviceId == deviceId }
+            storage.removeAll { $0.deviceId == deviceId }
             revoked[deviceId] = max(revoked[deviceId] ?? 0, revokedAt)
         }
         persist()
@@ -217,8 +222,8 @@ final class TrustedDevicesStore: ObservableObject {
         let trimmed = fallbackHost?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmed, !trimmed.isEmpty, !HostValidator.isValid(trimmed) { return false }
         queue.sync {
-            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
-            devices[index].fallbackHost = (trimmed?.isEmpty == false) ? trimmed : nil
+            guard let index = storage.firstIndex(where: { $0.deviceId == deviceId }) else { return }
+            storage[index].fallbackHost = (trimmed?.isEmpty == false) ? trimmed : nil
         }
         persist()
         publishOnMain()
@@ -229,8 +234,8 @@ final class TrustedDevicesStore: ObservableObject {
     /// No-ops if `deviceId` isn't trusted (e.g. a stale/racing message from a just-revoked device).
     func setLockOnLeaveEnabled(deviceId: String, enabled: Bool) {
         queue.sync {
-            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
-            devices[index].lockOnLeaveEnabled = enabled
+            guard let index = storage.firstIndex(where: { $0.deviceId == deviceId }) else { return }
+            storage[index].lockOnLeaveEnabled = enabled
         }
         persist()
         publishOnMain()
@@ -244,7 +249,7 @@ final class TrustedDevicesStore: ObservableObject {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             if let decoded = try? decoder.decode([TrustedDevice].self, from: data) {
-                devices = decoded
+                storage = decoded
             }
             if let data = try? Data(contentsOf: revokedFileURL),
                let decoded = try? JSONDecoder().decode([String: Int64].self, from: data) {
@@ -258,7 +263,7 @@ final class TrustedDevicesStore: ObservableObject {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            guard let data = try? encoder.encode(devices) else { return }
+            guard let data = try? encoder.encode(storage) else { return }
             PrivateFile.write(data, to: fileURL)
             if let revokedData = try? JSONEncoder().encode(revoked) {
                 PrivateFile.write(revokedData, to: revokedFileURL)
@@ -267,7 +272,8 @@ final class TrustedDevicesStore: ObservableObject {
     }
 
     private func publishOnMain() {
-        let snapshot = queue.sync { devices }
+        let snapshot = queue.sync { storage }
+        if Thread.isMainThread { devices = snapshot; return }
         DispatchQueue.main.async { [weak self] in
             self?.devices = snapshot
         }
