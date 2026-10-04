@@ -97,6 +97,7 @@ object MessageType {
     const val DEVICE_RING_STATE = "device.ring_state"
     const val BATTERY_UPDATE = "battery.update"
     const val DISPLAY_INFO = "display.info"
+    const val BLE_BEACON_KEY = "ble.beacon_key"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */

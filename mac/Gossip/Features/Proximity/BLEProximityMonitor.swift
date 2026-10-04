@@ -70,7 +70,10 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
 
     private var centralManager: CBCentralManager!
     private let trustedDevicesStore: TrustedDevicesStore
+    /// Currently acceptable keyed beacon tags -> device; rebuilt when the roster/keys change and as the time window moves.
     private var fingerprintToDeviceId: [Data: String] = [:]
+    private var tagMapWindow: UInt64 = .max
+    private var knownDevices: [TrustedDevice] = []
     private var states: [String: ProximityState] = [:]
     private var storeSubscription: AnyCancellable?
     private var staleTimer: Timer?
@@ -103,13 +106,20 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
     }
 
     private func rebuildFingerprintMap(devices: [TrustedDevice]) {
+        knownDevices = devices
         var map: [Data: String] = [:]
         for device in devices {
-            guard let keyData = Data(base64Encoded: device.publicKeyBase64) else { continue }
-            let fingerprint = Data(SHA256.hash(data: keyData).prefix(8))
-            map[fingerprint] = device.deviceId
+            guard let key = device.beaconKeyBase64.flatMap({ Data(base64Encoded: $0) }), key.count == 32 else { continue }
+            for tag in BeaconTag.acceptableTags(key: key) { map[tag] = device.deviceId }
         }
         fingerprintToDeviceId = map
+        tagMapWindow = BeaconTag.window()
+    }
+
+    /// The tags rotate every window, so the map is refreshed whenever the window has moved on.
+    private func deviceId(forTag tag: Data) -> String? {
+        if BeaconTag.window() != tagMapWindow { rebuildFingerprintMap(devices: knownDevices) }
+        return fingerprintToDeviceId[tag]
     }
 
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
@@ -140,7 +150,7 @@ final class BLEProximityMonitor: NSObject, ObservableObject, CBCentralManagerDel
             return
         }
         let fingerprint = manufacturerData.subdata(in: 4..<12)
-        guard let deviceId = fingerprintToDeviceId[fingerprint] else {
+        guard let deviceId = deviceId(forTag: fingerprint) else {
             return
         }
         // Byte 12 (optional — a peer on an older build simply won't have it, which

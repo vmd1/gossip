@@ -22,6 +22,8 @@ enum HotspotGattProtocol {
     /// Payload bytes per GATT write/notify chunk — see `HotspotGattProtocol.kt`'s
     /// matching constant for the full "never depends on MTU negotiation" rationale.
     static let chunkPayloadSize = 19
+    /// Requests and responses are a few hundred bytes; anything larger is not a real message.
+    static let maxMessageBytes = 4096
     private static let flagLastChunk: UInt8 = 0x01
 
     static func encodeChunks(_ message: Data) -> [Data] {
@@ -44,16 +46,24 @@ enum HotspotGattProtocol {
     /// connection, same as `HotspotGattProtocol.kt`'s `ChunkReassembler`.
     final class ChunkReassembler {
         private var buffer = Data()
+        private var overflowed = false
 
         /// Feeds one chunk; returns the complete reassembled message once the last
         /// chunk arrives, or `nil` if more chunks are still expected. Resets
         /// automatically after returning a complete message.
         func feed(_ chunk: Data) -> Data? {
             guard !chunk.isEmpty else { return nil }
-            buffer.append(chunk.dropFirst())
-            guard (chunk[chunk.startIndex] & flagLastChunk) != 0 else { return nil }
-            let result = buffer
+            let isLast = (chunk[chunk.startIndex] & flagLastChunk) != 0
+            // Past the cap the message is discarded, remaining chunks included, instead of buffered.
+            if !overflowed && buffer.count + chunk.count - 1 > HotspotGattProtocol.maxMessageBytes {
+                overflowed = true
+                buffer = Data()
+            }
+            if !overflowed { buffer.append(chunk.dropFirst()) }
+            guard isLast else { return nil }
+            let result = overflowed ? nil : buffer
             buffer = Data()
+            overflowed = false
             return result
         }
     }
@@ -62,22 +72,25 @@ enum HotspotGattProtocol {
         let id: String
         let en: Bool
         let n: String
+        /// Requester's clock, Unix ms, signed: bounds how long a captured request stays replayable.
+        let t: Int64
         let s: String
 
         /// Builds and signs a fresh request. [signingKey] is the requester's Ed25519
         /// signing key (`IdentityKeyStore.signingKey`).
         static func create(requesterId: String, enable: Bool, signingKey: Curve25519.Signing.PrivateKey) -> ToggleRequestPayload {
             let nonce = UUID().uuidString
-            let signature = sign(signingKey, signedString(requesterId, enable, nonce))
-            return ToggleRequestPayload(id: requesterId, en: enable, n: nonce, s: signature)
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let signature = sign(signingKey, signedString(requesterId, enable, nonce, now))
+            return ToggleRequestPayload(id: requesterId, en: enable, n: nonce, t: now, s: signature)
         }
 
         func isSignatureValid(signingPublicKeyBase64: String) -> Bool {
-            verify(signingPublicKeyBase64, Self.signedString(id, en, n), s)
+            verify(signingPublicKeyBase64, Self.signedString(id, en, n, t), s)
         }
 
-        private static func signedString(_ requesterId: String, _ enable: Bool, _ nonce: String) -> String {
-            "hotspot.toggle_request|\(requesterId)|\(enable)|\(nonce)"
+        private static func signedString(_ requesterId: String, _ enable: Bool, _ nonce: String, _ timestampMs: Int64) -> String {
+            "hotspot.toggle_request|\(requesterId)|\(enable)|\(nonce)|\(timestampMs)"
         }
     }
 

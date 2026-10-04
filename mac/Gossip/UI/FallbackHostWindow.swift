@@ -50,6 +50,7 @@ private struct DeviceSettingsContentView: View {
 
     @State private var showForgetConfirmation = false
     @State private var fallbackText: String
+    @State private var fallbackInvalid = false
 
     init(device: TrustedDevice, trustedDevicesStore: TrustedDevicesStore, onForget: @escaping () -> Void, onDone: @escaping () -> Void) {
         self.device = device
@@ -64,8 +65,13 @@ private struct DeviceSettingsContentView: View {
     private func saveFallbackHost() {
         let trimmed = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
         let stored = trustedDevicesStore.device(for: device.deviceId)?.fallbackHost ?? ""
-        guard trimmed != stored else { return }
-        trustedDevicesStore.setFallbackHost(deviceId: device.deviceId, fallbackHost: trimmed)
+        guard trimmed != stored else { fallbackInvalid = false; return }
+        if trustedDevicesStore.setFallbackHost(deviceId: device.deviceId, fallbackHost: trimmed) {
+            fallbackInvalid = false
+        } else {
+            fallbackInvalid = true
+            fallbackText = stored
+        }
     }
 
     var body: some View {
@@ -73,6 +79,11 @@ private struct DeviceSettingsContentView: View {
             Text("Fallback IP (e.g. Tailscale)")
                 .font(.headline)
             FallbackHostField(text: $fallbackText, onCommit: saveFallbackHost)
+            if fallbackInvalid {
+                Text("That isn't a valid IP address or hostname.")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
 
             Divider()
 

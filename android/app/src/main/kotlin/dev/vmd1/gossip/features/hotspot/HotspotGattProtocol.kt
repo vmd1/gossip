@@ -35,6 +35,12 @@ object HotspotGattProtocol {
      *  depends on MTU negotiation succeeding, trading a few extra round-trips for a
      *  chunking scheme that just always works. See [ChunkReassembler] for reassembly. */
     const val CHUNK_PAYLOAD_SIZE = 19
+
+    /** Requests and responses are a few hundred bytes; anything larger is not a real message. */
+    const val MAX_MESSAGE_BYTES = 4096
+
+    /** A request older (or further in the future) than this is rejected, so a captured one can't be replayed later. */
+    const val REQUEST_FRESHNESS_MS = 2 * 60_000L
     private const val FLAG_LAST_CHUNK: Byte = 0x01
 
     fun encodeChunks(message: ByteArray): List<ByteArray> {
@@ -57,8 +63,9 @@ object HotspotGattProtocol {
      *  operations) back into the original message. Not thread-safe — callers own
      *  serializing chunk delivery per connection, which every GATT callback API already
      *  guarantees (one callback thread per connection). */
-    class ChunkReassembler {
+    class ChunkReassembler(private val maxBytes: Int = MAX_MESSAGE_BYTES) {
         private val buffer = java.io.ByteArrayOutputStream()
+        private var overflowed = false
 
         /** Feeds one chunk; returns the complete reassembled message once the last chunk
          *  arrives, or `null` if more chunks are still expected. Resets automatically after
@@ -66,10 +73,15 @@ object HotspotGattProtocol {
          *  request/response on the same connection. */
         fun feed(chunk: ByteArray): ByteArray? {
             if (chunk.isEmpty()) return null
-            buffer.write(chunk, 1, chunk.size - 1)
-            if ((chunk[0].toInt() and FLAG_LAST_CHUNK.toInt()) == 0) return null
-            val result = buffer.toByteArray()
+            val isLast = (chunk[0].toInt() and FLAG_LAST_CHUNK.toInt()) != 0
+            // A message past the cap is discarded (including its remaining chunks) rather than
+            // buffered: any BLE device can write here, so the buffer must not grow without bound.
+            if (!overflowed && buffer.size() + chunk.size - 1 > maxBytes) { overflowed = true; buffer.reset() }
+            if (!overflowed) buffer.write(chunk, 1, chunk.size - 1)
+            if (!isLast) return null
+            val result = if (overflowed) null else buffer.toByteArray()
             buffer.reset()
+            overflowed = false
             return result
         }
     }
@@ -79,6 +91,8 @@ object HotspotGattProtocol {
         val id: String,
         val en: Boolean,
         val n: String,
+        /** Requester's clock, Unix ms, signed: bounds how long a captured request stays replayable. */
+        val t: Long = 0L,
         val s: String
     ) {
         companion object {
@@ -86,13 +100,17 @@ object HotspotGattProtocol {
              *  32-byte Ed25519 private key seed (`IdentityKeyStore.ed25519PrivateKey`). */
             fun create(requesterId: String, enable: Boolean, privateKeySeed: ByteArray): ToggleRequestPayload {
                 val nonce = UUID.randomUUID().toString()
-                val signature = sign(privateKeySeed, signedString(requesterId, enable, nonce))
-                return ToggleRequestPayload(id = requesterId, en = enable, n = nonce, s = signature)
+                val now = System.currentTimeMillis()
+                val signature = sign(privateKeySeed, signedString(requesterId, enable, nonce, now))
+                return ToggleRequestPayload(id = requesterId, en = enable, n = nonce, t = now, s = signature)
             }
         }
 
         fun isSignatureValid(signingPublicKey: ByteArray): Boolean =
-            verify(signingPublicKey, signedString(id, en, n), s)
+            verify(signingPublicKey, signedString(id, en, n, t), s)
+
+        fun isFresh(nowMs: Long = System.currentTimeMillis()): Boolean =
+            t > 0 && kotlin.math.abs(nowMs - t) <= REQUEST_FRESHNESS_MS
     }
 
     @Serializable
@@ -145,8 +163,8 @@ object HotspotGattProtocol {
         }
     }
 
-    private fun signedString(requesterId: String, enable: Boolean, nonce: String): String =
-        "hotspot.toggle_request|$requesterId|$enable|$nonce"
+    private fun signedString(requesterId: String, enable: Boolean, nonce: String, timestampMs: Long): String =
+        "hotspot.toggle_request|$requesterId|$enable|$nonce|$timestampMs"
 
     private fun signedString(providerId: String, enabled: Boolean, cred: String?, nonce: String): String =
         "hotspot.status|$providerId|$enabled|${cred.orEmpty()}|$nonce"

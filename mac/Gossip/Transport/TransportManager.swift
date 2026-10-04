@@ -121,6 +121,7 @@ final class TransportManager: ObservableObject {
         var presentedPairingToken: String?
         /// True while the user is looking at the trust prompt for this connection.
         var awaitingConfirmation = false
+        var rateLimiter = InboundRateLimiter()
         var expectedRemoteStaticKey: Curve25519.KeyAgreement.PublicKey?
         /// Set only for outbound dials, so teardown can clear `dialingDeviceIds`.
         var dialTargetDeviceId: String?
@@ -174,7 +175,8 @@ final class TransportManager: ObservableObject {
     private let dedupeQueue = DispatchQueue(label: "dev.vmd1.gossip.transportmanager.dedupe")
     private var recentEnvelopeIds: [String] = []
     private var recentEnvelopeIdSet: Set<String> = []
-    private static let dedupeCacheLimit = 512
+    /// Large enough that flushing it with unique ids (to re-deliver old broadcasts) takes real effort.
+    private static let dedupeCacheLimit = 4096
 
     init(trustedDevices: TrustedDevicesStore = .shared) {
         self.trustedDevices = trustedDevices
@@ -743,6 +745,11 @@ final class TransportManager: ObservableObject {
     private func processTransportFrame(_ payload: Data, pending: PeerConnection) {
         pending.lastReceivedAt = Date()
         guard let arrivedFrom = pending.deviceId else { return }
+        guard pending.rateLimiter.allow() else {
+            gossipError("Gossip: \(arrivedFrom) is sending too fast; closing the connection")
+            teardownAny(pending)
+            return
+        }
         do {
             let plaintext = try pending.noiseSession.decrypt(payload)
             // A raw (non-envelope) frame armed while handling the metadata envelope
@@ -787,7 +794,9 @@ final class TransportManager: ObservableObject {
     /// atomically as a pair — never the metadata alone, which would desync a
     /// downstream hop's own "next frame is raw" expectation if some other
     /// message interleaved in between.
-    private func handleReceivedEnvelope(_ envelope: Envelope, arrivedFrom: String) {
+    private func handleReceivedEnvelope(_ received: Envelope, arrivedFrom: String) {
+        // `ttl` is the one field a relay can change, so a peer can't be trusted to keep it within the mesh's budget.
+        let envelope = received.ttl > Envelope.defaultTTL ? received.withTTL(Envelope.defaultTTL) : received
         // Verified before anything else so a forged copy can neither be acted on, relayed,
         // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that
         // is physically coming next on this connection is still drained, just discarded.

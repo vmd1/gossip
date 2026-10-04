@@ -23,7 +23,7 @@ import kotlinx.serialization.json.jsonPrimitive
  *
  * A `screen.start` carrying a `sessionId` launches the on-device capture ([ScreenBridge]:
  * bundled scrcpy server via Shizuku + a WebSocket listener) and answers the requester with
- * `screen.ready` (port + token). A `screen.start` *without* a `sessionId` is the legacy
+ * `screen.ready` (port + secret). A `screen.start` *without* a `sessionId` is the legacy
  * signaling-only form (Mac drives `adb screenrecord` itself) and only flips [isMirroring].
  *
  * **Idempotent by construction** (repo `CLAUDE.md`): a duplicate `screen.start` for the active
@@ -69,7 +69,7 @@ class ScreenMirrorState(
         if (!isEnabled()) {
             send(
                 Envelope(
-                    type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = envelope.senderId,
+                    type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = envelope.senderId, ttl = 0,
                     payload = buildJsonObject {
                         put("sessionId", JsonPrimitive(sessionId)); put("reason", JsonPrimitive("feature_disabled"))
                     }
@@ -118,6 +118,14 @@ class ScreenMirrorState(
         }
     }
 
+    /** Ends whatever session is active, from the on-device "Stop" action. The viewer sees its WebSocket close. */
+    fun stopActive() {
+        synchronized(lock) {
+            active?.let { endLocked(it) }
+            publish()
+        }
+    }
+
     internal fun onScreenStop(envelope: Envelope) {
         val sessionId = envelope.payload.str("sessionId") ?: return
         synchronized(lock) {
@@ -137,7 +145,7 @@ class ScreenMirrorState(
             active = null; remember(entry.sessionId); publish()
             send(
                 Envelope(
-                    type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = entry.requester,
+                    type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = entry.requester, ttl = 0,
                     payload = buildJsonObject {
                         put("sessionId", JsonPrimitive(entry.sessionId)); put("reason", JsonPrimitive(reason))
                     }
@@ -161,13 +169,13 @@ class ScreenMirrorState(
     private fun publish() { _isMirroring.value = active != null }
 
     private fun sendReady(to: String, sessionId: String, r: ScreenSession.Ready) {
-        if (logReadyToken) Log.d(TAG, "READY sessionId=$sessionId port=${r.port} token=${r.token}")
+        if (logReadyToken) Log.d(TAG, "READY sessionId=$sessionId port=${r.port}")
         send(
             Envelope(
-                type = MessageType.SCREEN_READY, senderId = selfId, recipientId = to,
+                type = MessageType.SCREEN_READY, senderId = selfId, recipientId = to, ttl = 0,
                 payload = buildJsonObject {
                     put("sessionId", JsonPrimitive(sessionId))
-                    put("port", JsonPrimitive(r.port)); put("token", JsonPrimitive(r.token))
+                    put("port", JsonPrimitive(r.port)); put("secret", JsonPrimitive(r.secret))
                     put("width", JsonPrimitive(r.width)); put("height", JsonPrimitive(r.height))
                     put("codec", JsonPrimitive(r.codec))
                 }

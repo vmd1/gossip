@@ -54,6 +54,7 @@ class SyncForegroundService : Service() {
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
     private lateinit var rosterGossipManager: RosterGossipManager
+    private lateinit var beaconKeyManager: dev.vmd1.gossip.features.proximity.BeaconKeyManager
     private lateinit var bleProximityMonitor: BLEProximityMonitor
     private lateinit var lockOnLeaveManager: LockOnLeaveManager
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
@@ -95,6 +96,7 @@ class SyncForegroundService : Service() {
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.UNIVERSAL_CONTROL) }
         )
         controlSessionState.register(messageRouter)
+        observeRemoteAccess()
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
@@ -152,6 +154,14 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             deviceType = deviceType
+        )
+        beaconKeyManager = dev.vmd1.gossip.features.proximity.BeaconKeyManager(
+            transportManager = transportManager,
+            trustedDevicesStore = trustedDevices,
+            identityKeyStore = identity,
+            messageRouter = messageRouter,
+            scope = serviceScope,
+            onKeysChanged = { bleProximityMonitor.rebuildFingerprintMap() }
         )
         // Seed the "hotspot available" capability bit from the persisted toggle before
         // the first advertise — the toggle's own UI callback only fires on a live
@@ -475,6 +485,52 @@ class SyncForegroundService : Service() {
         }
     }
 
+    /** Persistent, non-dismissible indicator while another device is viewing this screen or its cursor is here. */
+    private fun observeRemoteAccess() {
+        kotlinx.coroutines.flow.combine(
+            screenMirrorState.isMirroring,
+            dev.vmd1.gossip.features.remote.RemoteActivity.remoteInput
+        ) { viewing, controlled -> viewing to controlled }
+            .onEach { (viewing, controlled) -> showRemoteAccessNotification(viewing, controlled) }
+            .launchIn(serviceScope)
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) { screenMirrorState.stopActive() }
+            },
+            IntentFilter(ACTION_STOP_REMOTE),
+            android.content.Context.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private fun showRemoteAccessNotification(viewing: Boolean, controlled: Boolean) {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (!viewing && !controlled) { manager.cancel(REMOTE_NOTIFICATION_ID); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(REMOTE_CHANNEL_ID, "Remote access", NotificationManager.IMPORTANCE_HIGH))
+        }
+        val text = when {
+            viewing && controlled -> "A paired device is viewing this screen and using its mouse and keyboard here."
+            viewing -> "A paired device is viewing this screen."
+            else -> "A paired device is using its mouse and keyboard on this one."
+        }
+        val builder = NotificationCompat.Builder(this, REMOTE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setContentTitle("Gossip: remote access active")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+        if (viewing) {
+            val stop = android.app.PendingIntent.getBroadcast(
+                this, 1, Intent(ACTION_STOP_REMOTE).setPackage(packageName),
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(android.R.drawable.ic_media_pause, "Stop viewing", stop)
+        }
+        runCatching { manager.notify(REMOTE_NOTIFICATION_ID, builder.build()) }
+    }
+
     private fun showRingNotification(ringing: Boolean) {
         val manager = getSystemService(NotificationManager::class.java)
         if (!ringing) { manager.cancel(RING_NOTIFICATION_ID); return }
@@ -541,6 +597,7 @@ class SyncForegroundService : Service() {
             while (isActive) {
                 delay(ROSTER_RESYNC_INTERVAL_MS)
                 rosterGossipManager.periodicResync()
+                beaconKeyManager.periodicResync()
             }
         }
     }
@@ -702,6 +759,9 @@ class SyncForegroundService : Service() {
     companion object {
         private const val CHANNEL_ID = "connect_sync"
         private const val ACTION_STOP_RING = "dev.vmd1.gossip.STOP_RING"
+        private const val ACTION_STOP_REMOTE = "dev.vmd1.gossip.STOP_REMOTE"
+        private const val REMOTE_CHANNEL_ID = "remote_access"
+        private const val REMOTE_NOTIFICATION_ID = 4107
         private const val RING_CHANNEL_ID = "gossip_find_device"
         private const val RING_NOTIFICATION_ID = 1002
         private const val BATTERY_CHANNEL_ID = "gossip_battery_low"

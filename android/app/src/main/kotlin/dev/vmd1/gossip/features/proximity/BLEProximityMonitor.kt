@@ -55,7 +55,9 @@ class BLEProximityMonitor(
     private val bluetoothAdapter = context.getSystemService(BluetoothManager::class.java)?.adapter
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private var fingerprintToDeviceId: Map<String, String> = emptyMap()
+    /** Currently acceptable keyed beacon tags (hex) -> device; rebuilt when the roster/keys change and as the time window moves. */
+    @Volatile private var fingerprintToDeviceId: Map<String, String> = emptyMap()
+    @Volatile private var tagMapWindow = -1L
     private val states = ConcurrentHashMap<String, ProximityState>()
     private var scanCallback: ScanCallback? = null
     private var advertiseCallback: AdvertiseCallback? = null
@@ -182,14 +184,22 @@ class BLEProximityMonitor(
         }
     }
 
-    /** Re-derives the fingerprint of every trusted device from its already-stored public
-     *  key. Called on [start]; callers should call it again after pairing a new device
-     *  while already running (the roster changes far less often than proximity events). */
+    /** Re-derives the acceptable beacon tags of every trusted device that has shared its beacon key.
+     *  Called on [start], when a peer's key arrives, and whenever the 2-minute tag window has moved on
+     *  (see [deviceIdForTag]); callers should also call it after pairing a new device. */
     fun rebuildFingerprintMap() {
-        fingerprintToDeviceId = trustedDevicesStore.allDevices().associate { device ->
-            val digest = MessageDigest.getInstance("SHA-256").digest(device.publicKey)
-            digest.copyOfRange(0, 8).toHex() to device.deviceId
+        val map = HashMap<String, String>()
+        for (device in trustedDevicesStore.allDevices()) {
+            val key = device.beaconKey ?: continue
+            for (tag in BeaconTag.acceptableTags(key)) map[tag.toHex()] = device.deviceId
         }
+        fingerprintToDeviceId = map
+        tagMapWindow = BeaconTag.window()
+    }
+
+    private fun deviceIdForTag(tagHex: String): String? {
+        if (BeaconTag.window() != tagMapWindow) rebuildFingerprintMap()
+        return fingerprintToDeviceId[tagHex]
     }
 
     fun hasRequiredPermissions(): Boolean {
@@ -208,9 +218,7 @@ class BLEProximityMonitor(
             return
         }
 
-        val fingerprint = MessageDigest.getInstance("SHA-256")
-            .digest(identityKeyStore.x25519KeyPair.publicKey)
-            .copyOfRange(0, 8)
+        val fingerprint = BeaconTag.tag(identityKeyStore.beaconKey, BeaconTag.window())
         // Byte 10: capability flags. Bit 0 = hotspot available (willing to provide),
         // bit 1 = hotspot currently on. A single extra byte fits comfortably in the
         // legacy 31-byte budget alongside the existing 14-byte AD structure (see
@@ -242,6 +250,9 @@ class BLEProximityMonitor(
         }
         advertiseCallback = callback
         advertiser.startAdvertising(settings, data, callback)
+        // The tag is only valid for its window: re-arm with the next one when it ends.
+        mainHandler.removeCallbacks(rotateAdvertisingRunnable)
+        mainHandler.postDelayed(rotateAdvertisingRunnable, BeaconTag.millisUntilNextWindow() + 1)
     }
 
     /** Called from the "Provide Instant Hotspot" toggle (phone-only UI). Restarts
@@ -274,8 +285,16 @@ class BLEProximityMonitor(
         }
     }
 
+    private val rotateAdvertisingRunnable = Runnable {
+        if (isRunning && deviceType == DeviceType.ANDROID_PHONE) {
+            stopAdvertising()
+            startAdvertising()
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun stopAdvertising() {
+        mainHandler.removeCallbacks(rotateAdvertisingRunnable)
         val advertiser = bluetoothAdapter?.bluetoothLeAdvertiser ?: return
         advertiseCallback?.let { advertiser.stopAdvertising(it) }
         advertiseCallback = null
@@ -327,7 +346,7 @@ class BLEProximityMonitor(
         val data = result.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID) ?: return
         if (data.size < 10 || data[0] != MAGIC[0] || data[1] != MAGIC[1]) return
         val fingerprint = data.copyOfRange(2, 10).toHex()
-        val deviceId = fingerprintToDeviceId[fingerprint] ?: return
+        val deviceId = deviceIdForTag(fingerprint) ?: return
         // Byte 10 (capability flags) is optional on the wire — a peer running an older
         // build simply won't have it, which must not be treated as a malformed
         // advertisement (the `data.size < 10` guard above already covers the fields
@@ -446,7 +465,7 @@ class BLEProximityMonitor(
                 if (data.size < 11 || data[0] != MAGIC[0] || data[1] != MAGIC[1]) return
                 if (result.rssi < RSSI_THRESHOLD) return
                 val fingerprint = data.copyOfRange(2, 10).toHex()
-                val deviceId = fingerprintToDeviceId[fingerprint] ?: return
+                val deviceId = deviceIdForTag(fingerprint) ?: return
                 val hotspotAvailable = (data[10].toInt() and CAPABILITY_HOTSPOT_AVAILABLE.toInt()) != 0
                 hotspotCapabilityByDeviceId[deviceId] = hotspotAvailable
                 setHotspotOnForDevice(deviceId, (data[10].toInt() and CAPABILITY_HOTSPOT_ON.toInt()) != 0)
