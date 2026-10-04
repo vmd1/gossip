@@ -24,6 +24,18 @@ Every frame on the socket has the same shape:
 
 Hop-by-hop Noise only proves who the *adjacent* peer is. To stop any member from forging a message "from" another device (or re-targeting one), every envelope except the two handshake messages carries `sig`: an Ed25519 signature by `senderId`'s signing key over the envelope's canonical form (see `schema/envelope.schema.json` and `schema/envelope-signing-vectors.json`). The originator signs once; relays forward the envelope unchanged apart from `ttl` (not signed). Receivers verify **before** de-duplicating, acting or relaying, using the signing key stored for `senderId`; a missing key or bad signature drops the envelope (a raw follow-up frame that is already on the wire is still drained and discarded). Payloads therefore may only contain integer numbers.
 
+### Envelope sanity checks
+
+Before verifying a signature, caching its id or relaying it, a receiver drops any envelope whose `id`, `type` or `senderId` is longer than 64 characters (so the seen-id cache can't be used to pin memory) or whose `ts` is more than 15 minutes from its own clock (so old signed messages can't be replayed). A `ttl: 0` envelope is **direct-only**: if the recipient is not a direct connection it is not sent at all, rather than flooded to every neighbour.
+
+### Raw follow-up frames are hash-bound
+
+The signature covers the metadata envelope only, so a sender that attaches a raw follow-up frame adds `rawSha256` (base64 SHA-256 of that frame) to the payload before signing; receivers and relays discard a raw frame that doesn't match it.
+
+### Responder proof of possession
+
+A responder does not promote a handshake to a live connection (and never evicts an existing one) until the initiator's first transport frame decrypts. Initiators therefore send a frame immediately after the handshake.
+
 ## Decrypted plaintext: the JSON envelope
 
 Once a transport frame's ciphertext is decrypted via the established Noise session, the resulting plaintext is a single JSON document matching `schema/envelope.schema.json` — the envelope described in that schema (`v`, `id`, `type`, `senderId`, `recipientId`, `broadcast`, `ts`, `payload`).

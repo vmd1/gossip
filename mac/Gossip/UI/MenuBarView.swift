@@ -499,9 +499,17 @@ struct PairingSheetView: View {
     /// could interact with it.
     var onDismiss: () -> Void
 
+    /// The safety code typed by the user; Confirm stays disabled until it matches (see `PairingCode.entryMatches`).
+    @State private var enteredCode = ""
+
     private var failureReason: String? {
         if case .failed(let reason) = pairingViewModel.state { return reason }
         return nil
+    }
+
+    private var isPaired: Bool {
+        if case .paired = pairingViewModel.state { return true }
+        return false
     }
 
     var body: some View {
@@ -525,15 +533,20 @@ struct PairingSheetView: View {
                 Text("Trust this device?")
                     .font(.headline)
                 Text(deviceName)
-                Text(code)
-                    .font(.system(.title2, design: .monospaced))
-                Text("Check that the other device shows this same code.")
+                Text("Type the 6-digit code shown on the other device. Only continue if you are looking at that device right now.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                TextField("123 456", text: $enteredCode)
+                    .font(.system(.title2, design: .monospaced))
+                    .multilineTextAlignment(.center)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
                 HStack {
-                    Button("Reject") { pairingViewModel.rejectTrust() }
-                    Button("Confirm") { pairingViewModel.confirmTrust() }
+                    Button("Reject") { enteredCode = ""; pairingViewModel.rejectTrust() }
+                    Button("Confirm") { enteredCode = ""; pairingViewModel.confirmTrust() }
                         .keyboardShortcut(.defaultAction)
+                        .disabled(!PairingCode.entryMatches(enteredCode, expected: code))
                 }
             case .paired(let deviceName):
                 Text("Paired with \(deviceName)")
@@ -552,6 +565,14 @@ struct PairingSheetView: View {
                     onDismiss()
                 }
             }
+        }
+        // Once paired, show the confirmation briefly and close by itself so setup can carry on.
+        .task(id: isPaired) {
+            guard isPaired else { return }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, isPaired else { return }
+            pairingViewModel.reset()
+            onDismiss()
         }
         // A failure message doesn't linger: 10 seconds after pairing fails, the sheet closes itself.
         // (`.task(id:)` restarts — cancelling the sleep — whenever the failure text changes or clears.)

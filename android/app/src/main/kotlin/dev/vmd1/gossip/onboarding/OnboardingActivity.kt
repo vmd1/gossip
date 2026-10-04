@@ -66,6 +66,7 @@ class OnboardingActivity : ComponentActivity() {
     private var boundService by androidx.compose.runtime.mutableStateOf<SyncForegroundService?>(null)
     private var serviceConnection: ServiceConnection? = null
 
+    private var pairedTick by androidx.compose.runtime.mutableIntStateOf(0)
     private var notificationPermissionGranted by androidx.compose.runtime.mutableStateOf(true)
     private val requestNotificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -122,14 +123,19 @@ class OnboardingActivity : ComponentActivity() {
         bindService(Intent(this, SyncForegroundService::class.java), connection, Context.BIND_AUTO_CREATE)
 
         val prefs = OnboardingPreferences(applicationContext)
+        // Pairing (scan or show) finishing with RESULT_OK moves onboarding on by itself.
+        val pairingLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) pairedTick++
+        }
 
         setContent {
             dev.vmd1.gossip.ui.theme.ConnectTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     OnboardingFlow(
                         myDeviceType = myDeviceType,
-                        onScanQr = { startActivity(Intent(this, QRScanActivity::class.java)) },
-                        onShowQr = { startActivity(Intent(this, ShowQrActivity::class.java)) },
+                        onScanQr = { pairingLauncher.launch(Intent(this, QRScanActivity::class.java)) },
+                        pairedTick = pairedTick,
+                        onShowQr = { pairingLauncher.launch(Intent(this, ShowQrActivity::class.java)) },
                         notificationAccessGranted = { notificationAccessGranted },
                         onEnableNotificationAccess = {
                             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -202,6 +208,7 @@ private enum class OnboardingStep { OTHER_DEVICE, PERMISSIONS, HOTSPOT_TEST, DON
 @Composable
 private fun OnboardingFlow(
     myDeviceType: DeviceType,
+    pairedTick: Int,
     onScanQr: () -> Unit,
     onShowQr: () -> Unit,
     notificationAccessGranted: () -> Boolean,
@@ -221,6 +228,10 @@ private fun OnboardingFlow(
     onFinish: () -> Unit
 ) {
     var step by remember { mutableStateOf(OnboardingStep.OTHER_DEVICE) }
+    // A completed pairing on the first step moves straight on to permissions.
+    androidx.compose.runtime.LaunchedEffect(pairedTick) {
+        if (pairedTick > 0 && step == OnboardingStep.OTHER_DEVICE) step = OnboardingStep.PERMISSIONS
+    }
     val steps = OnboardingStep.entries
 
     Scaffold { padding ->
@@ -372,9 +383,9 @@ private fun PermissionsStep(
     }
     if (shizukuState != null && shizukuState != ShizukuManager.State.CONNECTED) {
         PermissionRow(
-            "Shizuku (optional)",
-            "Enables Instant Hotspot and background clipboard sync on newer Android " +
-                "versions. Skippable — everything else works without it.",
+            "Shizuku (heavily recommended)",
+            "Needed for screen mirroring, Universal Control, Instant Hotspot on newer Android " +
+                "versions and background clipboard sync. You can skip it — everything else works without it.",
             onRequestShizuku
         )
     }

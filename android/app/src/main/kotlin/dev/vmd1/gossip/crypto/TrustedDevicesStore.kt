@@ -84,6 +84,13 @@ private data class TrustedDeviceRow(
  */
 class TrustedDevicesStore internal constructor(private val prefs: SharedPreferences) {
 
+    private val provisional = HashSet<String>()
+
+    /** A row added during pairing but not yet confirmed by the other side; kept out of roster gossip. In memory only. */
+    @Synchronized fun markProvisional(deviceId: String) { provisional.add(deviceId) }
+    @Synchronized fun clearProvisional(deviceId: String) { provisional.remove(deviceId) }
+    @Synchronized fun isProvisional(deviceId: String): Boolean = deviceId in provisional
+
     @Synchronized
     fun addDevice(device: TrustedDevice) {
         val row = TrustedDeviceRow(

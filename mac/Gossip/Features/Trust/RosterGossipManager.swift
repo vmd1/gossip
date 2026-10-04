@@ -127,21 +127,28 @@ final class RosterGossipManager {
 
     // MARK: - Receiving
 
+    /// Roster limits: a roster is at most this many entries per message, and this Mac never trusts more devices
+    /// than `maxTrustedDevices` through gossip.
+    static let maxEntriesPerMessage = 64
+    static let maxTrustedDevices = 64
+
+    static func isValidKey(_ base64: String) -> Bool { Data(base64Encoded: base64)?.count == 32 }
+
     private func handleRosterUpdate(_ envelope: Envelope) {
         guard case .array(let entries) = envelope.payload["devices"] else { return }
-        for entry in entries {
-            guard let deviceId = entry["deviceId"]?.stringValue, deviceId != identity.deviceId else { continue }
-            let signingPublicKey = entry["signingPublicKey"]?.stringValue
+        for entry in entries.prefix(Self.maxEntriesPerMessage) {
+            guard let deviceId = entry["deviceId"]?.stringValue, UUID(uuidString: deviceId) != nil,
+                  deviceId != identity.deviceId else { continue }
             // Never clobber an already-trusted device's own row (e.g. one paired
             // directly, or already gossiped) with a remote-reported copy — this
             // would otherwise re-stamp `addedAt` on every periodic resync. The signing
             // key is likewise never taken from gossip for an existing row; it is learned
             // from the device's own authenticated handshake.
             if trustedDevices.isTrusted(deviceId: deviceId) { continue }
-            // A revoked device stays revoked unless this introduction is newer than the
-            // revocation. A peer still introducing it missed the revoke, so tell it again.
-            let addedAt = Int64(entry["addedAt"]?.numberValue ?? 0)
-            if let revokedAt = trustedDevices.revokedAt(deviceId: deviceId), addedAt <= revokedAt {
+            // A revoked device stays revoked: gossip can never bring it back (a malicious introducer could claim any
+            // `addedAt`), only pairing it directly again clears the tombstone. A peer still introducing it missed
+            // the revoke, so tell it again.
+            if let revokedAt = trustedDevices.revokedAt(deviceId: deviceId) {
                 let reminder = Envelope(
                     type: "trust.revoke",
                     senderId: identity.deviceId,
@@ -151,15 +158,17 @@ final class RosterGossipManager {
                 try? transportManager.send(envelope: reminder)
                 continue
             }
-            guard let publicKey = entry["publicKey"]?.stringValue,
+            guard let publicKey = entry["publicKey"]?.stringValue, Self.isValidKey(publicKey),
                   let deviceName = entry["deviceName"]?.stringValue,
                   let deviceTypeRaw = entry["deviceType"]?.stringValue,
                   let deviceType = DeviceType(rawValue: deviceTypeRaw)
             else { continue }
+            let signingPublicKey = entry["signingPublicKey"]?.stringValue.flatMap { Self.isValidKey($0) ? $0 : nil }
+            guard trustedDevices.allDevices().count < Self.maxTrustedDevices else { break }
             trustedDevices.addDevice(
                 deviceId: deviceId,
                 publicKeyBase64: publicKey,
-                deviceName: deviceName,
+                deviceName: String(deviceName.prefix(80)),
                 deviceType: deviceType,
                 signingPublicKeyBase64: signingPublicKey
             )
@@ -167,8 +176,11 @@ final class RosterGossipManager {
     }
 
     private func handleRevoke(_ envelope: Envelope) {
-        guard let deviceId = envelope.payload["deviceId"]?.stringValue, deviceId != identity.deviceId else { return }
-        let revokedAt = envelope.payload["revokedAt"]?.numberValue.map { Int64($0) } ?? envelope.ts
+        guard let deviceId = envelope.payload["deviceId"]?.stringValue, UUID(uuidString: deviceId) != nil,
+              deviceId != identity.deviceId else { return }
+        // A far-future `revokedAt` would make the tombstone un-clearable by any honest means; clamp it to now.
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let revokedAt = min(envelope.payload["revokedAt"]?.numberValue.map { Int64($0) } ?? envelope.ts, now)
         trustedDevices.revoke(deviceId: deviceId, revokedAt: revokedAt)
         transportManager.disconnect(deviceId: deviceId)
     }

@@ -2,6 +2,8 @@
 
 [Shizuku](https://shizuku.rikka.app/) is a free app that lets other apps use Android's powerful "shell" privileges without rooting your phone. Gossip uses it for a few features that Android does not allow a normal app to do.
 
+**Shizuku is heavily recommended.** Gossip runs without it, but without it you lose screen mirroring, Universal Control, Instant Hotspot on Android 16 and newer, and background clipboard reading — the features that set Gossip apart. Set it up once, and restart it after each reboot of the device.
+
 ## What needs Shizuku
 
 - **Screen mirroring** — Gossip starts a small bundled server (a pinned build of [scrcpy](https://github.com/Genymobile/scrcpy)) at shell level to capture the screen and inject input
@@ -64,7 +66,7 @@ adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
 
 ## 4. Give Gossip permission
 
-- open Gossip and use the **Shizuku (optional)** step in setup (or the matching row under **Settings → Permissions**)
+- open Gossip and use the **Shizuku (heavily recommended)** step in setup (or the matching row under **Settings → Permissions**)
 - when Shizuku asks whether to allow Gossip, choose **Allow**
 - Gossip tracks four states: Shizuku not installed, installed but not running, running but Gossip not allowed yet, and ready — the setup row shows which one you are in
 

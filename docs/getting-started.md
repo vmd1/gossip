@@ -50,7 +50,7 @@ Everything you need to go from nothing to a working Mac ↔ Android setup.
   - **Do Not Disturb sync** (Do Not Disturb access) — keeps Focus/DND in sync
   - **Bluetooth** — detects nearby trusted devices
   - **Device admin** — lets a paired phone lock this device when it leaves Bluetooth range
-  - **Shizuku (optional)** — see [Setting up Shizuku](setup-shizuku.md)
+  - **Shizuku (heavily recommended)** — screen mirroring, Universal Control and more need it; see [Setting up Shizuku](setup-shizuku.md)
 - for reliable syncing, let Gossip run in the background: it keeps a foreground service running, and aggressive battery optimisation on some phones can stop it (see [Troubleshooting](troubleshooting.md))
 
 ## 3. Pair your devices

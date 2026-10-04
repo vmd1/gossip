@@ -17,7 +17,7 @@ object Log {
 
     @JvmStatic fun w(tag: String, msg: String): Int = android.util.Log.w(tag, redactAddresses(msg))
     @JvmStatic fun w(tag: String, msg: String, tr: Throwable?): Int = android.util.Log.w(tag, redactAddresses(msg), tr)
-    @JvmStatic fun w(tag: String, tr: Throwable?): Int = android.util.Log.w(tag, tr)
+    @JvmStatic fun w(tag: String, tr: Throwable?): Int = android.util.Log.w(tag, redactAddresses(tr?.toString().orEmpty()))
     @JvmStatic fun e(tag: String, msg: String): Int = android.util.Log.e(tag, redactAddresses(msg))
     @JvmStatic fun e(tag: String, msg: String, tr: Throwable?): Int = android.util.Log.e(tag, redactAddresses(msg), tr)
 

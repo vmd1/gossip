@@ -157,7 +157,7 @@ class RosterGossipManager(
         put(
             "devices",
             buildJsonArray {
-                for (device in trustedDevicesStore.allDevices()) {
+                for (device in trustedDevicesStore.allDevices().filterNot { trustedDevicesStore.isProvisional(it.deviceId) }) {
                     add(
                         buildJsonObject {
                             put("deviceId", JsonPrimitive(device.deviceId))
@@ -188,22 +188,21 @@ class RosterGossipManager(
 
     private fun handleRosterUpdate(envelope: Envelope) {
         val entries = (envelope.payload["devices"] as? JsonArray) ?: return
-        for (entry in entries) {
+        for (entry in entries.take(MAX_ENTRIES_PER_MESSAGE)) {
             val obj = entry as? JsonObject ?: continue
             val deviceId = obj["deviceId"]?.jsonPrimitive?.contentOrNull ?: continue
-            if (deviceId == identityKeyStore.deviceId) continue
-            val signingPublicKeyBase64 = obj["signingPublicKey"]?.jsonPrimitive?.contentOrNull
+            if (!isUuid(deviceId) || deviceId == identityKeyStore.deviceId) continue
             // Never clobber an already-trusted device's own row (e.g. one paired directly, or
             // already gossiped) with a remote-reported copy — this would otherwise re-stamp
             // `addedAt` on every periodic resync. The signing key is likewise never taken from
             // gossip for an existing row; it is learned from the device's own authenticated
             // handshake.
             if (trustedDevicesStore.isTrusted(deviceId)) continue
-            // A revoked device stays revoked unless this introduction is newer than the
-            // revocation. A peer still introducing it missed the revoke, so tell it again.
-            val addedAt = obj["addedAt"]?.jsonPrimitive?.longOrNull ?: 0L
+            // A revoked device stays revoked: gossip can never bring it back (a malicious introducer could claim any
+            // `addedAt`), only pairing it directly again clears the tombstone. A peer still introducing it missed
+            // the revoke, so tell it again.
             val revokedAt = trustedDevicesStore.revokedAt(deviceId)
-            if (revokedAt != null && addedAt <= revokedAt) {
+            if (revokedAt != null) {
                 scope.launch {
                     runCatching {
                         transportManager.send(
@@ -218,17 +217,19 @@ class RosterGossipManager(
                 }
                 continue
             }
-            val publicKeyBase64 = obj["publicKey"]?.jsonPrimitive?.contentOrNull ?: continue
+            val publicKey = decodeKey(obj["publicKey"]?.jsonPrimitive?.contentOrNull) ?: continue
             val deviceNameEntry = obj["deviceName"]?.jsonPrimitive?.contentOrNull ?: continue
             val deviceTypeRaw = obj["deviceType"]?.jsonPrimitive?.contentOrNull ?: continue
+            val signingPublicKey = decodeKey(obj["signingPublicKey"]?.jsonPrimitive?.contentOrNull)
+            if (trustedDevicesStore.allDevices().size >= MAX_TRUSTED_DEVICES) break
             trustedDevicesStore.addDevice(
                 TrustedDevice(
                     deviceId = deviceId,
-                    publicKey = Base64.decode(publicKeyBase64, Base64.NO_WRAP),
-                    deviceName = deviceNameEntry,
+                    publicKey = publicKey,
+                    deviceName = deviceNameEntry.take(80),
                     deviceType = DeviceType.fromWire(deviceTypeRaw),
                     addedAt = System.currentTimeMillis(),
-                    signingPublicKey = signingPublicKeyBase64?.let { Base64.decode(it, Base64.NO_WRAP) }
+                    signingPublicKey = signingPublicKey
                 )
             )
         }
@@ -236,10 +237,22 @@ class RosterGossipManager(
 
     private fun handleRevoke(envelope: Envelope) {
         val deviceId = envelope.payload["deviceId"]?.jsonPrimitive?.contentOrNull ?: return
-        if (deviceId == identityKeyStore.deviceId) return
-        val revokedAt = envelope.payload["revokedAt"]?.jsonPrimitive?.longOrNull ?: envelope.ts
+        if (!isUuid(deviceId) || deviceId == identityKeyStore.deviceId) return
+        // A far-future `revokedAt` would make the tombstone un-clearable by any honest means; clamp it to now.
+        val revokedAt = minOf(envelope.payload["revokedAt"]?.jsonPrimitive?.longOrNull ?: envelope.ts, System.currentTimeMillis())
         trustedDevicesStore.revoke(deviceId, revokedAt)
         transportManager.disconnect(deviceId)
     }
-}
 
+    companion object {
+        /** Roster limits: entries per message, and how many devices gossip may ever make this device trust. */
+        const val MAX_ENTRIES_PER_MESSAGE = 64
+        const val MAX_TRUSTED_DEVICES = 64
+
+        fun isUuid(value: String): Boolean = runCatching { java.util.UUID.fromString(value) }.isSuccess && value.length == 36
+
+        /** A base64 32-byte key (X25519 / Ed25519), or null if it isn't one. */
+        fun decodeKey(base64: String?): ByteArray? =
+            base64?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() }?.takeIf { it.size == 32 }
+    }
+}
