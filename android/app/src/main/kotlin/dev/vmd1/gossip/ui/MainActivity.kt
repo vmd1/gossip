@@ -484,6 +484,14 @@ fun ConnectHomeScreen(
                 SettingsMenuRow("Permissions", "Notifications, Do Not Disturb, Bluetooth and more") {
                     settingsPage = SettingsPage.PERMISSIONS
                 }
+                // "Gossip 17" for a release build, "Gossip dev" for a local one (the release workflow stamps the number).
+                Text(
+                    "Gossip ${dev.vmd1.gossip.BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
 
             SettingsPage.DEVICES -> SettingsPageScaffold("Devices & pairing", onBack = { settingsPage = page.parent }) {
