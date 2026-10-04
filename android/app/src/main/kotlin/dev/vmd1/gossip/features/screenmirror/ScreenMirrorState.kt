@@ -118,6 +118,14 @@ class ScreenMirrorState(
         }
     }
 
+    /** Ends whatever session is active, from the on-device "Stop" action. The viewer sees its WebSocket close. */
+    fun stopActive() {
+        synchronized(lock) {
+            active?.let { endLocked(it) }
+            publish()
+        }
+    }
+
     internal fun onScreenStop(envelope: Envelope) {
         val sessionId = envelope.payload.str("sessionId") ?: return
         synchronized(lock) {

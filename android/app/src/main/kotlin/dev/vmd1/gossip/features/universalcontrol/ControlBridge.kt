@@ -158,6 +158,7 @@ class ControlBridge(
                 // The cursor arriving on a dark screen wakes it (queued ahead of the placement below).
                 if (!runCatching { isScreenOn() }.getOrDefault(true)) run { it.wake() }
                 graceTask?.cancel(false)
+                dev.vmd1.gossip.features.remote.RemoteActivity.setRemoteInput(true)
                 synchronized(enterLock) { pendingEnters++; droppedMoves = 0 }
                 run {
                     try {
@@ -173,6 +174,7 @@ class ControlBridge(
             }
             is ControlFrame.CursorQuery -> answerCursorQuery(frame.token)
             ControlFrame.Leave -> {
+                dev.vmd1.gossip.features.remote.RemoteActivity.setRemoteInput(false)
                 run { it.leave() }
                 // Keep the devices a while: re-entering soon skips their (slow) creation. They are destroyed later
                 // unless the cursor came back, so the cursor and the hardware-keyboard state don't linger.
@@ -228,6 +230,7 @@ class ControlBridge(
     /** Idempotent teardown: removes the virtual devices, closes the Mac, the listener and the scrcpy server. */
     fun end() {
         if (!ended.compareAndSet(false, true)) return
+        dev.vmd1.gossip.features.remote.RemoteActivity.setRemoteInput(false)
         cursorExec.shutdownNow()
         grace.shutdownNow()
         runCatching { worker.execute { runCatching { backend?.close() } ; worker.shutdown() } }
