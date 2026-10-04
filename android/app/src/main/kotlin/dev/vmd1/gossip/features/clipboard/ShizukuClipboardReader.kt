@@ -63,9 +63,12 @@ object ShizukuClipboardReader {
         val description = clip.javaClass.getMethod("getDescription").invoke(clip)
         val hasMimeType = description.javaClass.getMethod("hasMimeType", String::class.java)
         if (hasMimeType.invoke(description, "image/*") as Boolean) return null
+        // Skip anything the source app marked sensitive (password managers): never broadcast those.
+        val extras = runCatching { description.javaClass.getMethod("getExtras").invoke(description) as? android.os.PersistableBundle }.getOrNull()
+        if (ClipboardPolicy.isSensitive(extras)) return null
 
         val item = clip.javaClass.getMethod("getItemAt", Int::class.javaPrimitiveType).invoke(clip, 0)
-        (item.javaClass.getMethod("getText").invoke(item) as? CharSequence)?.toString()
+        (item.javaClass.getMethod("getText").invoke(item) as? CharSequence)?.toString()?.takeIf { ClipboardPolicy.textAllowed(it) }
     }.onFailure { Log.w(TAG, "readText failed: ${it.message}") }.getOrNull()
 
     /** `IClipboard.getPrimaryClip`'s parameter list has changed across Android versions
