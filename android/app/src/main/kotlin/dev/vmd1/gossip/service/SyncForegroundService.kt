@@ -288,7 +288,7 @@ class SyncForegroundService : Service() {
                     }
                 },
                 IntentFilter("dev.vmd1.gossip.DEBUG_TOGGLE_HOTSPOT"),
-                android.content.Context.RECEIVER_EXPORTED
+                "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
             )
 
             // TEMPORARY debug hook to flip "Provide Instant Hotspot" without touching the
@@ -304,7 +304,7 @@ class SyncForegroundService : Service() {
                     }
                 },
                 IntentFilter("dev.vmd1.gossip.DEBUG_SET_PROVIDE_HOTSPOT"),
-                android.content.Context.RECEIVER_EXPORTED
+                "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
             )
 
             // TEMPORARY debug hook to verify HotspotCredentialReader's reflection-based
@@ -319,7 +319,7 @@ class SyncForegroundService : Service() {
                     }
                 },
                 IntentFilter("dev.vmd1.gossip.DEBUG_READ_HOTSPOT_CREDENTIALS"),
-                android.content.Context.RECEIVER_EXPORTED
+                "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
             )
 
             // TEMPORARY debug hook to trigger the one-time Shizuku permission dialog before
@@ -332,7 +332,7 @@ class SyncForegroundService : Service() {
                     }
                 },
                 IntentFilter("dev.vmd1.gossip.DEBUG_REQUEST_SHIZUKU"),
-                android.content.Context.RECEIVER_EXPORTED
+                "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
             )
 
             // TEMPORARY debug hooks (registered only in debuggable builds): inject a screen.start /
@@ -360,7 +360,7 @@ class SyncForegroundService : Service() {
                         }
                     },
                     IntentFilter("dev.vmd1.gossip.DEBUG_PLAY_TONE"),
-                    android.content.Context.RECEIVER_EXPORTED
+                    "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
                 )
                 registerReceiver(
                     object : android.content.BroadcastReceiver() {
@@ -383,7 +383,7 @@ class SyncForegroundService : Service() {
                     IntentFilter().apply {
                         addAction("dev.vmd1.gossip.DEBUG_SCREEN_START"); addAction("dev.vmd1.gossip.DEBUG_SCREEN_STOP")
                     },
-                    android.content.Context.RECEIVER_EXPORTED
+                    "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
                 )
             }
 
@@ -399,7 +399,7 @@ class SyncForegroundService : Service() {
                     }
                 },
                 IntentFilter("dev.vmd1.gossip.DEBUG_SET_CLIPBOARD"),
-                android.content.Context.RECEIVER_EXPORTED
+                "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
             )
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
@@ -413,7 +413,7 @@ class SyncForegroundService : Service() {
                     }
                 },
                 IntentFilter("dev.vmd1.gossip.DEBUG_READ_CLIPBOARD"),
-                android.content.Context.RECEIVER_EXPORTED
+                "android.permission.DUMP", null, android.content.Context.RECEIVER_EXPORTED
             )
         }
 

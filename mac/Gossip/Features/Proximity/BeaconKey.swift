@@ -3,12 +3,12 @@ import CryptoKit
 
 /// Keyed, rotating BLE proximity advertisements. A phone no longer advertises a constant hash of its
 /// public key (which anyone who knows that key could replay, and any passer-by could track); it
-/// advertises `tag(beaconKey, window)` — 8 bytes of HMAC-SHA256 over a 2-minute time window — and only
+/// advertises `tag(beaconKey, window)` — 8 bytes of HMAC-SHA256 over a 1-minute time window — and only
 /// devices it has shared its `beaconKey` with (over the Noise-encrypted mesh, see `BeaconKeyManager`)
 /// can recognise it. Android has the same functions (`BeaconTag.kt`); both are checked against
 /// `schema/ble-beacon-vectors.json`. See `docs/ble-proximity-protocol.md`.
 enum BeaconTag {
-    static let windowSeconds: UInt64 = 120
+    static let windowSeconds: UInt64 = 60
     private static let label = Data("gossip-ble-v1".utf8)
 
     static func window(at date: Date = Date()) -> UInt64 {

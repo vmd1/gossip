@@ -42,6 +42,11 @@ final class PairingViewModel: ObservableObject {
                 self.state = .confirmingTrust(deviceName: peer.deviceName, code: code)
             }
         }
+        transportManager?.onUntrustedPromptCancelled = { [weak self] in
+            guard let self, self.pendingConfirmation != nil else { return }
+            self.pendingConfirmation = nil
+            self.state = .failed("The other device disconnected before pairing finished")
+        }
         transportManager?.addOnTrustedConnected { [weak self] peer in
             DispatchQueue.main.async {
                 self?.pendingConfirmation = nil
@@ -85,6 +90,8 @@ final class PairingViewModel: ObservableObject {
         transportManager?.disarmPairing()
         currentPayload = nil
         qrImage = nil
+        // Answer an open prompt (as a rejection) so the transport releases its single prompt slot.
+        pendingConfirmation?(false)
         pendingConfirmation = nil
         state = .idle
     }

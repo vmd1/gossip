@@ -110,17 +110,22 @@ class NotificationMirrorReceiver(
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle(if (payload.title.isBlank()) payload.appName else "${payload.appName} · ${payload.title}")
-            .setContentText(payload.body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(payload.body))
+            .setContentTitle(if (payload.title.isBlank()) payload.appName.take(80) else "${payload.appName.take(80)} · ${payload.title.take(200)}")
+            .setContentText(payload.body.take(2000))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(payload.body.take(2000)))
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(false)
             .setExtras(android.os.Bundle().apply { putBoolean(EXTRA_IS_MIRROR, true) })
 
-        payload.iconBase64?.let { base64 ->
+        payload.iconBase64?.takeIf { it.length <= MAX_ICON_BASE64_CHARS }?.let { base64 ->
             runCatching {
                 val bytes = Base64.decode(base64, Base64.NO_WRAP)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                // Check the declared size before decoding so a tiny PNG that expands to gigapixels can't exhaust memory.
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bytes.size > MAX_ICON_BYTES || bounds.outWidth <= 0 || bounds.outHeight <= 0 ||
+                    bounds.outWidth.toLong() * bounds.outHeight > MAX_ICON_PIXELS) null
+                else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }.getOrNull()?.let { builder.setLargeIcon(it) }
         }
 
@@ -199,6 +204,10 @@ class NotificationMirrorReceiver(
     }
 
     companion object {
+        const val MAX_ICON_BASE64_CHARS = 400_000
+        const val MAX_ICON_BYTES = 256 * 1024
+        const val MAX_ICON_PIXELS = 4_000_000L
+
         /** Set once by [dev.vmd1.gossip.service.SyncForegroundService] so the two
          *  [BroadcastReceiver]s below (instantiated fresh by the system on each
          *  broadcast, not by our own dependency graph) can reach this instance —

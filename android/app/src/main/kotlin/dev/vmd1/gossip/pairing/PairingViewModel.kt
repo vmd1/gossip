@@ -47,6 +47,8 @@ data class PairingQrPayload(
 sealed class PairingUiState {
     data object Idle : PairingUiState()
     data object Discovering : PairingUiState()
+    /** The QR was read; nothing is trusted or connected until the user confirms this [deviceName] / [code]. */
+    data class ConfirmScan(val deviceName: String, val code: String) : PairingUiState()
     /** [code] is the short code the other device shows too, so the user can check both screens match. */
     data class Handshaking(val code: String) : PairingUiState()
     data class Success(val deviceId: String, val deviceName: String) : PairingUiState()
@@ -69,14 +71,41 @@ class PairingViewModel(
     private val _uiState = MutableStateFlow<PairingUiState>(PairingUiState.Idle)
     val uiState: StateFlow<PairingUiState> = _uiState.asStateFlow()
 
+    private var scanned: PairingQrPayload? = null
+
+    /** Reads and validates the QR, then asks the user whether to pair — scanning alone is not consent, since a QR
+     *  can be shown anywhere and the name in it is chosen by whoever made it. */
     fun onQrScanned(rawValue: String) {
         val payload = try {
             Json { ignoreUnknownKeys = true }.decodeFromString(PairingQrPayload.serializer(), rawValue)
         } catch (e: Exception) {
-            failWith("Unreadable QR code: ${e.message}")
+            failWith("Unreadable QR code")
             return
         }
+        val key = RosterGossipManager.decodeKey(payload.responderPublicKey)
+        if (!RosterGossipManager.isUuid(payload.responderDeviceId) || key == null ||
+            RosterGossipManager.decodeKey(payload.responderSigningPublicKey) == null || payload.pairingToken.length > 64
+        ) {
+            failWith("Unreadable QR code")
+            return
+        }
+        scanned = payload
+        _uiState.value = PairingUiState.ConfirmScan(payload.responderDeviceName.take(80), transportManager.pairingCodeFor(key))
+    }
 
+    /** The user checked the name and code and agreed to pair. */
+    fun confirmScan() {
+        val payload = scanned ?: return
+        scanned = null
+        startPairing(payload)
+    }
+
+    fun cancelScan() {
+        scanned = null
+        _uiState.value = PairingUiState.Idle
+    }
+
+    private fun startPairing(payload: PairingQrPayload) {
         viewModelScope.launch {
             _uiState.value = PairingUiState.Discovering
             val peer = withTimeoutOrNull(DISCOVERY_TIMEOUT_MS) {
@@ -87,7 +116,8 @@ class PairingViewModel(
                 return@launch
             }
 
-            val remoteStaticKey = Base64.decode(payload.responderPublicKey, Base64.NO_WRAP)
+            val remoteStaticKey = RosterGossipManager.decodeKey(payload.responderPublicKey)
+            if (remoteStaticKey == null) { failWith("Unreadable QR code"); return@launch }
             _uiState.value = PairingUiState.Handshaking(transportManager.pairingCodeFor(remoteStaticKey))
             transportManager.connect(
                 peer.host, peer.port, remoteStaticKey,
@@ -101,6 +131,8 @@ class PairingViewModel(
             // it is removed again if the responder never confirms.
             val rowAlreadyTrusted = trustedDevicesStore.isTrusted(payload.responderDeviceId)
             if (!rowAlreadyTrusted) {
+                // Provisional rows are left out of roster gossip until the other side confirms.
+                trustedDevicesStore.markProvisional(payload.responderDeviceId)
                 trustedDevicesStore.addDevice(
                     TrustedDevice(
                         deviceId = payload.responderDeviceId,
@@ -108,7 +140,7 @@ class PairingViewModel(
                         deviceName = payload.responderDeviceName,
                         deviceType = DeviceType.fromWire(payload.responderDeviceType),
                         addedAt = System.currentTimeMillis(),
-                        signingPublicKey = Base64.decode(payload.responderSigningPublicKey, Base64.NO_WRAP)
+                        signingPublicKey = RosterGossipManager.decodeKey(payload.responderSigningPublicKey)
                     )
                 )
             }
@@ -122,6 +154,7 @@ class PairingViewModel(
             val confirmed = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { firstMessage.await() } != null
             firstMessage.cancel()
 
+            trustedDevicesStore.clearProvisional(payload.responderDeviceId)
             if (confirmed) {
                 // Brand-new pairing (not a reconnect to an already-trusted device) —
                 // broadcast the updated roster so the rest of the mesh learns about

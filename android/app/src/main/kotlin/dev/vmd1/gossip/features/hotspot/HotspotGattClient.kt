@@ -64,6 +64,7 @@ class HotspotGattClient(
                 }
 
                 val reassembler = HotspotGattProtocol.ChunkReassembler()
+                var sentNonce: String? = null
                 val outboundQueue = ArrayDeque<ByteArray>()
                 var sendInFlight = false
                 var gatt: BluetoothGatt? = null
@@ -139,6 +140,7 @@ class HotspotGattClient(
                             enable = enable,
                             privateKeySeed = identityKeyStore.ed25519PrivateKey
                         )
+                        sentNonce = request.n
                         outboundQueue.addAll(HotspotGattProtocol.encodeChunks(HotspotGattProtocol.encodeRequest(request)))
                         drainOutbound(g, requestChar)
                     }
@@ -158,7 +160,8 @@ class HotspotGattClient(
                         if (characteristic.uuid != HotspotGattProtocol.RESPONSE_CHARACTERISTIC_UUID) return
                         val complete = reassembler.feed(characteristic.value) ?: return
                         val status = HotspotGattProtocol.decodeStatus(complete)
-                        if (status == null || !status.isSignatureValid(signingKey)) {
+                        // Bound to *this* request and provider, so a recorded older response can't be passed off as the answer.
+                        if (status == null || !status.isSignatureValid(signingKey) || status.n != sentNonce || status.id != providerId) {
                             settle(Result.Failed("Malformed or unverifiable hotspot.status response"))
                             g.close()
                             return

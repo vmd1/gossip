@@ -30,6 +30,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
     private var signingPublicKeyBase64: String?
     private var sharedSecretKey: SymmetricKey?
     private var pendingRequest: HotspotGattProtocol.ToggleRequestPayload?
+    private var expectedProviderId: String?
     private var pendingPeripheralIdentifier: UUID?
     /// macOS caches a peripheral's GATT table across connections; if the phone's table changed
     /// since (its service handles move whenever the app restarts) the filtered discovery can
@@ -74,6 +75,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
         self.completion = completion
         self.signingPublicKeyBase64 = signingKey
         self.sharedSecretKey = HotspotGattProtocol.deriveSharedSecretKey(localAgreementKey: identity.agreementKey, remotePublicKey: providerPublicKey)
+        self.expectedProviderId = providerId
         self.pendingRequest = HotspotGattProtocol.ToggleRequestPayload.create(requesterId: identity.deviceId, enable: enable, signingKey: identity.signingKey)
         self.pendingPeripheralIdentifier = peripheralIdentifier
 
@@ -122,6 +124,7 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
         outboundQueue = []
         sendInFlight = false
         pendingRequest = nil
+        expectedProviderId = nil
         pendingPeripheralIdentifier = nil
         completion(result)
     }
@@ -222,7 +225,9 @@ final class HotspotGattClient: NSObject, CBCentralManagerDelegate, CBPeripheralD
         guard characteristic.uuid == HotspotGattProtocol.responseCharacteristicUUID, let data = characteristic.value else { return }
         guard let complete = reassembler.feed(data) else { return }
         guard let status = HotspotGattProtocol.decodeStatus(complete), let signingKey = signingPublicKeyBase64,
-              status.isSignatureValid(signingPublicKeyBase64: signingKey)
+              status.isSignatureValid(signingPublicKeyBase64: signingKey),
+              // Bound to *this* request and provider, so a recorded older response can't be passed off as the answer.
+              status.n == pendingRequest?.n, status.id == expectedProviderId
         else {
             settle(.failed("Malformed or unverifiable hotspot.status response"))
             return

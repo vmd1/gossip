@@ -76,6 +76,9 @@ final class TransportManager: ObservableObject {
     /// keeps the connection open; `false` tears it down.
     var onUntrustedHandshake: ((_ peer: HandshakePeerInfo, _ publicKey: Curve25519.KeyAgreement.PublicKey, _ confirm: @escaping (Bool) -> Void) -> Void)?
 
+    /// Fired (main thread) when the connection behind an open trust prompt went away before the user answered.
+    var onUntrustedPromptCancelled: (() -> Void)?
+
     /// Fired when a handshake completes with an already-trusted peer, i.e. a
     /// normal reconnect (or a freshly-confirmed pairing, which reaches the
     /// same "connected" outcome once the user confirms trust). Multicast
@@ -121,6 +124,10 @@ final class TransportManager: ObservableObject {
         var presentedPairingToken: String?
         /// True while the user is looking at the trust prompt for this connection.
         var awaitingConfirmation = false
+        /// Responder role, trusted peer: the handshake passed but nothing has been promoted yet. Noise message 1 can be
+        /// replayed by anyone who recorded it, so the connection only replaces a live one once the peer's first
+        /// transport frame decrypts (which needs its ephemeral private key).
+        var awaitingProof = false
         var rateLimiter = InboundRateLimiter()
         var expectedRemoteStaticKey: Curve25519.KeyAgreement.PublicKey?
         /// Set only for outbound dials, so teardown can clear `dialingDeviceIds`.
@@ -180,6 +187,17 @@ final class TransportManager: ObservableObject {
 
     init(trustedDevices: TrustedDevicesStore = .shared) {
         self.trustedDevices = trustedDevices
+        queue.setSpecific(key: Self.queueKey, value: ())
+    }
+
+    private static let queueKey = DispatchSpecificKey<Void>()
+
+    /// Every piece of connection state (`peers`, `pendingByObjectId`, `dialingDeviceIds`, `pendingRawFrameHandlers`,
+    /// pairing arming) is owned by `queue`. Entry points that can be called from the main thread (UI, timers, feature
+    /// managers) go through this so they never touch that state concurrently with the NWConnection callbacks.
+    private func onQueue<T>(_ body: () throws -> T) rethrows -> T {
+        if DispatchQueue.getSpecific(key: Self.queueKey) != nil { return try body() }
+        return try queue.sync(execute: body)
     }
 
     /// Matches Android's `TransportManager.DEFAULT_PORT`. Used (rather than an ephemeral
@@ -208,13 +226,13 @@ final class TransportManager: ObservableObject {
     func start(deviceName: String = Host.current().localizedName ?? "Mac") {
         guard !hasStarted else { return }
         hasStarted = true
-        recomputeConnectionState()
+        onQueue { recomputeConnectionState() }
 
         discovery.onIncomingConnection = { [weak self] connection in
-            self?.accept(connection: connection)
+            self?.queue.async { self?.accept(connection: connection) }
         }
         discovery.onPeersChanged = { [weak self] peers in
-            self?.handleDiscoveredPeers(peers)
+            self?.queue.async { self?.handleDiscoveredPeers(peers) }
         }
 
         do {
@@ -262,13 +280,15 @@ final class TransportManager: ObservableObject {
         redialTimer = nil
         discovery.stopAdvertising()
         discovery.stopBrowsing()
-        for (deviceId, peer) in peers {
-            teardown(peer: peer, deviceId: deviceId)
+        onQueue {
+            for (deviceId, peer) in peers {
+                teardown(peer: peer, deviceId: deviceId)
+            }
+            for (_, pending) in pendingByObjectId {
+                teardownPending(pending)
+            }
+            recomputeConnectionState()
         }
-        for (_, pending) in pendingByObjectId {
-            teardownPending(pending)
-        }
-        recomputeConnectionState()
     }
 
     private func handleDiscoveredPeers(_ discovered: [DiscoveredPeer]) {
@@ -278,6 +298,9 @@ final class TransportManager: ObservableObject {
             guard let trusted = trustedDevices.device(for: candidate.deviceId),
                   let keyData = Data(base64Encoded: trusted.publicKeyBase64),
                   let staticKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: keyData) else { continue }
+            // Anyone on the LAN can advertise a trusted device's id; only dial an advertisement whose key
+            // fingerprint matches the key we pinned, so a squatter can't tie up the per-device dial slot.
+            guard Self.fingerprintMatches(candidate.publicKeyFingerprint, keyData: keyData) else { continue }
             connect(to: candidate, remoteStaticKey: staticKey)
         }
     }
@@ -288,7 +311,7 @@ final class TransportManager: ObservableObject {
     /// must be known ahead of time: either from `TrustedDevicesStore` (a
     /// reconnect) or from a freshly-scanned pairing QR code (first connect).
     func connect(to peer: DiscoveredPeer, remoteStaticKey: Curve25519.KeyAgreement.PublicKey) {
-        dial(deviceId: peer.deviceId, endpoint: peer.endpoint, remoteStaticKey: remoteStaticKey)
+        onQueue { dial(deviceId: peer.deviceId, endpoint: peer.endpoint, remoteStaticKey: remoteStaticKey) }
     }
 
     /// Dials a manually-configured fallback address (e.g. a Tailscale IP) directly,
@@ -299,7 +322,7 @@ final class TransportManager: ObservableObject {
     /// domain. See `TrustedDevice.fallbackHost` and `docs/wire-protocol.md`.
     func connect(toFallbackHost host: String, remoteStaticKey: Curve25519.KeyAgreement.PublicKey, deviceId: String) {
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: Self.defaultPort)
-        dial(deviceId: deviceId, endpoint: endpoint, remoteStaticKey: remoteStaticKey)
+        onQueue { dial(deviceId: deviceId, endpoint: endpoint, remoteStaticKey: remoteStaticKey) }
     }
 
     private func dial(deviceId: String, endpoint: NWEndpoint, remoteStaticKey: Curve25519.KeyAgreement.PublicKey) {
@@ -470,7 +493,13 @@ final class TransportManager: ObservableObject {
 
     private static func hostString(of endpoint: NWEndpoint) -> String? {
         guard case .hostPort(let host, _) = endpoint else { return nil }
-        return "\(host)".split(separator: "%").first.map(String.init)
+        guard let bare = "\(host)".split(separator: "%").first.map(String.init) else { return nil }
+        // IPv6 peers are limited per /64: one host can own billions of addresses in its prefix.
+        var addr = in6_addr()
+        if inet_pton(AF_INET6, bare, &addr) == 1 {
+            return withUnsafeBytes(of: &addr) { Data($0.prefix(8)).map { String(format: "%02x", $0) }.joined() }
+        }
+        return bare
     }
 
     /// Extracts the remote endpoint's bare IP address (stripping any zone
@@ -488,20 +517,22 @@ final class TransportManager: ObservableObject {
     }
 
     func ipAddress(for deviceId: String) -> String? {
-        peers[deviceId]?.peerIPAddress
+        onQueue { peers[deviceId]?.peerIPAddress }
     }
 
     /// Like `ipAddress(for:)` but keeps an IPv6 `%zone` (e.g. `fe80::1%en0`), which a plain
     /// `NWConnection` to a link-local peer needs. Used to dial the screen bridge's WebSocket.
     func hostWithZone(for deviceId: String) -> String? {
-        peers[deviceId]?.peerHostWithZone ?? peers[deviceId]?.peerIPAddress
+        onQueue { peers[deviceId]?.peerHostWithZone ?? peers[deviceId]?.peerIPAddress }
     }
 
     /// Tears down the live connection to one specific peer, if any (e.g. after
     /// `trust.revoke`) — leaves every other peer untouched.
     func disconnect(deviceId: String) {
-        if let peer = peers[deviceId] {
-            teardown(peer: peer, deviceId: deviceId)
+        onQueue {
+            if let peer = peers[deviceId] {
+                teardown(peer: peer, deviceId: deviceId)
+            }
         }
     }
 
@@ -638,14 +669,12 @@ final class TransportManager: ObservableObject {
                 teardownAny(pending)
                 return
             }
-            // The signing key arrived inside the authenticated handshake, so it is the
-            // one to trust for this device (replaces a missing or gossiped value).
-            trustedDevices.setSigningPublicKey(deviceId: peer.deviceId, signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString())
-            promote(pending, peer: peer)
-            trustedConnectedHandlers.forEach { $0(peer) }
-            sendPresence(online: true)
-            startHeartbeatMonitoring(for: pending)
-            replayQueuedFrames(for: pending)
+            if pending.dialTargetDeviceId == nil {
+                // Responder: wait for the first frame before touching any existing connection (see `awaitingProof`).
+                pending.awaitingProof = true
+                return
+            }
+            promoteTrusted(pending, peer: peer)
         } else if let onUntrustedHandshake {
             // An unknown device is only offered to the user while a pairing QR is showing,
             // it must present that QR's token, and only one prompt may be open at a time.
@@ -666,6 +695,8 @@ final class TransportManager: ObservableObject {
                 // The UI answers on the main thread; peers/Noise state live on `queue`.
                 self?.queue.async { [weak self] in
                     guard let self else { return }
+                    // Already torn down (peer left / timed out): nothing to trust or promote.
+                    guard pending.awaitingConfirmation else { return }
                     self.untrustedPromptActive = false
                     pending.awaitingConfirmation = false
                     if confirmed {
@@ -698,6 +729,28 @@ final class TransportManager: ObservableObject {
         }
     }
 
+    /// Everything that happens once a trusted peer's connection is real (initiator: after message 2; responder: after
+    /// its first valid frame).
+    private func promoteTrusted(_ pending: PeerConnection, peer: HandshakePeerInfo) {
+        // The signing key arrived inside the authenticated handshake, so it is the
+        // one to trust for this device (replaces a missing or gossiped value).
+        trustedDevices.setSigningPublicKey(deviceId: peer.deviceId, signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString())
+        promote(pending, peer: peer)
+        trustedConnectedHandlers.forEach { $0(peer) }
+        sendPresence(online: true)
+        startHeartbeatMonitoring(for: pending)
+        replayQueuedFrames(for: pending)
+    }
+
+    /// The two advertisement formats in use: the Mac's (base64 of the first 8 digest bytes) and Android's
+    /// (first 16 characters of the unpadded base64 of the whole SHA-256 digest).
+    static func fingerprintMatches(_ advertised: String, keyData: Data) -> Bool {
+        let digest = Data(SHA256.hash(data: keyData))
+        let macStyle = Data(digest.prefix(8)).base64EncodedString()
+        let androidStyle = String(digest.base64EncodedString().replacingOccurrences(of: "=", with: "").prefix(16))
+        return advertised == macStyle || advertised == androidStyle
+    }
+
     static func keysMatch(_ storedBase64: String, _ presented: Curve25519.KeyAgreement.PublicKey) -> Bool {
         guard let stored = Data(base64Encoded: storedBase64) else { return false }
         let presentedBytes = presented.rawRepresentation
@@ -724,6 +777,18 @@ final class TransportManager: ObservableObject {
 
     private func handleTransportFrame(_ payload: Data, pending: PeerConnection) {
         guard pending.deviceId != nil else {
+            if pending.awaitingProof, let peer = pending.pendingPeer {
+                guard let plaintext = try? pending.noiseSession.decrypt(payload) else {
+                    gossipError("Gossip: first frame from a handshaking peer didn't decrypt; closing")
+                    teardownAny(pending)
+                    return
+                }
+                pending.awaitingProof = false
+                promoteTrusted(pending, peer: peer)
+                pending.lastReceivedAt = Date()
+                processPlaintext(plaintext, arrivedFrom: peer.deviceId)
+                return
+            }
             // Not promoted yet (awaiting trust confirmation): hold the frame, don't drop it.
             if !pending.queuedFrames.enqueue(payload) {
                 gossipError("Gossip: too many frames before trust confirmation; closing")
@@ -752,6 +817,14 @@ final class TransportManager: ObservableObject {
         }
         do {
             let plaintext = try pending.noiseSession.decrypt(payload)
+            processPlaintext(plaintext, arrivedFrom: arrivedFrom)
+        } catch {
+            gossipError("Gossip: failed to decrypt/decode incoming envelope: \(error)")
+        }
+    }
+
+    private func processPlaintext(_ plaintext: Data, arrivedFrom: String) {
+        do {
             // A raw (non-envelope) frame armed while handling the metadata envelope
             // that announced it (`hasRawFollowup: true`) — see `handleReceivedEnvelope`
             // and `docs/wire-protocol.md`'s "Large binary payloads" section. Must be
@@ -800,6 +873,11 @@ final class TransportManager: ObservableObject {
         // Verified before anything else so a forged copy can neither be acted on, relayed,
         // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that
         // is physically coming next on this connection is still drained, just discarded.
+        guard Self.isWellFormed(envelope) else {
+            gossipError("Gossip: dropped an envelope with an oversized identifier or an implausible timestamp")
+            if envelope.hasRawFollowup { pendingRawFrameHandlers[arrivedFrom] = { _ in } }
+            return
+        }
         guard isAuthentic(envelope) else {
             gossipError("Gossip: dropped \(envelope.type) with an invalid or unverifiable signature")
             if envelope.hasRawFollowup { pendingRawFrameHandlers[arrivedFrom] = { _ in } }
@@ -826,6 +904,11 @@ final class TransportManager: ObservableObject {
         if envelope.hasRawFollowup {
             pendingRawFrameHandlers[arrivedFrom] = { [weak self] data in
                 guard let self else { return }
+                // The raw frame is outside the signature; the signed payload carries its hash.
+                guard Self.rawFrameMatches(data, envelope: envelope) else {
+                    gossipError("Gossip: dropped a raw frame that doesn't match its signed hash")
+                    return
+                }
                 if isForMe {
                     self.router.route(envelope)
                     DispatchQueue.main.async { [weak self] in
@@ -855,6 +938,16 @@ final class TransportManager: ObservableObject {
         }
     }
 
+    /// Replays older than this are rejected; generous so ordinary clock drift between devices never matters.
+    static let maxClockSkewMs: Int64 = 15 * 60 * 1000
+
+    /// Cheap structural checks run before anything is cached, verified or relayed: identifiers are tiny
+    /// (so the seen-id cache can't be used to pin memory) and `ts` is recent (so old signed messages can't be replayed).
+    static func isWellFormed(_ e: Envelope, now: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) -> Bool {
+        e.id.utf8.count <= 64 && e.type.utf8.count <= 64 && e.senderId.utf8.count <= 64
+            && (e.recipientId?.utf8.count ?? 0) <= 64 && abs(now - e.ts) <= maxClockSkewMs
+    }
+
     /// Resolves which currently-connected peers an envelope should be sent/forwarded
     /// to. `arrivedFrom` is the peer this envelope was just relayed from (excluded from
     /// re-forwarding back to); pass `nil` for a locally-originated send.
@@ -868,6 +961,8 @@ final class TransportManager: ObservableObject {
         if let direct = peers[recipientId] {
             return [direct]
         }
+        // `ttl: 0` envelopes (key material) are direct-only: never flood them to bystanders.
+        if envelope.ttl <= 0 { return [] }
         // Not directly connected to the recipient — flood so it can find a
         // multi-hop path through whatever else we're connected to.
         return peers.compactMap { deviceId, peer in deviceId == arrivedFrom ? nil : peer }
@@ -917,20 +1012,22 @@ final class TransportManager: ObservableObject {
     /// re-delivered to whoever just sent it.
     func send(envelope unsigned: Envelope) throws {
         guard featureSettings.isMessageAllowed(type: unsigned.type) else { return }
-        let envelope = try signedForOrigination(unsigned)
-        recordSeen(envelope.id)
-        let targets = forwardTargets(for: envelope, arrivedFrom: nil)
-        guard !targets.isEmpty else { throw SendError.notConnected }
-        var lastError: Error?
-        for target in targets {
-            do {
-                try send(envelope: envelope, to: target)
-            } catch {
-                lastError = error
+        try onQueue {
+            let envelope = try signedForOrigination(unsigned)
+            recordSeen(envelope.id)
+            let targets = forwardTargets(for: envelope, arrivedFrom: nil)
+            guard !targets.isEmpty else { throw SendError.notConnected }
+            var lastError: Error?
+            for target in targets {
+                do {
+                    try send(envelope: envelope, to: target)
+                } catch {
+                    lastError = error
+                }
             }
-        }
-        if let lastError {
-            throw lastError
+            if let lastError {
+                throw lastError
+            }
         }
     }
 
@@ -992,21 +1089,47 @@ final class TransportManager: ObservableObject {
     /// own relay (see `handleReceivedEnvelope`), not directly from here.
     func send(_ unsigned: Envelope, withRawFollowup rawData: Data) throws {
         guard featureSettings.isMessageAllowed(type: unsigned.type) else { return }
-        let envelope = try signedForOrigination(unsigned)
-        recordSeen(envelope.id)
-        let targets = forwardTargets(for: envelope, arrivedFrom: nil)
-        guard !targets.isEmpty else { throw SendError.notConnected }
-        var lastError: Error?
-        for target in targets {
-            do {
-                try send(envelope, withRawFollowup: rawData, to: target)
-            } catch {
-                lastError = error
+        try onQueue {
+            // The raw frame isn't covered by the envelope signature, so its hash rides in the signed payload.
+            let envelope = try signedForOrigination(Self.bindingRawFrame(rawData, to: unsigned))
+            recordSeen(envelope.id)
+            let targets = forwardTargets(for: envelope, arrivedFrom: nil)
+            guard !targets.isEmpty else { throw SendError.notConnected }
+            var lastError: Error?
+            for target in targets {
+                do {
+                    try send(envelope, withRawFollowup: rawData, to: target)
+                } catch {
+                    lastError = error
+                }
+            }
+            if let lastError {
+                throw lastError
             }
         }
-        if let lastError {
-            throw lastError
-        }
+    }
+
+    static let rawHashField = "rawSha256"
+
+    static func rawFrameHash(_ data: Data) -> String {
+        Data(SHA256.hash(data: data)).base64EncodedString()
+    }
+
+    /// `envelope` with the SHA-256 of `rawData` added to its payload (before signing).
+    static func bindingRawFrame(_ rawData: Data, to envelope: Envelope) -> Envelope {
+        guard envelope.sig == nil, case .object(var fields) = envelope.payload else { return envelope }
+        fields[rawHashField] = .string(rawFrameHash(rawData))
+        return Envelope(
+            id: envelope.id, type: envelope.type, senderId: envelope.senderId, recipientId: envelope.recipientId,
+            broadcast: envelope.broadcast, ttl: envelope.ttl, hasRawFollowup: envelope.hasRawFollowup,
+            ts: envelope.ts, payload: .object(fields), sig: nil
+        )
+    }
+
+    /// Whether `data` is the raw frame the signed `envelope` committed to.
+    static func rawFrameMatches(_ data: Data, envelope: Envelope) -> Bool {
+        guard let expected = envelope.payload[rawHashField]?.stringValue else { return false }
+        return expected == rawFrameHash(data)
     }
 
     func sendPresence(online: Bool) {
@@ -1035,7 +1158,7 @@ final class TransportManager: ObservableObject {
         peer.lastReceivedAt = Date()
         let timer = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self, weak peer] _ in
             guard let self, let peer else { return }
-            self.checkHeartbeat(for: peer)
+            self.queue.async { self.checkHeartbeat(for: peer) }
         }
         RunLoop.main.add(timer, forMode: .common)
         peer.heartbeatTimer = timer
@@ -1076,6 +1199,13 @@ final class TransportManager: ObservableObject {
 
     /// Tears down a not-yet-promoted (still handshaking) connection.
     private func teardownPending(_ pending: PeerConnection) {
+        if pending.awaitingConfirmation {
+            // The peer vanished (or timed out) while the user was looking at its prompt: release the single prompt slot
+            // and tell the UI, otherwise pairing would stay refused until the app restarts.
+            pending.awaitingConfirmation = false
+            untrustedPromptActive = false
+            DispatchQueue.main.async { [weak self] in self?.onUntrustedPromptCancelled?() }
+        }
         pending.connection.cancel()
         pendingByObjectId.removeValue(forKey: ObjectIdentifier(pending.connection))
         if let target = pending.dialTargetDeviceId {

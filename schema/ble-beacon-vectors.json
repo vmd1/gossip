@@ -1,7 +1,7 @@
 {
   "description": "BLE beacon tag vectors: tag = first 8 bytes of HMAC-SHA256(key, 'gossip-ble-v1' || window as u64 big-endian). Generated independently with Python's hmac.",
   "keyHex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
-  "windowSeconds": 120,
+  "windowSeconds": 60,
   "cases": [
     {
       "window": 0,

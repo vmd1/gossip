@@ -38,7 +38,7 @@ alongside the mandatory 3-byte flags AD structure the platform adds automaticall
   distinguishing Connect's advertisements from other devices/apps that also happen to use the `0xFFFF`
   test company ID.
 - **Bytes 2–9**: a **keyed, rotating tag**: the first 8 bytes of `HMAC-SHA256(beaconKey, "gossip-ble-v1" ‖ u64be(window))`,
-  where `beaconKey` is a random 32-byte key each device generates once and `window = floor(unixSeconds / 120)`.
+  where `beaconKey` is a random 32-byte key each device generates once and `window = floor(unixSeconds / 60)`.
   (Earlier versions advertised a constant hash of the X25519 public key; anyone who knew that public key — it is
   in the roster gossip and the pairing QR — could replay it, and any passer-by could track the phone by it.)
   The key reaches trusted peers over the Noise-encrypted mesh (`ble.beacon_key`, `schema/message-types.md`), so

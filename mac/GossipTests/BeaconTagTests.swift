@@ -32,7 +32,7 @@ final class BeaconTagTests: XCTestCase {
         // A different key (an outsider who only knows the public key) matches nothing.
         XCTAssertTrue(Set(BeaconTag.acceptableTags(key: Data(repeating: 8, count: 32), at: now)).isDisjoint(with: Set(tags)))
         let left = BeaconTag.secondsUntilNextWindow(at: now)
-        XCTAssertTrue(left > 0 && left <= 120)
+        XCTAssertTrue(left > 0 && left <= 60)
     }
 
     func testBeaconKeyIsStoredIdempotentlyAndIgnoredForUnknownDevices() {

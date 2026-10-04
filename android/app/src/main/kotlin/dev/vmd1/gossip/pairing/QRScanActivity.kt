@@ -119,11 +119,13 @@ class QRScanActivity : ComponentActivity() {
             viewModel.uiState.collect { state ->
                 statusView.text = when (state) {
                     is PairingUiState.Idle -> "Point the camera at the device's pairing QR code"
+                    is PairingUiState.ConfirmScan -> "Confirm pairing…"
                     is PairingUiState.Discovering -> "Looking for the device on your network…"
                     is PairingUiState.Handshaking -> "Connecting securely…\nCheck that the other device shows ${state.code}"
                     is PairingUiState.Success -> "Paired with ${state.deviceName}"
                     is PairingUiState.Failed -> "Pairing failed: ${state.reason}"
                 }
+                if (state is PairingUiState.ConfirmScan) showConfirmDialog(state)
                 // Back to ready after a failure cleared itself: allow scanning again.
                 if (state is PairingUiState.Idle) handledScan.set(false)
                 if (state is PairingUiState.Success) {
@@ -132,6 +134,23 @@ class QRScanActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private var confirmDialog: android.app.AlertDialog? = null
+
+    /** Scanning isn't consent: show who this QR claims to be and the safety code, and wait for a tap. */
+    private fun showConfirmDialog(state: PairingUiState.ConfirmScan) {
+        confirmDialog?.dismiss()
+        confirmDialog = android.app.AlertDialog.Builder(this)
+            .setTitle("Pair with “${state.deviceName}”?")
+            .setMessage(
+                "This will let that device see your notifications and clipboard and control this phone, and it will be shared with your other paired devices.\n\n" +
+                    "Safety code: ${state.code}\n\nType this code on the other device when it asks. Only continue if you started this pairing yourself."
+            )
+            .setPositiveButton("Pair") { _, _ -> viewModel.confirmScan() }
+            .setNegativeButton("Cancel") { _, _ -> viewModel.cancelScan() }
+            .setOnCancelListener { viewModel.cancelScan() }
+            .show()
     }
 
     private fun startCamera() {
@@ -182,6 +201,7 @@ class QRScanActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        confirmDialog?.dismiss()
         cameraExecutor.shutdown()
         serviceConnection?.let { runCatching { unbindService(it) } }
         super.onDestroy()

@@ -22,13 +22,13 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Keyed, rotating BLE proximity advertisements. A phone no longer advertises a constant hash of its public
  * key (which anyone who knows that key could replay, and any passer-by could track); it advertises
- * `tag(beaconKey, window)` — 8 bytes of HMAC-SHA256 over a 2-minute time window — and only devices it has
+ * `tag(beaconKey, window)` — 8 bytes of HMAC-SHA256 over a 1-minute time window — and only devices it has
  * shared its `beaconKey` with (over the Noise-encrypted mesh, see [BeaconKeyManager]) can recognise it. Mac
  * has the same functions (`BeaconKey.swift`); both are checked against `schema/ble-beacon-vectors.json`.
  * See `docs/ble-proximity-protocol.md`.
  */
 object BeaconTag {
-    const val WINDOW_SECONDS = 120L
+    const val WINDOW_SECONDS = 60L
     private val LABEL = "gossip-ble-v1".toByteArray(Charsets.UTF_8)
 
     fun window(nowMs: Long = System.currentTimeMillis()): Long = maxOf(0L, nowMs / 1000) / WINDOW_SECONDS

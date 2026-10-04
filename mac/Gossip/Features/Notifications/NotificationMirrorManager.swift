@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import ImageIO
 
 /// Mirrors Android notifications (`notification.posted` / `notification.removed`) onto
 /// this Mac as local `UserNotifications`, and — for notifications whose source supports
@@ -122,9 +123,9 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         }
 
         let content = UNMutableNotificationContent()
-        content.title = posted.appName
-        content.subtitle = posted.title
-        content.body = posted.body
+        content.title = String(posted.appName.prefix(80))
+        content.subtitle = String(posted.title.prefix(200))
+        content.body = String(posted.body.prefix(2000))
         content.userInfo = ["androidNotificationId": posted.id, "sourceDeviceId": envelope.senderId]
         if posted.hasReplyAction {
             content.categoryIdentifier = Self.replyCategoryIdentifier
@@ -194,7 +195,8 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     }
 
     private func attachIcon(base64: String?, to content: UNMutableNotificationContent, completion: @escaping (UNMutableNotificationContent) -> Void) {
-        guard let base64, let data = Data(base64Encoded: base64) else {
+        guard let base64, base64.utf8.count <= Self.maxIconBase64Chars, let data = Data(base64Encoded: base64),
+              Self.isReasonableIcon(data) else {
             completion(content)
             return
         }
@@ -205,8 +207,23 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             content.attachments = [attachment]
         } catch {
             gossipError("Gossip: failed to attach notification icon: \(error)")
+            try? FileManager.default.removeItem(at: tmpURL) // a rejected attachment isn't moved, so don't leave it behind
         }
         completion(content)
+    }
+
+    static let maxIconBase64Chars = 400_000
+    static let maxIconBytes = 256 * 1024
+    static let maxIconPixels = 4_000_000
+
+    /// A real, modestly sized image: refuses non-images and decompression bombs before anything touches disk.
+    static func isReasonableIcon(_ data: Data) -> Bool {
+        guard data.count <= maxIconBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int,
+              w > 0, h > 0 else { return false }
+        return w * h <= maxIconPixels
     }
 
     // MARK: - Outbound: notification.reply
