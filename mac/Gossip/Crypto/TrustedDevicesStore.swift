@@ -91,8 +91,9 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
     }
 }
 
-/// Persists the `TrustedDevices` table to a JSON file in
-/// `~/Library/Application Support/Connect/trusted-devices.json`.
+/// Persists the `TrustedDevices` table (and the revocation tombstones) as JSON in the login Keychain, so another
+/// process of the same user can't read the peers' beacon keys or add a trusted device by editing a file. The old
+/// `~/Library/Application Support/Connect/{trusted-devices,revoked-devices}.json` files are migrated on first launch.
 final class TrustedDevicesStore: ObservableObject {
     static let shared = TrustedDevicesStore()
 
@@ -102,33 +103,37 @@ final class TrustedDevicesStore: ObservableObject {
     /// The source of truth, guarded by `queue`.
     private var storage: [TrustedDevice] = []
 
-    private let fileURL: URL
-    private let revokedFileURL: URL
+    private let devicesBlob: SecretBlobStore
+    private let revokedBlob: SecretBlobStore
     /// Sticky tombstones: deviceId -> when it was revoked (Unix ms). Gossip can't re-add a
     /// revoked device unless the introduction is newer than the revocation, and pairing it
     /// directly again clears the tombstone.
     private var revoked: [String: Int64] = [:]
     private let queue = DispatchQueue(label: "dev.vmd1.gossip.trusteddevicesstore")
 
-    init(fileURL: URL? = nil) {
-        if let fileURL {
-            self.fileURL = fileURL
-            self.revokedFileURL = fileURL.deletingLastPathComponent().appendingPathComponent(fileURL.deletingPathExtension().lastPathComponent + "-revoked.json")
-        } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            // Deliberately still "Connect", not "Gossip" — this is the on-disk
-            // ~/Library/Application Support directory holding IdentityKeyStore's
-            // device identity and TrustedDevicesStore's pairing state. Renaming it
-            // would silently generate a new device identity and drop every already-
-            // paired device, forcing a full re-pair across the whole mesh for no
-            // benefit — not part of the Connect→Gossip rebrand's scope.
-            let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-            PrivateFile.ensureDirectory(dir)
-            self.fileURL = dir.appendingPathComponent("trusted-devices.json")
-            self.revokedFileURL = dir.appendingPathComponent("revoked-devices.json")
-        }
+    init(devicesBlob: SecretBlobStore, revokedBlob: SecretBlobStore) {
+        self.devicesBlob = devicesBlob
+        self.revokedBlob = revokedBlob
         load()
-        devices = storage
+    }
+
+    /// File-backed store at `fileURL` (tombstones in a sibling `-revoked.json`); used by tests.
+    convenience init(fileURL: URL) {
+        let revokedURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(fileURL.deletingPathExtension().lastPathComponent + "-revoked.json")
+        self.init(devicesBlob: FileBlobStore(url: fileURL), revokedBlob: FileBlobStore(url: revokedURL))
+    }
+
+    /// The production store: Keychain, migrating from the legacy files.
+    convenience init() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // Deliberately still "Connect", not "Gossip" — see `IdentityKeyStore.init()`.
+        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
+        PrivateFile.ensureDirectory(dir)
+        self.init(
+            devicesBlob: KeychainBlobStore(account: "trusted-devices", legacyFile: dir.appendingPathComponent("trusted-devices.json")),
+            revokedBlob: KeychainBlobStore(account: "revoked-devices", legacyFile: dir.appendingPathComponent("revoked-devices.json"))
+        )
     }
 
     // MARK: - Public API
@@ -245,13 +250,13 @@ final class TrustedDevicesStore: ObservableObject {
 
     private func load() {
         queue.sync {
-            guard let data = try? Data(contentsOf: fileURL) else { return }
+            guard let data = devicesBlob.read() else { return }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             if let decoded = try? decoder.decode([TrustedDevice].self, from: data) {
                 storage = decoded
             }
-            if let data = try? Data(contentsOf: revokedFileURL),
+            if let data = revokedBlob.read(),
                let decoded = try? JSONDecoder().decode([String: Int64].self, from: data) {
                 revoked = decoded
             }
@@ -264,9 +269,9 @@ final class TrustedDevicesStore: ObservableObject {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             guard let data = try? encoder.encode(storage) else { return }
-            PrivateFile.write(data, to: fileURL)
+            devicesBlob.write(data)
             if let revokedData = try? JSONEncoder().encode(revoked) {
-                PrivateFile.write(revokedData, to: revokedFileURL)
+                revokedBlob.write(revokedData)
             }
         }
     }

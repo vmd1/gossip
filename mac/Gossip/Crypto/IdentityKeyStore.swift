@@ -4,16 +4,10 @@ import CryptoKit
 /// Generates (on first launch) and persists this Mac's stable device identity:
 /// a UUID plus an Ed25519 signing keypair and an X25519 key-agreement keypair.
 ///
-/// Stored as a JSON file in `~/Library/Application Support/Connect/identity.json`
-/// (matching `TrustedDevicesStore`'s existing convention), not the macOS
-/// Keychain. Keychain items are ACL'd to the requesting app's code-signing
-/// identity, and this project is ad-hoc signed (`CODE_SIGN_STYLE: Automatic`,
-/// no paid Developer ID yet) — ad-hoc signatures aren't stable across rebuilds,
-/// so every rebuild during development made macOS treat Connect as a "new" app
-/// and re-prompt for Keychain access on every launch. File-based storage in
-/// Application Support (already the accepted tradeoff for `TrustedDevicesStore`
-/// in this codebase) sidesteps that entirely. Revisit Keychain once the app is
-/// signed with a stable Developer ID for distribution.
+/// Stored as JSON in the login Keychain (`KeychainBlobStore`), so another process of the same user can't read the
+/// private keys from disk. A pre-Keychain `~/Library/Application Support/Connect/identity.json` is migrated into the
+/// Keychain on first launch and then scrubbed. The Keychain ACL trusts the app's code-signing identity, which is
+/// stable now that builds are signed with `gossip.vmd1.dev` (`mac/scripts/create-signing-cert.sh`).
 final class IdentityKeyStore {
     static let shared = IdentityKeyStore()
 
@@ -26,28 +20,32 @@ final class IdentityKeyStore {
         var beaconKey: Data?
     }
 
-    private let fileURL: URL
+    private let blob: SecretBlobStore
     private let queue = DispatchQueue(label: "dev.vmd1.gossip.identitykeystore")
 
     private var cached: StoredIdentity?
     private var cachedSigningKey: Curve25519.Signing.PrivateKey?
     private var cachedAgreementKey: Curve25519.KeyAgreement.PrivateKey?
 
-    init(fileURL: URL? = nil) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            // Deliberately still "Connect", not "Gossip" — this is the on-disk
-            // ~/Library/Application Support directory holding IdentityKeyStore's
-            // device identity and TrustedDevicesStore's pairing state. Renaming it
-            // would silently generate a new device identity and drop every already-
-            // paired device, forcing a full re-pair across the whole mesh for no
-            // benefit — not part of the Connect→Gossip rebrand's scope.
-            let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-            PrivateFile.ensureDirectory(dir)
-            self.fileURL = dir.appendingPathComponent("identity.json")
-        }
+    init(blob: SecretBlobStore) {
+        self.blob = blob
+    }
+
+    /// File-backed store at `fileURL`; used by tests.
+    convenience init(fileURL: URL) {
+        self.init(blob: FileBlobStore(url: fileURL))
+    }
+
+    /// The production store: Keychain, migrating from the legacy file.
+    convenience init() {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // Deliberately still "Connect", not "Gossip" — this is the on-disk
+        // ~/Library/Application Support directory that held IdentityKeyStore's
+        // device identity and TrustedDevicesStore's pairing state. Renaming it
+        // would orphan the legacy file we migrate from.
+        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
+        PrivateFile.ensureDirectory(dir)
+        self.init(blob: KeychainBlobStore(account: "identity", legacyFile: dir.appendingPathComponent("identity.json")))
     }
 
     // MARK: - Public API
@@ -101,11 +99,11 @@ final class IdentityKeyStore {
 
     // MARK: - Persistence
 
-    /// Loads the on-disk identity, generating and persisting a fresh one on
-    /// first run (or if the file is missing/corrupt). Must be called on `queue`.
+    /// Loads the stored identity, generating and persisting a fresh one on
+    /// first run (or if the stored identity is missing/corrupt). Must be called on `queue`.
     private func identity() -> StoredIdentity {
         if let cached { return cached }
-        if let data = try? Data(contentsOf: fileURL),
+        if let data = blob.read(),
            let decoded = try? JSONDecoder().decode(StoredIdentity.self, from: data) {
             cached = decoded
             return decoded
@@ -123,6 +121,6 @@ final class IdentityKeyStore {
 
     private func persist(_ identity: StoredIdentity) {
         guard let data = try? JSONEncoder().encode(identity) else { return }
-        PrivateFile.write(data, to: fileURL)
+        blob.write(data)
     }
 }
