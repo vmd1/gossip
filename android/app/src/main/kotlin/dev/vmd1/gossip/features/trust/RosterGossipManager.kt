@@ -1,7 +1,7 @@
 package dev.vmd1.gossip.features.trust
 
 import android.util.Base64
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevice
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
@@ -22,6 +22,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 private const val TAG = "RosterGossipManager"
 
@@ -109,11 +110,16 @@ class RosterGossipManager(
                         type = MessageType.TRUST_REVOKE,
                         senderId = identityKeyStore.deviceId,
                         broadcast = true,
-                        payload = buildJsonObject { put("deviceId", JsonPrimitive(deviceId)) }
+                        payload = revokePayload(deviceId, trustedDevicesStore.revokedAt(deviceId))
                     )
                 )
             }.onFailure { Log.w(TAG, "Failed to broadcast trust.revoke: ${it.message}") }
         }
+    }
+
+    private fun revokePayload(deviceId: String, revokedAt: Long?): JsonObject = buildJsonObject {
+        put("deviceId", JsonPrimitive(deviceId))
+        if (revokedAt != null) put("revokedAt", JsonPrimitive(revokedAt))
     }
 
     // MARK: Sending
@@ -161,6 +167,7 @@ class RosterGossipManager(
                             device.signingPublicKey?.let {
                                 put("signingPublicKey", JsonPrimitive(Base64.encodeToString(it, Base64.NO_WRAP)))
                             }
+                            put("addedAt", JsonPrimitive(device.addedAt))
                         }
                     )
                 }
@@ -186,14 +193,28 @@ class RosterGossipManager(
             val deviceId = obj["deviceId"]?.jsonPrimitive?.contentOrNull ?: continue
             if (deviceId == identityKeyStore.deviceId) continue
             val signingPublicKeyBase64 = obj["signingPublicKey"]?.jsonPrimitive?.contentOrNull
-            // Never clobber an already-trusted device's own row (e.g. one paired
-            // directly, or already gossiped) with a remote-reported copy — this would
-            // otherwise re-stamp `addedAt` on every periodic resync. Narrow exception:
-            // backfill a missing signing key (a row paired before that field existed),
-            // since gossip is otherwise the only way that row would ever learn it.
-            if (trustedDevicesStore.isTrusted(deviceId)) {
-                signingPublicKeyBase64?.let {
-                    trustedDevicesStore.backfillSigningPublicKey(deviceId, Base64.decode(it, Base64.NO_WRAP))
+            // Never clobber an already-trusted device's own row (e.g. one paired directly, or
+            // already gossiped) with a remote-reported copy — this would otherwise re-stamp
+            // `addedAt` on every periodic resync. The signing key is likewise never taken from
+            // gossip for an existing row; it is learned from the device's own authenticated
+            // handshake.
+            if (trustedDevicesStore.isTrusted(deviceId)) continue
+            // A revoked device stays revoked unless this introduction is newer than the
+            // revocation. A peer still introducing it missed the revoke, so tell it again.
+            val addedAt = obj["addedAt"]?.jsonPrimitive?.longOrNull ?: 0L
+            val revokedAt = trustedDevicesStore.revokedAt(deviceId)
+            if (revokedAt != null && addedAt <= revokedAt) {
+                scope.launch {
+                    runCatching {
+                        transportManager.send(
+                            Envelope(
+                                type = MessageType.TRUST_REVOKE,
+                                senderId = identityKeyStore.deviceId,
+                                recipientId = envelope.senderId,
+                                payload = revokePayload(deviceId, revokedAt)
+                            )
+                        )
+                    }
                 }
                 continue
             }
@@ -215,7 +236,9 @@ class RosterGossipManager(
 
     private fun handleRevoke(envelope: Envelope) {
         val deviceId = envelope.payload["deviceId"]?.jsonPrimitive?.contentOrNull ?: return
-        trustedDevicesStore.revoke(deviceId)
+        if (deviceId == identityKeyStore.deviceId) return
+        val revokedAt = envelope.payload["revokedAt"]?.jsonPrimitive?.longOrNull ?: envelope.ts
+        trustedDevicesStore.revoke(deviceId, revokedAt)
         transportManager.disconnect(deviceId)
     }
 }

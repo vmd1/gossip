@@ -2,30 +2,11 @@ import AppKit
 
 /// "Device Mirroring": a tiny app that asks the (possibly not yet running) Gossip app to open its Device
 /// Mirroring window, then quits. The live device list and the mirror session belong to the Gossip process,
-/// so this app deliberately does nothing but hand over.
-///
-/// It has a second job, chosen purely by *where it is running*: the copy embedded in
-/// `Gossip.app/Contents/SharedSupport` — which nobody opens by hand — instead copies itself out next to
-/// Gossip (`LauncherInstaller`), then quits. Gossip is sandboxed and can't create launchable files, so it
-/// just starts that embedded copy and lets it do the install; no flags or extra URL schemes are involved.
+/// so this app deliberately does nothing but hand over. (Gossip copies this app out next to itself — see
+/// `LauncherInstaller`.)
 final class LauncherDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let gossip = enclosingGossipApp() {
-            let installer = LauncherInstaller(embeddedLauncherURL: Bundle.main.bundleURL, gossipURL: gossip)
-            NSLog("Device Mirroring: install -> \(installer.install())")
-            NSApp.terminate(nil)
-        } else {
-            openGossipDeviceMirroring()
-        }
-    }
-
-    /// `…/Gossip.app` if this is the copy embedded in it (`…/Gossip.app/Contents/SharedSupport/Device Mirroring.app`).
-    private func enclosingGossipApp() -> URL? {
-        let bundle = Bundle.main.bundleURL
-        let shared = bundle.deletingLastPathComponent()
-        guard shared.lastPathComponent == "SharedSupport" else { return nil }
-        let gossip = shared.deletingLastPathComponent().deletingLastPathComponent()
-        return gossip.pathExtension == "app" ? gossip : nil
+        openGossipDeviceMirroring()
     }
 
     private func openGossipDeviceMirroring() {

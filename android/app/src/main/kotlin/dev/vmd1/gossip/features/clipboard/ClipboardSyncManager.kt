@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import androidx.core.content.FileProvider
 import dev.vmd1.gossip.features.hotspot.ShizukuManager
 import dev.vmd1.gossip.protocol.Envelope
@@ -136,6 +136,7 @@ class ClipboardSyncManager(
         started = true
         clipboardManager.addPrimaryClipChangedListener(clipListener)
         messageRouter.register(MessageType.CLIPBOARD_UPDATE, envelopeHandler)
+        ClipboardPolicy.pruneCache(File(context.cacheDir, "clipboard")) // leftovers from earlier runs
         transportManager.onRawFrameReceived = { envelope, data -> onRemoteImageUpdate(envelope, data) }
         if (shizukuManager != null) {
             pollJob = scope.launch { runBackgroundPollLoop() }
@@ -258,6 +259,7 @@ class ClipboardSyncManager(
 
     private fun onRemoteUpdate(envelope: Envelope) {
         val text = envelope.payload["text"]?.jsonPrimitive?.contentOrNull ?: return
+        if (!ClipboardPolicy.textAllowed(text)) return
         lastRemoteSetValue = text
         clipboardManager.setPrimaryClip(ClipData.newPlainText("Gossip", text))
     }
@@ -265,12 +267,18 @@ class ClipboardSyncManager(
     private fun onRemoteImageUpdate(envelope: Envelope, data: ByteArray) {
         if (envelope.type != MessageType.CLIPBOARD_UPDATE) return
         if (envelope.payload["kind"]?.jsonPrimitive?.contentOrNull != "image") return
+        if (!ClipboardPolicy.imageBytesAllowed(data.size)) return
+        // Refuse anything that isn't a reasonably-sized image before it touches disk or the clipboard.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (!ClipboardPolicy.imageDimensionsAllowed(bounds.outWidth, bounds.outHeight)) return
         lastRemoteSetImageData = data
 
         runCatching {
             val dir = File(context.cacheDir, "clipboard").apply { mkdirs() }
             val file = File(dir, "clip_${System.currentTimeMillis()}.png")
             file.writeBytes(data)
+            ClipboardPolicy.pruneCache(dir, keep = file) // only the image now on the clipboard is needed
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.clipboardprovider", file)
             context.grantUriPermission(context.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             val clip = ClipData.newUri(context.contentResolver, "Gossip", uri)
@@ -282,7 +290,8 @@ class ClipboardSyncManager(
         val clip = clipboardManager.primaryClip ?: return null
         if (clip.itemCount == 0) return null
         if (clip.description.hasMimeType("image/*")) return null
-        return clip.getItemAt(0)?.coerceToText(context)?.toString()
+        if (ClipboardPolicy.isSensitive(clip.description.extras)) return null // password managers etc.
+        return clip.getItemAt(0)?.coerceToText(context)?.toString()?.takeIf { ClipboardPolicy.textAllowed(it) }
     }
 
     /** Reads whatever image is on the clipboard (if any) via its `content://` Uri and
@@ -293,13 +302,18 @@ class ClipboardSyncManager(
         val clip = clipboardManager.primaryClip ?: return null
         if (clip.itemCount == 0) return null
         if (!clip.description.hasMimeType("image/*")) return null
+        if (ClipboardPolicy.isSensitive(clip.description.extras)) return null
         val uri = clip.getItemAt(0)?.uri ?: return null
         return runCatching {
+            // Check the dimensions before decoding so a huge image can't exhaust memory.
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            if (!ClipboardPolicy.imageDimensionsAllowed(bounds.outWidth, bounds.outHeight)) return@runCatching null
             context.contentResolver.openInputStream(uri)?.use { input ->
                 val bitmap = BitmapFactory.decodeStream(input) ?: return@use null
                 val out = ByteArrayOutputStream()
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                out.toByteArray()
+                out.toByteArray().takeIf { ClipboardPolicy.imageBytesAllowed(it.size) }
             }
         }.getOrNull()
     }

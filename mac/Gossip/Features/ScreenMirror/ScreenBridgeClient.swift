@@ -1,12 +1,13 @@
 import Foundation
 import Network
 
-/// WebSocket client for the Android screen bridge (`ws://<phone>:<port>`, token as the first
-/// message — see `schema/message-types.md`'s `screen.ready` row). Uses Network.framework's
-/// `NWProtocolWebSocket` rather than `URLSessionWebSocketTask` so there's no App Transport
-/// Security cleartext question for a bare LAN IP, and the same framework the mesh transport
-/// already uses. **Not encrypted**: the token authenticates the viewer, but the stream itself is
-/// plaintext on the LAN (documented limitation, `android/screen-server/README.md`).
+/// WebSocket client for the Android screen bridge (`ws://<phone>:<port>`, see `schema/message-types.md`'s
+/// `screen.ready` row). Uses Network.framework's `NWProtocolWebSocket` rather than
+/// `URLSessionWebSocketTask` so there's no App Transport Security cleartext question for a bare LAN IP,
+/// and the same framework the mesh transport already uses. Every message is a binary WebSocket message
+/// sealed by `ScreenCipher` (key from the per-session secret in the Noise-encrypted `screen.ready`);
+/// the first one is a hello carrying the session id, and the plaintext of each starts with a kind byte
+/// (`0x00` text, `0x01` binary). Nothing on the wire is readable or forgeable without the secret.
 final class ScreenBridgeClient {
     enum Event {
         case header(BridgeStreamHeader)
@@ -18,14 +19,15 @@ final class ScreenBridgeClient {
     var onEvent: ((Event) -> Void)?
 
     private let connection: NWConnection
-    private let token: String
+    private let cipher: ScreenCipher
+    private let sessionId: String
     private let queue = DispatchQueue(label: "dev.vmd1.gossip.screenbridge")
     private var finished = false
     private var gotHeader = false
 
     /// - Parameter host: the phone's address as the mesh transport saw it (IPv6 link-local
     ///   hosts must keep their `%zone`, see `TransportManager.hostWithZone(for:)`).
-    init?(host: String, port: UInt16, token: String) {
+    init?(host: String, port: UInt16, secret: Data, sessionId: String) {
         guard let url = Self.webSocketURL(host: host, port: port) else { return nil }
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
@@ -35,7 +37,8 @@ final class ScreenBridgeClient {
         let params = NWParameters(tls: nil, tcp: tcp)
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         connection = NWConnection(to: .url(url), using: params)
-        self.token = token
+        self.cipher = ScreenCipher(secret: secret, sessionId: sessionId, viewer: true)
+        self.sessionId = sessionId
     }
 
     /// NWProtocolWebSocket must be given a URL endpoint so it can build the HTTP upgrade request;
@@ -59,15 +62,15 @@ final class ScreenBridgeClient {
             guard let self else { return }
             switch state {
             case .ready:
-                self.sendFrame(Data(self.token.utf8), opcode: .text)
+                self.sendSealed(kind: 0x01, Data(self.sessionId.utf8))
                 self.receiveLoop()
             case .waiting(let error):
                 // Can't reach the host right now (no route, local-network permission denied, ...).
                 // For a direct LAN address this doesn't resolve itself, so fail fast instead of spinning.
-                NSLog("Gossip: screen bridge connection waiting: \(error)")
+                gossipError("Gossip: screen bridge connection waiting: \(error)")
                 self.finish(error)
             case .failed(let error):
-                NSLog("Gossip: screen bridge connection failed: \(error)")
+                gossipError("Gossip: screen bridge connection failed: \(error)")
                 self.finish(error)
             case .cancelled:
                 self.finish(nil)
@@ -80,8 +83,17 @@ final class ScreenBridgeClient {
 
     /// Sends raw scrcpy control-message bytes (binary WebSocket message). Safe from any thread.
     func sendControl(_ data: Data) {
-        sendFrame(data, opcode: .binary)
+        sendSealed(kind: 0x01, data)
     }
+
+    private func sendSealed(kind: UInt8, _ body: Data) {
+        // Sealing assigns the counter; the lock inside `cipher` plus the connection's in-order send
+        // keeps wire order equal to counter order only if both happen together.
+        sealLock.lock(); defer { sealLock.unlock() }
+        guard let sealed = try? cipher.seal(Data([kind]) + body) else { return }
+        sendFrame(sealed, opcode: .binary)
+    }
+    private let sealLock = NSLock()
 
     func close() {
         queue.async { [weak self] in
@@ -104,17 +116,18 @@ final class ScreenBridgeClient {
             if let error { return self.finish(error) }
             let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
             if metadata?.opcode == .close { return self.finish(nil) }
-            if let data, let metadata {
-                switch metadata.opcode {
-                case .text:
-                    if !self.gotHeader, let header = BridgeStreamHeader.parse(data) {
+            if let data, let metadata, metadata.opcode == .binary {
+                guard let plain = try? self.cipher.open(data), let kind = plain.first else {
+                    return self.finish(nil) // unauthenticated, replayed or malformed: drop the session
+                }
+                let body = plain.dropFirst()
+                if kind == 0x00 {
+                    if !self.gotHeader, let header = BridgeStreamHeader.parse(Data(body)) {
                         self.gotHeader = true
                         self.onEvent?(.header(header))
                     }
-                case .binary:
-                    if let message = BridgeMessage.parse(data) { self.onEvent?(.message(message)) }
-                default:
-                    break
+                } else if kind == 0x01, let message = BridgeMessage.parse(Data(body)) {
+                    self.onEvent?(.message(message))
                 }
             }
             if !self.finished { self.receiveLoop() }

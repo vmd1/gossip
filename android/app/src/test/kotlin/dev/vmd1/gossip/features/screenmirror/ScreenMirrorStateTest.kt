@@ -22,7 +22,7 @@ class ScreenMirrorStateTest {
         override fun start(): ScreenSession.Ready {
             started++
             if (failStart) error("boom")
-            return ScreenSession.Ready(1234, "tok-$sessionId", 576, 1280, "h264")
+            return ScreenSession.Ready(1234, "secret-$sessionId", 576, 1280, "h264")
         }
         override fun close() { closed++ }
     }
@@ -60,7 +60,7 @@ class ScreenMirrorStateTest {
         assertEquals(1, sessions.size)
         assertEquals(MessageType.SCREEN_READY, sent[0].type)
         assertEquals("mac", sent[0].recipientId)
-        assertEquals("tok-a", sent[0].payload["token"]!!.jsonPrimitive.content)
+        assertEquals("secret-a", sent[0].payload["secret"]!!.jsonPrimitive.content)
         assertTrue(s.isMirroring.value)
     }
 
@@ -170,5 +170,20 @@ class ScreenMirrorStateTest {
         s.onScreenStart(env(MessageType.SCREEN_START, "a"))
         awaitSent(2)
         assertEquals(MessageType.SCREEN_READY, sent[1].type)
+    }
+
+    @Test fun onDeviceStopEndsTheSessionAndClearsTheIndicatorState() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "a"))
+        awaitSent(1)
+        assertTrue(s.isMirroring.value)
+
+        s.stopActive()
+        assertFalse(s.isMirroring.value)
+        val end = System.currentTimeMillis() + 3000
+        while (sessions[0].closed == 0 && System.currentTimeMillis() < end) Thread.sleep(10)
+        assertEquals(1, sessions[0].closed)
+        s.stopActive() // nothing active: harmless
+        assertFalse(s.isMirroring.value)
     }
 }

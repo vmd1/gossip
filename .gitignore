@@ -16,3 +16,13 @@ CLAUDE.md
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local code-signing config written by mac/scripts/create-signing-cert.sh
+mac/Config/Signing.local.xcconfig
+
+# Signing keys must never be committed (see mac/scripts/create-signing-cert.sh)
+*.p12
+*.keystore
+*.jks
+*.pfx
+*.password

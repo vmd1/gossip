@@ -7,7 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dev.vmd1.gossip.R
@@ -26,6 +26,7 @@ import dev.vmd1.gossip.transport.ConnectionState
 import dev.vmd1.gossip.transport.MessageRouter
 import dev.vmd1.gossip.transport.TransportManager
 import dev.vmd1.gossip.transport.TransportManagerHolder
+import dev.vmd1.gossip.transport.newlyConnectedPeers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,16 +49,19 @@ class SyncForegroundService : Service() {
 
     private lateinit var transportManager: TransportManager
     lateinit var screenMirrorState: ScreenMirrorState
+    lateinit var controlSessionState: dev.vmd1.gossip.features.universalcontrol.ControlSessionState
     private lateinit var mediaControlBridge: MediaControlBridge
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
     private lateinit var rosterGossipManager: RosterGossipManager
+    private lateinit var beaconKeyManager: dev.vmd1.gossip.features.proximity.BeaconKeyManager
     private lateinit var bleProximityMonitor: BLEProximityMonitor
     private lateinit var lockOnLeaveManager: LockOnLeaveManager
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
     private lateinit var ringManager: dev.vmd1.gossip.features.find.RingManager
+    private lateinit var displayInfoSync: dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync
     private lateinit var batterySyncManager: dev.vmd1.gossip.features.battery.BatterySyncManager
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -81,6 +85,18 @@ class SyncForegroundService : Service() {
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
         )
         screenMirrorState.register(messageRouter)
+        controlSessionState = dev.vmd1.gossip.features.universalcontrol.ControlSessionState(
+            selfId = identity.deviceId,
+            scope = serviceScope,
+            shizukuReady = { shizukuManager?.state?.value == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED },
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
+            sessionFactory = { sessionId, secret, onEnded ->
+                dev.vmd1.gossip.features.universalcontrol.ControlBridge(applicationContext, sessionId, secret, onEnded)
+            },
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.UNIVERSAL_CONTROL) }
+        )
+        controlSessionState.register(messageRouter)
+        observeRemoteAccess()
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
@@ -138,6 +154,14 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             deviceType = deviceType
+        )
+        beaconKeyManager = dev.vmd1.gossip.features.proximity.BeaconKeyManager(
+            transportManager = transportManager,
+            trustedDevicesStore = trustedDevices,
+            identityKeyStore = identity,
+            messageRouter = messageRouter,
+            scope = serviceScope,
+            onKeysChanged = { bleProximityMonitor.rebuildFingerprintMap() }
         )
         // Seed the "hotspot available" capability bit from the persisted toggle before
         // the first advertise — the toggle's own UI callback only fires on a live
@@ -234,150 +258,164 @@ class SyncForegroundService : Service() {
         )
         batterySyncManager.start()
 
-        // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
-        // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val enable = intent.getBooleanExtra("enable", true)
-                    serviceScope.launch {
-                        val preferredMechanismId = dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext)
-                            .preferredHotspotMechanismId
-                        val result = dev.vmd1.gossip.features.hotspot.TetherHelper.setHotspotEnabled(
-                            applicationContext, enable, shizukuManager, preferredMechanismId = preferredMechanismId
-                        )
-                        Log.i("HotspotDebug", "setHotspotEnabled(enable=$enable) -> $result")
-                    }
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_TOGGLE_HOTSPOT"),
-            android.content.Context.RECEIVER_EXPORTED
+        // Display size, so the Mac's Universal Control layout draws this device at its real shape
+        // before any session exists. Reconciled on every new peer + the 60s loop below.
+        displayInfoSync = dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync(
+            deviceId = identity.deviceId,
+            send = { envelope -> transportManager.send(envelope) },
+            scope = serviceScope,
+            readSize = { dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync.readFromSystem(applicationContext) }
         )
 
-        // TEMPORARY debug hook to flip "Provide Instant Hotspot" without touching the
-        // real UI, for live end-to-end GATT testing — remove once the toggle's real UI
-        // is exercised directly instead.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val enable = intent.getBooleanExtra("enable", true)
-                    dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled = enable
-                    bleProximityMonitor.setHotspotAvailable(enable)
-                    Log.i("HotspotDebug", "provideHotspotEnabled -> $enable")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_SET_PROVIDE_HOTSPOT"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hook to verify HotspotCredentialReader's reflection-based
-        // getSoftApConfiguration() call against a real device before the real GATT
-        // response path exists — remove once Instant Hotspot's credential-delivery path
-        // is live-tested end-to-end via GATT instead.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val credentials = dev.vmd1.gossip.features.hotspot.HotspotCredentialReader.readCredentials(applicationContext, shizukuManager)
-                    Log.i("HotspotDebug", "readCredentials() -> $credentials")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_READ_HOTSPOT_CREDENTIALS"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hook to trigger the one-time Shizuku permission dialog before
-        // there's a real onboarding UI for it — remove once that UI lands.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    Log.i("HotspotDebug", "Shizuku state before request: ${shizukuManager?.state?.value}")
-                    shizukuManager?.requestPermission()
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_REQUEST_SHIZUKU"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-
-        // TEMPORARY debug hooks (registered only in debuggable builds): inject a screen.start /
-        // screen.stop envelope as if from a paired viewer, so the capture bridge can be exercised on
-        // an emulator with no Mac paired. `screen.ready`'s token is logged under tag ScreenMirror.
+        // Developer hooks (adb broadcasts that toggle the hotspot, read hotspot credentials and the clipboard, drive
+        // screen mirroring...). They are exported receivers that log sensitive values, so they exist ONLY in
+        // debuggable builds: the app that ships is a non-debuggable release build, where none of this is registered.
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            // Plays a 2 s 440 Hz tone on the media stream so audio capture can be verified without
-            // needing a music app: `am broadcast -a dev.vmd1.gossip.DEBUG_PLAY_TONE`.
+            // TEMPORARY debug hook to verify TetherHelper works end-to-end via adb before the
+            // real GATT request path exists — remove once Instant Hotspot's GATT channel lands.
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
                     override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                        Thread {
-                            val rate = 48_000
-                            val samples = ShortArray(rate * 2) { (Math.sin(2 * Math.PI * 440 * it / rate) * 8000).toInt().toShort() }
-                            val track = android.media.AudioTrack.Builder()
-                                .setAudioAttributes(android.media.AudioAttributes.Builder()
-                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
-                                .setAudioFormat(android.media.AudioFormat.Builder()
-                                    .setSampleRate(rate).setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                                    .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
-                                .setBufferSizeInBytes(samples.size * 2).build()
-                            track.write(samples, 0, samples.size); track.play()
-                            Thread.sleep(2300); track.release()
-                        }.start()
+                        val enable = intent.getBooleanExtra("enable", true)
+                        serviceScope.launch {
+                            val preferredMechanismId = dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext)
+                                .preferredHotspotMechanismId
+                            val result = dev.vmd1.gossip.features.hotspot.TetherHelper.setHotspotEnabled(
+                                applicationContext, enable, shizukuManager, preferredMechanismId = preferredMechanismId
+                            )
+                            Log.i("HotspotDebug", "setHotspotEnabled(enable=$enable) -> $result")
+                        }
                     }
                 },
-                IntentFilter("dev.vmd1.gossip.DEBUG_PLAY_TONE"),
+                IntentFilter("dev.vmd1.gossip.DEBUG_TOGGLE_HOTSPOT"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hook to flip "Provide Instant Hotspot" without touching the
+            // real UI, for live end-to-end GATT testing — remove once the toggle's real UI
+            // is exercised directly instead.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val enable = intent.getBooleanExtra("enable", true)
+                        dev.vmd1.gossip.onboarding.OnboardingPreferences(applicationContext).provideHotspotEnabled = enable
+                        bleProximityMonitor.setHotspotAvailable(enable)
+                        Log.i("HotspotDebug", "provideHotspotEnabled -> $enable")
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_SET_PROVIDE_HOTSPOT"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hook to verify HotspotCredentialReader's reflection-based
+            // getSoftApConfiguration() call against a real device before the real GATT
+            // response path exists — remove once Instant Hotspot's credential-delivery path
+            // is live-tested end-to-end via GATT instead.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val credentials = dev.vmd1.gossip.features.hotspot.HotspotCredentialReader.readCredentials(applicationContext, shizukuManager)
+                        Log.i("HotspotDebug", "readCredentials() -> $credentials")
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_READ_HOTSPOT_CREDENTIALS"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hook to trigger the one-time Shizuku permission dialog before
+            // there's a real onboarding UI for it — remove once that UI lands.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        Log.i("HotspotDebug", "Shizuku state before request: ${shizukuManager?.state?.value}")
+                        shizukuManager?.requestPermission()
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_REQUEST_SHIZUKU"),
+                android.content.Context.RECEIVER_EXPORTED
+            )
+
+            // TEMPORARY debug hooks (registered only in debuggable builds): inject a screen.start /
+            // screen.stop envelope as if from a paired viewer, so the capture bridge can be exercised on
+            // an emulator with no Mac paired. `screen.ready`'s token is logged under tag ScreenMirror.
+            if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                // Plays a 2 s 440 Hz tone on the media stream so audio capture can be verified without
+                // needing a music app: `am broadcast -a dev.vmd1.gossip.DEBUG_PLAY_TONE`.
+                registerReceiver(
+                    object : android.content.BroadcastReceiver() {
+                        override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                            Thread {
+                                val rate = 48_000
+                                val samples = ShortArray(rate * 2) { (Math.sin(2 * Math.PI * 440 * it / rate) * 8000).toInt().toShort() }
+                                val track = android.media.AudioTrack.Builder()
+                                    .setAudioAttributes(android.media.AudioAttributes.Builder()
+                                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA).build())
+                                    .setAudioFormat(android.media.AudioFormat.Builder()
+                                        .setSampleRate(rate).setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
+                                    .setBufferSizeInBytes(samples.size * 2).build()
+                                track.write(samples, 0, samples.size); track.play()
+                                Thread.sleep(2300); track.release()
+                            }.start()
+                        }
+                    },
+                    IntentFilter("dev.vmd1.gossip.DEBUG_PLAY_TONE"),
+                    android.content.Context.RECEIVER_EXPORTED
+                )
+                registerReceiver(
+                    object : android.content.BroadcastReceiver() {
+                        override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                            val start = intent.action == "dev.vmd1.gossip.DEBUG_SCREEN_START"
+                            val payload = kotlinx.serialization.json.buildJsonObject {
+                                intent.getStringExtra("sessionId")?.let { put("sessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
+                                for (k in listOf("maxSize", "bitRate", "maxFps")) {
+                                    if (intent.hasExtra(k)) put(k, kotlinx.serialization.json.JsonPrimitive(intent.getIntExtra(k, 0)))
+                                }
+                                if (intent.hasExtra("audio")) put("audio", kotlinx.serialization.json.JsonPrimitive(intent.getBooleanExtra("audio", false)))
+                            }
+                            val env = Envelope(
+                                type = if (start) MessageType.SCREEN_START else MessageType.SCREEN_STOP,
+                                senderId = "debug-viewer", recipientId = identity.deviceId, payload = payload
+                            )
+                            messageRouter.dispatch(env)
+                        }
+                    },
+                    IntentFilter().apply {
+                        addAction("dev.vmd1.gossip.DEBUG_SCREEN_START"); addAction("dev.vmd1.gossip.DEBUG_SCREEN_STOP")
+                    },
+                    android.content.Context.RECEIVER_EXPORTED
+                )
+            }
+
+            // TEMPORARY debug hooks to verify ShizukuClipboardReader's background read works —
+            // remove once this has real test coverage.
+            registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                        val text = intent.getStringExtra("text") ?: return
+                        (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                            .setPrimaryClip(android.content.ClipData.newPlainText("debug", text))
+                        Log.i("ClipboardDebug", "Set clipboard to: $text")
+                    }
+                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_SET_CLIPBOARD"),
                 android.content.Context.RECEIVER_EXPORTED
             )
             registerReceiver(
                 object : android.content.BroadcastReceiver() {
                     override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                        val start = intent.action == "dev.vmd1.gossip.DEBUG_SCREEN_START"
-                        val payload = kotlinx.serialization.json.buildJsonObject {
-                            intent.getStringExtra("sessionId")?.let { put("sessionId", kotlinx.serialization.json.JsonPrimitive(it)) }
-                            for (k in listOf("maxSize", "bitRate", "maxFps")) {
-                                if (intent.hasExtra(k)) put(k, kotlinx.serialization.json.JsonPrimitive(intent.getIntExtra(k, 0)))
-                            }
-                            if (intent.hasExtra("audio")) put("audio", kotlinx.serialization.json.JsonPrimitive(intent.getBooleanExtra("audio", false)))
-                        }
-                        val env = Envelope(
-                            type = if (start) MessageType.SCREEN_START else MessageType.SCREEN_STOP,
-                            senderId = "debug-viewer", recipientId = identity.deviceId, payload = payload
-                        )
-                        messageRouter.dispatch(env)
+                        val focusedRead = runCatching {
+                            (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                                .primaryClip?.getItemAt(0)?.coerceToText(applicationContext)?.toString()
+                        }.getOrNull()
+                        val shizukuRead = dev.vmd1.gossip.features.clipboard.ShizukuClipboardReader.readText()
+                        Log.i("ClipboardDebug", "Focus-gated read: $focusedRead | Shizuku read: $shizukuRead")
                     }
                 },
-                IntentFilter().apply {
-                    addAction("dev.vmd1.gossip.DEBUG_SCREEN_START"); addAction("dev.vmd1.gossip.DEBUG_SCREEN_STOP")
-                },
+                IntentFilter("dev.vmd1.gossip.DEBUG_READ_CLIPBOARD"),
                 android.content.Context.RECEIVER_EXPORTED
             )
         }
-
-        // TEMPORARY debug hooks to verify ShizukuClipboardReader's background read works —
-        // remove once this has real test coverage.
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val text = intent.getStringExtra("text") ?: return
-                    (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                        .setPrimaryClip(android.content.ClipData.newPlainText("debug", text))
-                    Log.i("ClipboardDebug", "Set clipboard to: $text")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_SET_CLIPBOARD"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
-        registerReceiver(
-            object : android.content.BroadcastReceiver() {
-                override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    val focusedRead = runCatching {
-                        (applicationContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
-                            .primaryClip?.getItemAt(0)?.coerceToText(applicationContext)?.toString()
-                    }.getOrNull()
-                    val shizukuRead = dev.vmd1.gossip.features.clipboard.ShizukuClipboardReader.readText()
-                    Log.i("ClipboardDebug", "Focus-gated read: $focusedRead | Shizuku read: $shizukuRead")
-                }
-            },
-            IntentFilter("dev.vmd1.gossip.DEBUG_READ_CLIPBOARD"),
-            android.content.Context.RECEIVER_EXPORTED
-        )
 
         // Start/stop clipboard sync in lockstep with the transport connection, same as
         // the loop-suppression contract in schema/message-types.md requires.
@@ -385,31 +423,42 @@ class SyncForegroundService : Service() {
             .onEach { state ->
                 if (state == ConnectionState.CONNECTED) {
                     clipboardSyncManager.start()
-                    // Two devices that were apart can each have a different real DND
-                    // state with neither side having done anything wrong — nothing
-                    // synced them yet. Report on every fresh connection (not just once
-                    // ever) so a reconnect after being out of range reconciles too; see
-                    // DndSyncManager.reportInitialSyncState's doc for why this can't be
-                    // a plain reportCurrentState() call.
-                    dndSyncManager.reportInitialSyncState()
-                    // Same reasoning: a Mac that reconnects after being disconnected
-                    // (or missed the original event-driven publish to any other race)
-                    // otherwise never learns this device is currently playing anything
-                    // until the *next* playback/metadata change, which might be a long
-                    // time or never — mediaControlBridge.start() only ever published
-                    // once, at service startup, with no reconnect-triggered resend.
-                    mediaControlBridge.resyncNowPlaying()
-                    // Same reasoning as dndSyncManager.reportInitialSyncState above: a
-                    // peer that reconnects (or missed the original event-driven report
-                    // to any race) shouldn't have to wait for this phone's *next*
-                    // hotspot toggle to learn its current state.
-                    hotspotStateManager.periodicResync()
-                    // Same reasoning for battery.update: a reconnecting peer shouldn't wait
-                    // for the next 1% level change to learn this device's battery.
-                    batterySyncManager.reportInitialSyncState()
                 } else {
                     clipboardSyncManager.stop()
                 }
+            }
+            .launchIn(serviceScope)
+
+        // Initial syncs fire for every *newly connected peer*, not just when the aggregate
+        // state flips to CONNECTED: a second peer connecting while the first is still up
+        // causes no flip, and would otherwise wait for the 60s resync loops. The sends are
+        // broadcasts and idempotent, so an already-connected peer just gets a harmless repeat.
+        transportManager.connectedDeviceIds
+            .newlyConnectedPeers()
+            .onEach {
+                // Two devices that were apart can each have a different real DND
+                // state with neither side having done anything wrong — nothing
+                // synced them yet. Report on every fresh connection (not just once
+                // ever) so a reconnect after being out of range reconciles too; see
+                // DndSyncManager.reportInitialSyncState's doc for why this can't be
+                // a plain reportCurrentState() call.
+                dndSyncManager.reportInitialSyncState()
+                // Same reasoning: a Mac that reconnects after being disconnected
+                // (or missed the original event-driven publish to any other race)
+                // otherwise never learns this device is currently playing anything
+                // until the *next* playback/metadata change, which might be a long
+                // time or never — mediaControlBridge.start() only ever published
+                // once, at service startup, with no reconnect-triggered resend.
+                mediaControlBridge.resyncNowPlaying()
+                // Same reasoning as dndSyncManager.reportInitialSyncState above: a
+                // peer that reconnects (or missed the original event-driven report
+                // to any race) shouldn't have to wait for this phone's *next*
+                // hotspot toggle to learn its current state.
+                hotspotStateManager.periodicResync()
+                // Same reasoning for battery.update: a reconnecting peer shouldn't wait
+                // for the next 1% level change to learn this device's battery.
+                batterySyncManager.reportInitialSyncState()
+                displayInfoSync.resync()
             }
             .launchIn(serviceScope)
 
@@ -430,9 +479,56 @@ class SyncForegroundService : Service() {
                 delay(DND_RESYNC_INTERVAL_MS)
                 if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
                     batterySyncManager.periodicResync()
+                    displayInfoSync.resync()
                 }
             }
         }
+    }
+
+    /** Persistent, non-dismissible indicator while another device is viewing this screen or its cursor is here. */
+    private fun observeRemoteAccess() {
+        kotlinx.coroutines.flow.combine(
+            screenMirrorState.isMirroring,
+            dev.vmd1.gossip.features.remote.RemoteActivity.remoteInput
+        ) { viewing, controlled -> viewing to controlled }
+            .onEach { (viewing, controlled) -> showRemoteAccessNotification(viewing, controlled) }
+            .launchIn(serviceScope)
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) { screenMirrorState.stopActive() }
+            },
+            IntentFilter(ACTION_STOP_REMOTE),
+            android.content.Context.RECEIVER_NOT_EXPORTED
+        )
+    }
+
+    private fun showRemoteAccessNotification(viewing: Boolean, controlled: Boolean) {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (!viewing && !controlled) { manager.cancel(REMOTE_NOTIFICATION_ID); return }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(REMOTE_CHANNEL_ID, "Remote access", NotificationManager.IMPORTANCE_HIGH))
+        }
+        val text = when {
+            viewing && controlled -> "A paired device is viewing this screen and using its mouse and keyboard here."
+            viewing -> "A paired device is viewing this screen."
+            else -> "A paired device is using its mouse and keyboard on this one."
+        }
+        val builder = NotificationCompat.Builder(this, REMOTE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setContentTitle("Gossip: remote access active")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+        if (viewing) {
+            val stop = android.app.PendingIntent.getBroadcast(
+                this, 1, Intent(ACTION_STOP_REMOTE).setPackage(packageName),
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(android.R.drawable.ic_media_pause, "Stop viewing", stop)
+        }
+        runCatching { manager.notify(REMOTE_NOTIFICATION_ID, builder.build()) }
     }
 
     private fun showRingNotification(ringing: Boolean) {
@@ -501,6 +597,7 @@ class SyncForegroundService : Service() {
             while (isActive) {
                 delay(ROSTER_RESYNC_INTERVAL_MS)
                 rosterGossipManager.periodicResync()
+                beaconKeyManager.periodicResync()
             }
         }
     }
@@ -662,6 +759,9 @@ class SyncForegroundService : Service() {
     companion object {
         private const val CHANNEL_ID = "connect_sync"
         private const val ACTION_STOP_RING = "dev.vmd1.gossip.STOP_RING"
+        private const val ACTION_STOP_REMOTE = "dev.vmd1.gossip.STOP_REMOTE"
+        private const val REMOTE_CHANNEL_ID = "remote_access"
+        private const val REMOTE_NOTIFICATION_ID = 4107
         private const val RING_CHANNEL_ID = "gossip_find_device"
         private const val RING_NOTIFICATION_ID = 1002
         private const val BATTERY_CHANNEL_ID = "gossip_battery_low"

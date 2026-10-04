@@ -37,10 +37,17 @@ alongside the mandatory 3-byte flags AD structure the platform adds automaticall
 - **Bytes 0–1 of the manufacturer-specific data**: a fixed 2-byte magic, `0x43 0x6E` (ASCII "Cn"),
   distinguishing Connect's advertisements from other devices/apps that also happen to use the `0xFFFF`
   test company ID.
-- **Bytes 2–9**: the **first 8 bytes of SHA-256 of the device's raw X25519 static public key** — i.e.
-  the exact same fingerprint already computed by `IdentityKeyStore.publicKeyFingerprint` (Mac) /
-  `IdentityKeyStore.publicKeyFingerprint()` (Android) for QR pairing and mDNS TXT records, just kept as
-  raw bytes here instead of base64.
+- **Bytes 2–9**: a **keyed, rotating tag**: the first 8 bytes of `HMAC-SHA256(beaconKey, "gossip-ble-v1" ‖ u64be(window))`,
+  where `beaconKey` is a random 32-byte key each device generates once and `window = floor(unixSeconds / 120)`.
+  (Earlier versions advertised a constant hash of the X25519 public key; anyone who knew that public key — it is
+  in the roster gossip and the pairing QR — could replay it, and any passer-by could track the phone by it.)
+  The key reaches trusted peers over the Noise-encrypted mesh (`ble.beacon_key`, `schema/message-types.md`), so
+  only they can compute the tag. A scanner accepts the tags for the previous, current and next window (one
+  window of clock skew) of every trusted device whose key it holds, and rebuilds that table as the window
+  moves. The advertiser re-arms with the next tag as each window ends. Vectors: `schema/ble-beacon-vectors.json`.
+  **Limits:** a recording of an advertisement can still be replayed for up to ~4 minutes (a relay attack); what
+  is gone is forging one from public information, and tracking by a constant identifier. BLE presence should
+  still be treated as a convenience signal, not authentication.
 - **Byte 10 (optional): capability flags**, added for Instant Hotspot (`docs/ble-hotspot-protocol.md`).
   Bit 0 (`0x01`) = "this device currently offers itself as an Instant Hotspot source" — only ever set
   by an Android **phone** with the "Provide Instant Hotspot" toggle on (`OnboardingPreferences.

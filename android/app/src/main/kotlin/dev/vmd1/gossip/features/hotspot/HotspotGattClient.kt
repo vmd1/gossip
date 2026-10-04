@@ -8,7 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.content.Context
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
 import kotlinx.coroutines.suspendCancellableCoroutine

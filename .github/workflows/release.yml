@@ -28,19 +28,38 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      number: ${{ steps.ver.outputs.number }}
+      tag: ${{ steps.ver.outputs.tag }}
+      title: ${{ steps.ver.outputs.title }}
     steps:
-      # No semantic-versioning scheme exists anywhere in this repo yet and this project
-      # has no external users, so a date + run-number tag is the simplest thing that's
-      # actually unique across repeated same-day pushes to main, per the handoff's own
-      # "simplest starting point... rather than inventing semantic versioning" guidance.
-      - id: tag
-        run: echo "tag=v$(date -u +'%Y.%m.%d')-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      # Releases are numbered consecutively: tag `release-N`, title "Release N (YYYY-MM-DD)". N continues from the
+      # largest number at the end of any existing release tag (the older date-based tags like v2026.10.02-16 end in
+      # their run number), so numbering carries on instead of restarting. Runs are serialised by the `release`
+      # concurrency group below, so two releases can never compute the same number.
+      - id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          last="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName \
+            -q '[.[].tagName | (capture("(?<n>[0-9]+)$").n // empty) | tonumber] | max // 0')"
+          n=$((last + 1))
+          echo "Previous release number: $last -> this release: $n"
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+          echo "tag=release-$n" >> "$GITHUB_OUTPUT"
+          echo "title=Release $n ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
 
   android-release:
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The signing key lives in this environment, which is restricted to the main branch (see
+    # android/scripts/signing.sh). Nothing else in this repo can read it.
+    environment: release
+    env:
+      # SHA-256 of the project signing certificate (public information). The build fails if the APK is signed by
+      # anything else, so a release can never silently break in-place updates on installed devices.
+      EXPECTED_ANDROID_CERT_SHA256: "092f9e34db305f55a2f638128753e71a28d111bcaa741784531df39f60101101"
     defaults:
       run:
         working-directory: android
@@ -59,19 +78,65 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      # Debug-signed, not a real release signing key — there is no signing key configured
-      # anywhere in this repo, and generating/storing one is out of scope for this change.
-      # Fine for this project's own personal use (side-loaded via `adb install`/direct APK
-      # download), NOT fine if this project ever needs real Play Store or wider
-      # distribution — flagging explicitly here and in the PR rather than silently
-      # treating this as solved.
-      - name: Assemble debug APK
-        run: ./gradlew assembleDebug
+      # The `release` build type, not `debug`: it is not debuggable, its log statements for debug/info are compiled out
+      # (util/Log.kt) and the developer adb hooks are not registered. Signed with the project's stable key (the same
+      # one local builds use, android/scripts/signing.sh) so this APK updates an installed Gossip in place: Android
+      # refuses an update signed with a different key. It is a self-made key, not a Play Store release key.
+      - name: Install signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/gossip-android.keystore"
+          echo "GOSSIP_ANDROID_KEYSTORE=$RUNNER_TEMP/gossip-android.keystore" >> "$GITHUB_ENV"
+
+      - name: Assemble release APK
+        env:
+          GOSSIP_RELEASE_NUMBER: ${{ needs.version.outputs.number }}
+          GOSSIP_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          GOSSIP_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GOSSIP_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease
+
+      # Fail the release if the APK is not signed by the project key.
+      - name: Verify signature
+        run: |
+          set -uo pipefail
+          APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)"
+          echo "apksigner: $APKSIGNER"
+          OUT="$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk 2>&1)" \
+            || { echo "$OUT"; echo "::error::apksigner could not verify the APK"; exit 1; }
+          echo "$OUT" | grep -E "Signer #1 certificate (DN|SHA-256)" || echo "$OUT"
+          echo "$OUT" | grep -qi "SHA-256 digest: $EXPECTED_ANDROID_CERT_SHA256" \
+            || { echo "::error::APK is not signed by the project key"; exit 1; }
+
+      # The shipped app must not be debuggable (a debuggable app exposes its private data to `adb run-as`).
+      - name: Verify the APK is not debuggable
+        run: |
+          AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+          if "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "application-debuggable"; then
+            echo "::error::the release APK is debuggable"; exit 1
+          fi
+          echo "APK is not debuggable"
+
+      # The app must carry this release's number (shown in Android's app info).
+      - name: Verify version
+        env:
+          RELEASE_NUMBER: ${{ needs.version.outputs.number }}
+        run: |
+          AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)"
+          "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk | grep -o "versionName='[^']*'"
+          "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "versionName='$RELEASE_NUMBER'" \
+            || { echo "::error::APK versionName is not $RELEASE_NUMBER"; exit 1; }
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gossip-android.keystore"
 
       # No ABI splits configured (app/build.gradle.kts) — this is a single universal APK
       # bundling all ABIs, not an arch-specific build.
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Gossip-Android-universal.apk
+        run: cp app/build/outputs/apk/release/app-release.apk Gossip-Android-universal.apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -82,6 +147,9 @@ jobs:
     needs: version
     runs-on: macos-15
     timeout-minutes: 25
+    # The signing key lives in this environment, which is restricted to the main branch (see
+    # mac/scripts/set-ci-signing-secrets.sh). Nothing else in this repo can read it.
+    environment: release
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -103,16 +171,33 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      # Ad-hoc signed ("Sign to Run Locally"), matching this project's existing local-dev
-      # signing approach (see IdentityKeyStore.swift's doc comment) — there is no paid
-      # Apple Developer ID configured for this project. CODE_SIGN_STYLE=Manual +
-      # CODE_SIGN_IDENTITY=- overrides project.yml's `Automatic` style, which would
-      # otherwise require a real team/account that CI doesn't have. The resulting .app is
-      # runnable locally but not notarized, so macOS Gatekeeper will quarantine-block it
-      # on first launch until the user right-click-opens it once (or runs
-      # `xattr -cr Gossip.app`) — expected and acceptable for an unsigned personal build,
-      # not a bug in this workflow.
-      - name: Build (ad-hoc signed Release)
+      # Signed with the project's stable self-signed identity (gossip.vmd1.dev), the same one local builds use
+      # (mac/scripts/create-signing-cert.sh), so macOS keeps users' Accessibility / Input Monitoring grants
+      # across updates: those grants are tied to the code signature, and an ad-hoc signature changes on every
+      # build. It is NOT a Developer ID and the app is not notarized, so Gatekeeper still blocks a downloaded
+      # copy until the user opens it via System Settings -> Privacy & Security -> Open Anyway.
+      # The key is imported into a throwaway keychain that is deleted at the end of the job.
+      - name: Import signing certificate
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/gossip-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$SIGNING_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          security find-identity -p codesigning "$KEYCHAIN"
+
+      - name: Build (signed Release)
         run: >
           xcodebuild
           -project Gossip.xcodeproj
@@ -121,11 +206,29 @@ jobs:
           -destination 'platform=macOS'
           -derivedDataPath build
           CODE_SIGN_STYLE=Manual
-          CODE_SIGN_IDENTITY=-
+          CODE_SIGN_IDENTITY=gossip.vmd1.dev
           DEVELOPMENT_TEAM=
-          CODE_SIGNING_REQUIRED=NO
+          "OTHER_CODE_SIGN_FLAGS=--keychain $KEYCHAIN"
+          MARKETING_VERSION=${{ needs.version.outputs.number }}
+          CURRENT_PROJECT_VERSION=${{ needs.version.outputs.number }}
+          CODE_SIGNING_REQUIRED=YES
           CODE_SIGNING_ALLOWED=YES
           build
+
+      # Fail the release if the app came out ad-hoc signed or with a different identity.
+      - name: Verify signature
+        run: |
+          APP=build/Build/Products/Release/Gossip.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+          echo "$INFO" | grep -E "Identifier|Authority|Signature|TeamIdentifier"
+          if echo "$INFO" | grep -q "Signature=adhoc"; then echo "::error::app is ad-hoc signed"; exit 1; fi
+          echo "$INFO" | grep -q "Authority=gossip.vmd1.dev" || { echo "::error::app not signed by gossip.vmd1.dev"; exit 1; }
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          echo "App version: $VERSION"
+          [ "$VERSION" = "${{ needs.version.outputs.number }}" ] || { echo "::error::app version $VERSION is not ${{ needs.version.outputs.number }}"; exit 1; }
+          echo "Designated requirement (this must stay the same release to release):"
+          codesign -d -r- "$APP" 2>&1 | grep designated
 
       # macos-15 runners are Apple Silicon (arm64) only — no Intel build is produced.
       - name: Zip app bundle
@@ -138,8 +241,15 @@ jobs:
           name: mac-zip
           path: mac/Gossip-Mac-AppleSilicon.zip
 
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+
   publish:
     needs: [version, android-release, mac-release]
+    # A manual run on another branch (e.g. to test signing) builds everything but never creates a release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -149,10 +259,13 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          TITLE: ${{ needs.version.outputs.title }}
         run: |
-          gh release create "${{ needs.version.outputs.tag }}" \
+          gh release create "$TAG" \
             artifacts/android-apk/*.apk \
             artifacts/mac-zip/*.zip \
             --repo "${{ github.repository }}" \
-            --title "${{ needs.version.outputs.tag }}" \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
             --generate-notes

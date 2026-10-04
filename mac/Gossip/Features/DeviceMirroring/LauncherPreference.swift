@@ -10,9 +10,8 @@ enum LauncherPreference {
     }
 }
 
-/// Gossip's side of keeping the launcher installed: decide what is needed (read-only) and, if anything,
-/// start the embedded launcher, which copies itself out (see the launcher's `main.swift`). Gossip is
-/// sandboxed — it can't create launchable files or pass arguments — so it only starts the app.
+/// Keeps the launcher installed. Gossip is no longer sandboxed, so it copies the embedded launcher out
+/// itself (`LauncherInstaller.install()`); that also clears any quarantine flag the copy inherited.
 enum LauncherSetup {
     /// Installs or repairs the launcher if it is missing, outdated or quarantined. Fire-and-forget.
     static func ensureInstalled(installer: LauncherInstaller = LauncherInstaller()) {
@@ -20,12 +19,8 @@ enum LauncherSetup {
         case .missing, .outdated, .quarantined: break
         case .current, .notApplicable: return
         }
-        guard let embedded = installer.embeddedLauncherURL else { return }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        configuration.addsToRecentItems = false
-        NSWorkspace.shared.openApplication(at: embedded, configuration: configuration) { _, error in
-            if let error { NSLog("Gossip: couldn't start the Device Mirroring installer: \(error)") }
+        DispatchQueue.global(qos: .utility).async {
+            NSLog("Gossip: Device Mirroring launcher install -> \(installer.install())")
         }
     }
 }

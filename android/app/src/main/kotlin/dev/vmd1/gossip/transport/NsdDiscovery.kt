@@ -3,7 +3,7 @@ package dev.vmd1.gossip.transport
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch

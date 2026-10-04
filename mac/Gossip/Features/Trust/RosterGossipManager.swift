@@ -65,9 +65,15 @@ final class RosterGossipManager {
             type: "trust.revoke",
             senderId: identity.deviceId,
             broadcast: true,
-            payload: .object(["deviceId": .string(deviceId)])
+            payload: revokePayload(deviceId: deviceId, revokedAt: trustedDevices.revokedAt(deviceId: deviceId))
         )
         try? transportManager.send(envelope: envelope)
+    }
+
+    private func revokePayload(deviceId: String, revokedAt: Int64?) -> JSONValue {
+        var fields: [String: JSONValue] = ["deviceId": .string(deviceId)]
+        if let revokedAt { fields["revokedAt"] = .number(Double(revokedAt)) }
+        return .object(fields)
     }
 
     // MARK: - Sending
@@ -106,6 +112,7 @@ final class RosterGossipManager {
             if let signingPublicKeyBase64 = device.signingPublicKeyBase64 {
                 fields["signingPublicKey"] = .string(signingPublicKeyBase64)
             }
+            fields["addedAt"] = .number(Double(Int64(device.addedAt.timeIntervalSince1970 * 1000)))
             return .object(fields)
         }
         entries.append(.object([
@@ -127,14 +134,21 @@ final class RosterGossipManager {
             let signingPublicKey = entry["signingPublicKey"]?.stringValue
             // Never clobber an already-trusted device's own row (e.g. one paired
             // directly, or already gossiped) with a remote-reported copy — this
-            // would otherwise re-stamp `addedAt` on every periodic resync. Narrow
-            // exception: backfill a missing signing key (a row paired before that
-            // field existed), since gossip is otherwise the only way that row would
-            // ever learn it.
-            if trustedDevices.isTrusted(deviceId: deviceId) {
-                if let signingPublicKey {
-                    trustedDevices.backfillSigningPublicKey(deviceId: deviceId, signingPublicKeyBase64: signingPublicKey)
-                }
+            // would otherwise re-stamp `addedAt` on every periodic resync. The signing
+            // key is likewise never taken from gossip for an existing row; it is learned
+            // from the device's own authenticated handshake.
+            if trustedDevices.isTrusted(deviceId: deviceId) { continue }
+            // A revoked device stays revoked unless this introduction is newer than the
+            // revocation. A peer still introducing it missed the revoke, so tell it again.
+            let addedAt = Int64(entry["addedAt"]?.numberValue ?? 0)
+            if let revokedAt = trustedDevices.revokedAt(deviceId: deviceId), addedAt <= revokedAt {
+                let reminder = Envelope(
+                    type: "trust.revoke",
+                    senderId: identity.deviceId,
+                    recipientId: envelope.senderId,
+                    payload: revokePayload(deviceId: deviceId, revokedAt: revokedAt)
+                )
+                try? transportManager.send(envelope: reminder)
                 continue
             }
             guard let publicKey = entry["publicKey"]?.stringValue,
@@ -153,8 +167,9 @@ final class RosterGossipManager {
     }
 
     private func handleRevoke(_ envelope: Envelope) {
-        guard let deviceId = envelope.payload["deviceId"]?.stringValue else { return }
-        trustedDevices.revoke(deviceId: deviceId)
+        guard let deviceId = envelope.payload["deviceId"]?.stringValue, deviceId != identity.deviceId else { return }
+        let revokedAt = envelope.payload["revokedAt"]?.numberValue.map { Int64($0) } ?? envelope.ts
+        trustedDevices.revoke(deviceId: deviceId, revokedAt: revokedAt)
         transportManager.disconnect(deviceId: deviceId)
     }
 }

@@ -117,6 +117,11 @@ final class TransportManager: ObservableObject {
         var noiseSession: NoiseSession
         var receiveBuffer = Data()
         var pendingPeer: HandshakePeerInfo?
+        /// Token the initiator presented in its Noise payload (responder role only).
+        var presentedPairingToken: String?
+        /// True while the user is looking at the trust prompt for this connection.
+        var awaitingConfirmation = false
+        var rateLimiter = InboundRateLimiter()
         var expectedRemoteStaticKey: Curve25519.KeyAgreement.PublicKey?
         /// Set only for outbound dials, so teardown can clear `dialingDeviceIds`.
         var dialTargetDeviceId: String?
@@ -127,6 +132,13 @@ final class TransportManager: ObservableObject {
         /// heartbeats) — see `startHeartbeatMonitoring`'s doc for why this exists.
         var lastReceivedAt: Date = .distantPast
         var heartbeatTimer: Timer?
+        /// Transport frames received while the handshake is finished but the peer is
+        /// still awaiting the user's trust confirmation (so `deviceId` is nil). The
+        /// initiator treats the connection as live once it reads `handshake.ack` and
+        /// immediately sends its roster/initial syncs. Noise nonces are implicit
+        /// counters, so dropping those frames undecrypted would desync the session for
+        /// good; they're held here and decrypted in order at promotion.
+        var queuedFrames = PendingFrameQueue()
         /// Serializes every `session.encrypt(...)` + `sendFramed(...)` pair for
         /// *this* peer's Noise session. `NoiseCipherState`'s nonce counter is
         /// mutable, unsynchronized state — concurrent encrypts on the same
@@ -163,7 +175,8 @@ final class TransportManager: ObservableObject {
     private let dedupeQueue = DispatchQueue(label: "dev.vmd1.gossip.transportmanager.dedupe")
     private var recentEnvelopeIds: [String] = []
     private var recentEnvelopeIdSet: Set<String> = []
-    private static let dedupeCacheLimit = 512
+    /// Large enough that flushing it with unique ids (to re-deliver old broadcasts) takes real effort.
+    private static let dedupeCacheLimit = 4096
 
     init(trustedDevices: TrustedDevicesStore = .shared) {
         self.trustedDevices = trustedDevices
@@ -216,7 +229,7 @@ final class TransportManager: ObservableObject {
             // (e.g. a second Connect instance during development). Fall back to an
             // ephemeral port so on-LAN pairing/discovery still works — only the
             // fallback-address dial path from Android needs the fixed port.
-            NSLog("Gossip: failed to advertise on fixed port \(Self.defaultPort), falling back to an ephemeral port: \(error)")
+            gossipError("Gossip: failed to advertise on fixed port \(Self.defaultPort), falling back to an ephemeral port: \(error)")
             do {
                 try discovery.startAdvertising(
                     deviceId: identity.deviceId,
@@ -224,7 +237,7 @@ final class TransportManager: ObservableObject {
                     publicKeyFingerprint: identity.publicKeyFingerprint
                 )
             } catch {
-                NSLog("Gossip: failed to start advertising: \(error)")
+                gossipError("Gossip: failed to start advertising: \(error)")
             }
         }
         discovery.startBrowsing()
@@ -331,12 +344,23 @@ final class TransportManager: ObservableObject {
         let key = ObjectIdentifier(pending.connection)
         queue.asyncAfter(deadline: .now() + Self.pendingConnectionTimeout) { [weak self] in
             guard let self, self.pendingByObjectId[key] === pending else { return } // already resolved (either way)
-            NSLog("Gossip: dial/handshake to \(pending.dialTargetDeviceId ?? "unknown peer") timed out after \(Self.pendingConnectionTimeout)s; tearing down")
+            // A connection waiting on the user's trust prompt gets longer (see `finalizeHandshake`).
+            guard !pending.awaitingConfirmation else { return }
+            gossipError("Gossip: dial/handshake to \(pending.dialTargetDeviceId ?? "unknown peer") timed out after \(Self.pendingConnectionTimeout)s; tearing down")
             self.teardownPending(pending)
         }
     }
 
     private static let pendingConnectionTimeout: TimeInterval = 15
+    private static let confirmationTimeout: TimeInterval = 90
+
+    /// Largest frame accepted once the Noise session is established (matches Android's cap).
+    static let maxFrameBytes = 16 * 1024 * 1024
+    /// Largest frame accepted before the handshake completes; the hello/ack envelopes are a few hundred bytes.
+    static let maxHandshakeFrameBytes = 16 * 1024
+    /// Caps on simultaneously pending (not yet handshaken) inbound connections, overall and per source IP.
+    static let maxPendingInbound = 32
+    static let maxPendingInboundPerHost = 4
 
     private func handleConnectionState(_ state: NWConnection.State, pending: PeerConnection) {
         switch state {
@@ -345,7 +369,7 @@ final class TransportManager: ObservableObject {
             sendHandshakeMessage1(pending: pending)
             startReceiveLoop(pending: pending)
         case .failed(let error):
-            NSLog("Gossip: connection failed: \(error)")
+            gossipError("Gossip: connection failed: \(error)")
             teardownAny(pending)
         case .cancelled:
             break
@@ -363,24 +387,61 @@ final class TransportManager: ObservableObject {
     /// both are independently-implemented Noise state machines that only agree on wire bytes,
     /// not on Swift/Kotlin types.
     private func sendHandshakeMessage1(pending: PeerConnection) {
-        guard let message = try? pending.noiseSession.createMessage1(payload: Data()) else { return }
+        guard let identityPayload = try? localHandshakeIdentity().encoded(),
+              let message = try? pending.noiseSession.createMessage1(payload: identityPayload) else { return }
         let envelope = Envelope(
             type: "handshake.hello",
             senderId: identity.deviceId,
-            payload: .object([
-                "noise": .string(message.base64EncodedString()),
-                "deviceName": .string(currentDeviceName()),
-                "deviceType": .string(DeviceType.mac.rawValue),
-                "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
-            ])
+            payload: .object(["noise": .string(message.base64EncodedString())])
         )
         guard let framed = try? envelope.encoded() else { return }
         sendFramed(framed, over: pending.connection)
     }
 
+    private func localHandshakeIdentity() -> HandshakeIdentity {
+        HandshakeIdentity(
+            deviceId: identity.deviceId,
+            deviceName: currentDeviceName(),
+            deviceType: DeviceType.mac.rawValue,
+            signingPublicKey: identity.signingKey.publicKey.rawRepresentation.base64EncodedString(),
+            pairingToken: nil
+        )
+    }
+
+    // MARK: - Pairing gate
+
+    /// While a pairing QR is on screen, the token it encodes. An untrusted peer is only
+    /// ever offered to the user while this is armed and the peer presents it.
+    private var armedPairing: (token: String, expires: Date)?
+    private var untrustedPromptActive = false
+    private static let pairingArmDuration: TimeInterval = 300
+
+    func armPairing(token: String) {
+        queue.async { [weak self] in
+            self?.armedPairing = (token, Date().addingTimeInterval(Self.pairingArmDuration))
+        }
+    }
+
+    func disarmPairing() {
+        queue.async { [weak self] in self?.armedPairing = nil }
+    }
+
+    private func pairingAllows(_ presented: String?) -> Bool {
+        guard let armed = armedPairing, armed.expires > Date() else { return false }
+        return PairingCode.tokenMatches(armed: armed.token, presented: presented)
+    }
+
     // MARK: - Inbound connection (responder role)
 
     private func accept(connection: NWConnection) {
+        let host = Self.hostString(of: connection.endpoint)
+        let pendingInbound = pendingByObjectId.values.filter { $0.deviceId == nil && $0.dialTargetDeviceId == nil }
+        if pendingInbound.count >= Self.maxPendingInbound
+            || (host != nil && pendingInbound.filter { Self.hostString(of: $0.connection.endpoint) == host }.count >= Self.maxPendingInboundPerHost) {
+            gossipError("Gossip: too many pending inbound connections; refusing one")
+            connection.cancel()
+            return
+        }
         // Responder doesn't know the initiator's static key yet; it's
         // learned from message 1.
         let session = NoiseSession(
@@ -395,7 +456,7 @@ final class TransportManager: ObservableObject {
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .failed(let error):
-                NSLog("Gossip: inbound connection failed: \(error)")
+                gossipError("Gossip: inbound connection failed: \(error)")
                 self?.teardownAny(pending)
             default:
                 break
@@ -405,6 +466,11 @@ final class TransportManager: ObservableObject {
         resolvePeerIPAddress(pending)
         startReceiveLoop(pending: pending)
         scheduleTimeout(for: pending)
+    }
+
+    private static func hostString(of endpoint: NWEndpoint) -> String? {
+        guard case .hostPort(let host, _) = endpoint else { return nil }
+        return "\(host)".split(separator: "%").first.map(String.init)
     }
 
     /// Extracts the remote endpoint's bare IP address (stripping any zone
@@ -447,7 +513,7 @@ final class TransportManager: ObservableObject {
         framed.append(payload)
         connection.send(content: framed, completion: .contentProcessed { error in
             if let error {
-                NSLog("Gossip: send failed: \(error)")
+                gossipError("Gossip: send failed: \(error)")
             }
         })
     }
@@ -460,7 +526,7 @@ final class TransportManager: ObservableObject {
                 self.drainFrames(pending: pending)
             }
             if let error {
-                NSLog("Gossip: receive error: \(error)")
+                gossipError("Gossip: receive error: \(error)")
                 self.teardownAny(pending)
                 return
             }
@@ -476,6 +542,12 @@ final class TransportManager: ObservableObject {
         while pending.receiveBuffer.count >= 4 {
             let lengthBytes = pending.receiveBuffer.prefix(4)
             let length = lengthBytes.withUnsafeBytes { $0.load(as: UInt32.self) }.bigEndian
+            let limit = pending.noiseSession.state == .established ? Self.maxFrameBytes : Self.maxHandshakeFrameBytes
+            guard Int(length) <= limit else {
+                gossipError("Gossip: frame length \(length) exceeds limit; closing")
+                teardownAny(pending)
+                return
+            }
             let total = 4 + Int(length)
             guard pending.receiveBuffer.count >= total else { break }
             let framePayload = pending.receiveBuffer.subdata(in: 4..<total)
@@ -509,32 +581,27 @@ final class TransportManager: ObservableObject {
                   let noiseBytes = Data(base64Encoded: noiseBase64) else {
                 throw NoiseError.invalidMessage
             }
-            _ = try pending.noiseSession.consumeMessage1(noiseBytes)
+            let helloPayload = try pending.noiseSession.consumeMessage1(noiseBytes)
 
-            let deviceName = helloEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
-            let deviceTypeRaw = helloEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
-            let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
-            let signingPublicKey = helloEnvelope.payload["signingPublicKey"]?.stringValue.flatMap { Data(base64Encoded: $0) } ?? Data()
-            pending.pendingPeer = HandshakePeerInfo(deviceId: helloEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
+            // Identity comes from the authenticated Noise payload, not the plaintext envelope.
+            let claimed = try HandshakeIdentity.decode(helloPayload)
+            guard claimed.deviceId == helloEnvelope.senderId else { throw NoiseError.invalidMessage }
+            pending.pendingPeer = claimed.peerInfo
+            pending.presentedPairingToken = claimed.pairingToken
 
-            let message2 = try pending.noiseSession.createMessage2(payload: Data())
+            let message2 = try pending.noiseSession.createMessage2(payload: try localHandshakeIdentity().encoded())
             let ackEnvelope = Envelope(
                 type: "handshake.ack",
                 senderId: identity.deviceId,
                 recipientId: helloEnvelope.senderId,
-                payload: .object([
-                    "noise": .string(message2.base64EncodedString()),
-                    "deviceName": .string(currentDeviceName()),
-                    "deviceType": .string(DeviceType.mac.rawValue),
-                    "signingPublicKey": .string(identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
-                ])
+                payload: .object(["noise": .string(message2.base64EncodedString())])
             )
             let framed = try ackEnvelope.encoded()
             sendFramed(framed, over: pending.connection)
 
             finalizeHandshake(pending: pending)
         } catch {
-            NSLog("Gossip: handshake message 1 failed: \(error)")
+            gossipError("Gossip: handshake message 1 failed: \(error)")
             teardownAny(pending)
         }
     }
@@ -549,16 +616,13 @@ final class TransportManager: ObservableObject {
                   let noiseBytes = Data(base64Encoded: noiseBase64) else {
                 throw NoiseError.invalidMessage
             }
-            _ = try pending.noiseSession.consumeMessage2(noiseBytes)
-
-            let deviceName = ackEnvelope.payload["deviceName"]?.stringValue ?? "Android device"
-            let deviceTypeRaw = ackEnvelope.payload["deviceType"]?.stringValue ?? DeviceType.androidPhone.rawValue
-            let deviceType = DeviceType(rawValue: deviceTypeRaw) ?? .androidPhone
-            let signingPublicKey = ackEnvelope.payload["signingPublicKey"]?.stringValue.flatMap { Data(base64Encoded: $0) } ?? Data()
-            pending.pendingPeer = HandshakePeerInfo(deviceId: ackEnvelope.senderId, deviceName: deviceName, deviceType: deviceType, signingPublicKey: signingPublicKey)
+            let ackPayload = try pending.noiseSession.consumeMessage2(noiseBytes)
+            let claimed = try HandshakeIdentity.decode(ackPayload)
+            guard claimed.deviceId == ackEnvelope.senderId else { throw NoiseError.invalidMessage }
+            pending.pendingPeer = claimed.peerInfo
             finalizeHandshake(pending: pending)
         } catch {
-            NSLog("Gossip: handshake message 2 failed: \(error)")
+            gossipError("Gossip: handshake message 2 failed: \(error)")
             teardownAny(pending)
         }
     }
@@ -566,40 +630,81 @@ final class TransportManager: ObservableObject {
     private func finalizeHandshake(pending: PeerConnection) {
         guard let peer = pending.pendingPeer, let publicKey = pending.noiseSession.peerStaticKey else { return }
 
-        if trustedDevices.isTrusted(deviceId: peer.deviceId) {
+        if let stored = trustedDevices.device(for: peer.deviceId) {
+            // The claimed deviceId travels in plaintext; only the Noise static key is
+            // authenticated, so it must be the one this device was paired with.
+            guard Self.keysMatch(stored.publicKeyBase64, publicKey) else {
+                gossipError("Gossip: handshake for \(peer.deviceId) presented a different key than the one it was paired with; closing")
+                teardownAny(pending)
+                return
+            }
+            // The signing key arrived inside the authenticated handshake, so it is the
+            // one to trust for this device (replaces a missing or gossiped value).
+            trustedDevices.setSigningPublicKey(deviceId: peer.deviceId, signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString())
             promote(pending, peer: peer)
             trustedConnectedHandlers.forEach { $0(peer) }
             sendPresence(online: true)
             startHeartbeatMonitoring(for: pending)
+            replayQueuedFrames(for: pending)
         } else if let onUntrustedHandshake {
+            // An unknown device is only offered to the user while a pairing QR is showing,
+            // it must present that QR's token, and only one prompt may be open at a time.
+            guard pairingAllows(pending.presentedPairingToken), !untrustedPromptActive else {
+                gossipError("Gossip: refused an untrusted handshake outside an active pairing")
+                teardownAny(pending)
+                return
+            }
+            untrustedPromptActive = true
+            armedPairing = nil // single use
+            pending.awaitingConfirmation = true
+            queue.asyncAfter(deadline: .now() + Self.confirmationTimeout) { [weak self, weak pending] in
+                guard let self, let pending, pending.awaitingConfirmation, self.pendingByObjectId[ObjectIdentifier(pending.connection)] === pending else { return }
+                gossipError("Gossip: pairing confirmation timed out; tearing down")
+                self.teardownPending(pending)
+            }
             onUntrustedHandshake(peer, publicKey) { [weak self] confirmed in
-                guard let self else { return }
-                if confirmed {
-                    self.trustedDevices.addDevice(
-                        deviceId: peer.deviceId,
-                        publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
-                        deviceName: peer.deviceName,
-                        deviceType: peer.deviceType,
-                        signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
-                    )
-                    self.promote(pending, peer: peer)
-                    // Freshly-confirmed pairing reaches the same "connected" outcome
-                    // as reconnecting to an already-trusted device — fire the same
-                    // callbacks so PairingViewModel's state machine actually advances
-                    // to `.paired` instead of being stuck at `.confirmingTrust`
-                    // forever once the user taps Confirm.
-                    self.trustedConnectedHandlers.forEach { $0(peer) }
-                    self.newDevicePairedHandlers.forEach { $0(peer) }
-                    self.sendPresence(online: true)
-                    self.startHeartbeatMonitoring(for: pending)
-                } else {
-                    self.teardownAny(pending)
+                // The UI answers on the main thread; peers/Noise state live on `queue`.
+                self?.queue.async { [weak self] in
+                    guard let self else { return }
+                    self.untrustedPromptActive = false
+                    pending.awaitingConfirmation = false
+                    if confirmed {
+                        self.trustedDevices.addDevice(
+                            deviceId: peer.deviceId,
+                            publicKeyBase64: publicKey.rawRepresentation.base64EncodedString(),
+                            deviceName: peer.deviceName,
+                            deviceType: peer.deviceType,
+                            signingPublicKeyBase64: peer.signingPublicKey.base64EncodedString()
+                        )
+                        self.promote(pending, peer: peer)
+                        // Freshly-confirmed pairing reaches the same "connected" outcome
+                        // as reconnecting to an already-trusted device — fire the same
+                        // callbacks so PairingViewModel's state machine actually advances
+                        // to `.paired` instead of being stuck at `.confirmingTrust`
+                        // forever once the user taps Confirm.
+                        self.trustedConnectedHandlers.forEach { $0(peer) }
+                        self.newDevicePairedHandlers.forEach { $0(peer) }
+                        self.sendPresence(online: true)
+                        self.startHeartbeatMonitoring(for: pending)
+                        self.replayQueuedFrames(for: pending)
+                    } else {
+                        self.teardownAny(pending)
+                    }
                 }
             }
         } else {
             // No pairing UI registered to confirm trust; refuse to proceed silently connected.
             teardownAny(pending)
         }
+    }
+
+    static func keysMatch(_ storedBase64: String, _ presented: Curve25519.KeyAgreement.PublicKey) -> Bool {
+        guard let stored = Data(base64Encoded: storedBase64) else { return false }
+        let presentedBytes = presented.rawRepresentation
+        guard stored.count == presentedBytes.count else { return false }
+        var diff: UInt8 = 0
+        for (a, b) in zip(stored, presentedBytes) { diff |= a ^ b }
+        return diff == 0
     }
 
     /// Moves a connection that just finished handshaking from `pendingByObjectId`
@@ -618,8 +723,33 @@ final class TransportManager: ObservableObject {
     }
 
     private func handleTransportFrame(_ payload: Data, pending: PeerConnection) {
+        guard pending.deviceId != nil else {
+            // Not promoted yet (awaiting trust confirmation): hold the frame, don't drop it.
+            if !pending.queuedFrames.enqueue(payload) {
+                gossipError("Gossip: too many frames before trust confirmation; closing")
+                teardownAny(pending)
+            }
+            return
+        }
+        processTransportFrame(payload, pending: pending)
+    }
+
+    /// Decrypts and routes the frames queued during the confirmation window, in
+    /// arrival order. Call on `queue` after `promote`.
+    private func replayQueuedFrames(for pending: PeerConnection) {
+        for frame in pending.queuedFrames.drain() {
+            processTransportFrame(frame, pending: pending)
+        }
+    }
+
+    private func processTransportFrame(_ payload: Data, pending: PeerConnection) {
         pending.lastReceivedAt = Date()
         guard let arrivedFrom = pending.deviceId else { return }
+        guard pending.rateLimiter.allow() else {
+            gossipError("Gossip: \(arrivedFrom) is sending too fast; closing the connection")
+            teardownAny(pending)
+            return
+        }
         do {
             let plaintext = try pending.noiseSession.decrypt(payload)
             // A raw (non-envelope) frame armed while handling the metadata envelope
@@ -633,7 +763,7 @@ final class TransportManager: ObservableObject {
             let envelope = try Envelope.decode(plaintext)
             handleReceivedEnvelope(envelope, arrivedFrom: arrivedFrom)
         } catch {
-            NSLog("Gossip: failed to decrypt/decode incoming envelope: \(error)")
+            gossipError("Gossip: failed to decrypt/decode incoming envelope: \(error)")
         }
     }
 
@@ -664,7 +794,17 @@ final class TransportManager: ObservableObject {
     /// atomically as a pair — never the metadata alone, which would desync a
     /// downstream hop's own "next frame is raw" expectation if some other
     /// message interleaved in between.
-    private func handleReceivedEnvelope(_ envelope: Envelope, arrivedFrom: String) {
+    private func handleReceivedEnvelope(_ received: Envelope, arrivedFrom: String) {
+        // `ttl` is the one field a relay can change, so a peer can't be trusted to keep it within the mesh's budget.
+        let envelope = received.ttl > Envelope.defaultTTL ? received.withTTL(Envelope.defaultTTL) : received
+        // Verified before anything else so a forged copy can neither be acted on, relayed,
+        // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that
+        // is physically coming next on this connection is still drained, just discarded.
+        guard isAuthentic(envelope) else {
+            gossipError("Gossip: dropped \(envelope.type) with an invalid or unverifiable signature")
+            if envelope.hasRawFollowup { pendingRawFrameHandlers[arrivedFrom] = { _ in } }
+            return
+        }
         // Any message from a device — even one relayed through another — proves it is reachable.
         if envelope.senderId != identity.deviceId {
             let sender = envelope.senderId
@@ -775,8 +915,9 @@ final class TransportManager: ObservableObject {
     /// envelope's own `id` as seen so a self-addressed loop (e.g. a broadcast that
     /// somehow finds its way back around the mesh) is dropped rather than
     /// re-delivered to whoever just sent it.
-    func send(envelope: Envelope) throws {
-        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
+    func send(envelope unsigned: Envelope) throws {
+        guard featureSettings.isMessageAllowed(type: unsigned.type) else { return }
+        let envelope = try signedForOrigination(unsigned)
         recordSeen(envelope.id)
         let targets = forwardTargets(for: envelope, arrivedFrom: nil)
         guard !targets.isEmpty else { throw SendError.notConnected }
@@ -793,7 +934,30 @@ final class TransportManager: ObservableObject {
         }
     }
 
-    private func send(envelope: Envelope, to peer: PeerConnection) throws {
+    /// Signs a locally-originated envelope with this device's key (relays forward the
+    /// original signature untouched).
+    private func signedForOrigination(_ envelope: Envelope) throws -> Envelope {
+        guard envelope.sig == nil, envelope.senderId == identity.deviceId else { return envelope }
+        return try EnvelopeSigning.sign(envelope, with: identity.signingKey)
+    }
+
+    /// Whether `envelope` really was produced by its claimed `senderId`. A sender we hold
+    /// no signing key for can't be verified, so its messages are dropped.
+    private func isAuthentic(_ envelope: Envelope) -> Bool {
+        let key: Curve25519.Signing.PublicKey?
+        if envelope.senderId == identity.deviceId {
+            key = identity.signingKey.publicKey
+        } else {
+            key = trustedDevices.device(for: envelope.senderId)?.signingPublicKeyBase64
+                .flatMap { Data(base64Encoded: $0) }
+                .flatMap { try? Curve25519.Signing.PublicKey(rawRepresentation: $0) }
+        }
+        guard let key else { return false }
+        return EnvelopeSigning.verify(envelope, publicKey: key)
+    }
+
+    private func send(envelope unsigned: Envelope, to peer: PeerConnection) throws {
+        let envelope = try signedForOrigination(unsigned) // heartbeats etc. go straight here
         try peer.sendQueue.sync {
             let plaintext = try envelope.encoded()
             let ciphertext = try peer.noiseSession.encrypt(plaintext)
@@ -809,7 +973,8 @@ final class TransportManager: ObservableObject {
     /// peer's "the very next frame is the raw payload" expectation — this holds at
     /// every hop, which is what makes relaying a raw-followup envelope safe (see
     /// `handleReceivedEnvelope`).
-    private func send(_ envelope: Envelope, withRawFollowup rawData: Data, to peer: PeerConnection) throws {
+    private func send(_ unsigned: Envelope, withRawFollowup rawData: Data, to peer: PeerConnection) throws {
+        let envelope = try signedForOrigination(unsigned)
         try peer.sendQueue.sync {
             let plaintext = try envelope.encoded()
             let ciphertext = try peer.noiseSession.encrypt(plaintext)
@@ -825,8 +990,9 @@ final class TransportManager: ObservableObject {
     /// from `envelope.broadcast`/`recipientId` exactly like `send(envelope:)`; devices
     /// with no direct connection to any of those targets receive it via each target's
     /// own relay (see `handleReceivedEnvelope`), not directly from here.
-    func send(_ envelope: Envelope, withRawFollowup rawData: Data) throws {
-        guard featureSettings.isMessageAllowed(type: envelope.type) else { return }
+    func send(_ unsigned: Envelope, withRawFollowup rawData: Data) throws {
+        guard featureSettings.isMessageAllowed(type: unsigned.type) else { return }
+        let envelope = try signedForOrigination(unsigned)
         recordSeen(envelope.id)
         let targets = forwardTargets(for: envelope, arrivedFrom: nil)
         guard !targets.isEmpty else { throw SendError.notConnected }
@@ -887,7 +1053,7 @@ final class TransportManager: ObservableObject {
         }
         let stale = Date().timeIntervalSince(peer.lastReceivedAt) > Self.heartbeatTimeout
         guard sendFailed || stale else { return }
-        NSLog("Gossip: heartbeat failed or peer \(deviceId) went stale (sendFailed=\(sendFailed), stale=\(stale)); closing connection")
+        gossipError("Gossip: heartbeat failed or peer \(deviceId) went stale (sendFailed=\(sendFailed), stale=\(stale)); closing connection")
         teardown(peer: peer, deviceId: deviceId)
     }
 
@@ -954,5 +1120,27 @@ final class TransportManager: ObservableObject {
 
     private func currentDeviceName() -> String {
         Host.current().localizedName ?? "Mac"
+    }
+}
+
+
+/// Bounded FIFO of still-encrypted transport frames, see `PeerConnection.queuedFrames`.
+struct PendingFrameQueue {
+    static let limit = 256
+    static let byteLimit = 4 * 1024 * 1024
+    private var frames: [Data] = []
+    private var bytes = 0
+
+    /// Returns false (frame not stored) once either the frame-count or total-size cap is hit.
+    mutating func enqueue(_ frame: Data) -> Bool {
+        guard frames.count < Self.limit, bytes + frame.count <= Self.byteLimit else { return false }
+        frames.append(frame)
+        bytes += frame.count
+        return true
+    }
+
+    mutating func drain() -> [Data] {
+        defer { frames.removeAll(); bytes = 0 }
+        return frames
     }
 }

@@ -48,4 +48,30 @@ final class ClipboardSyncManagerTests: XCTestCase {
     func testSendsImageWhenDataDiffersFromBothLastRemoteSetAndLastSentImageData() {
         XCTAssertTrue(ClipboardSyncManager.shouldSend(newImageData: Data([0x09]), lastRemoteSetImageData: Data([0x01]), lastSentImageData: Data([0x02])))
     }
+
+    func testSecretAndTransientPasteboardTypesAreNeverSynced() {
+        XCTAssertTrue(ClipboardSyncManager.isSensitive(types: [.string, NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")]))
+        XCTAssertTrue(ClipboardSyncManager.isSensitive(types: [NSPasteboard.PasteboardType("org.nspasteboard.TransientType")]))
+        XCTAssertTrue(ClipboardSyncManager.isSensitive(types: [NSPasteboard.PasteboardType("com.agilebits.onepassword")]))
+        XCTAssertFalse(ClipboardSyncManager.isSensitive(types: [.string, .png]))
+        XCTAssertFalse(ClipboardSyncManager.isSensitive(types: nil))
+    }
+
+    func testSizeLimits() {
+        XCTAssertTrue(ClipboardSyncManager.textAllowed(String(repeating: "a", count: ClipboardSyncManager.maxTextBytes)))
+        XCTAssertFalse(ClipboardSyncManager.textAllowed(String(repeating: "a", count: ClipboardSyncManager.maxTextBytes + 1)))
+        XCTAssertFalse(ClipboardSyncManager.textAllowed(String(repeating: "€", count: ClipboardSyncManager.maxTextBytes / 2)))
+        XCTAssertFalse(ClipboardSyncManager.imageBytesAllowed(0))
+        XCTAssertTrue(ClipboardSyncManager.imageBytesAllowed(ClipboardSyncManager.maxImageBytes))
+        XCTAssertFalse(ClipboardSyncManager.imageBytesAllowed(ClipboardSyncManager.maxImageBytes + 1))
+    }
+
+    func testOnlyRealReasonablyDimensionedImagesAreAccepted() {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = rep.representation(using: .png, properties: [:])!
+        XCTAssertTrue(ClipboardSyncManager.isReasonableImage(png))
+        XCTAssertFalse(ClipboardSyncManager.isReasonableImage(Data("not an image".utf8)))
+        XCTAssertFalse(ClipboardSyncManager.isReasonableImage(Data()))
+    }
 }

@@ -29,6 +29,14 @@ enum class Feature(val title: String, val detail: String, val messagePrefixes: L
         "Let your paired devices mirror and control this screen (needs Shizuku).",
         emptyList()
     ),
+
+    /** `control.` is gated by [dev.vmd1.gossip.features.universalcontrol.ControlSessionState] itself (a refused
+     *  `control.session_start` still gets a `control.error`), like `screen.`. */
+    UNIVERSAL_CONTROL(
+        "Universal Control",
+        "Let a paired Mac use its mouse and keyboard on this device (needs Shizuku).",
+        emptyList()
+    ),
     LOCK_ON_LEAVE(
         "Lock on leave",
         "Lock a paired device when this phone walks out of range, or lock this one when a paired phone does.",

@@ -5,7 +5,18 @@
   "description": "The outer envelope wrapping every message exchanged between a Mac and an Android device over the Connect wire protocol. Every message, regardless of feature, is serialized as JSON matching this shape after Noise decryption (see docs/wire-protocol.md). The `type` field selects a registered message type (see schema/message-types.md); `payload` is validated ad hoc per type, not by this schema.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["v", "id", "type", "senderId", "recipientId", "broadcast", "ttl", "hasRawFollowup", "ts", "payload"],
+  "required": [
+    "v",
+    "id",
+    "type",
+    "senderId",
+    "recipientId",
+    "broadcast",
+    "ttl",
+    "hasRawFollowup",
+    "ts",
+    "payload"
+  ],
   "properties": {
     "v": {
       "description": "Envelope schema version. Bump only on a breaking change to this envelope shape (not on new message types, which are additive).",
@@ -29,11 +40,14 @@
     },
     "recipientId": {
       "description": "Stable device UUID of the intended recipient, or null when the message is addressed by the `broadcast` flag instead of a specific device. In v1 there are only ever two trusted devices, but this field exists from day one so multi-device addressing (see docs/adr/0002-device-group-addressing.md) does not require a protocol rewrite later.",
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "uuid"
     },
     "broadcast": {
-      "description": "When true, this message is addressed to all trusted devices in the local device group rather than a single recipientId. Flood-forwarded to every directly-connected peer (except whichever one it just arrived from) by every device that receives it, so it reaches devices with no direct connection to the sender — see the 'ttl' field and docs/wire-protocol.md's 'Multi-hop relay' section.",
+      "description": "When true, this message is addressed to all trusted devices in the local device group rather than a single recipientId. Flood-forwarded to every directly-connected peer (except whichever one it just arrived from) by every device that receives it, so it reaches devices with no direct connection to the sender \u2014 see the 'ttl' field and docs/wire-protocol.md's 'Multi-hop relay' section.",
       "type": "boolean"
     },
     "ttl": {
@@ -43,7 +57,7 @@
       "maximum": 8
     },
     "hasRawFollowup": {
-      "description": "When true, this envelope's metadata is immediately followed on the wire by a second, raw (non-envelope) Noise-encrypted frame carrying a large binary payload (e.g. a clipboard image) — see docs/wire-protocol.md's 'Large binary payloads' section. Relayed hop-by-hop atomically alongside the envelope itself: a relaying device always forwards the metadata and its raw frame together, never the metadata alone.",
+      "description": "When true, this envelope's metadata is immediately followed on the wire by a second, raw (non-envelope) Noise-encrypted frame carrying a large binary payload (e.g. a clipboard image) \u2014 see docs/wire-protocol.md's 'Large binary payloads' section. Relayed hop-by-hop atomically alongside the envelope itself: a relaying device always forwards the metadata and its raw frame together, never the metadata alone.",
       "type": "boolean"
     },
     "ts": {
@@ -54,6 +68,13 @@
     "payload": {
       "description": "Type-specific message body. Its shape is defined per `type` in schema/message-types.md and is intentionally not validated by this schema.",
       "type": "object"
+    },
+    "sig": {
+      "description": "Base64 Ed25519 signature by `senderId`'s signing key over the envelope's canonical form (`v`, `id`, `type`, `senderId`, `recipientId`, `broadcast`, `hasRawFollowup`, `ts`, `payload`; `ttl` excluded because relays decrement it): the bytes `\"gossip-envelope-v1\\n\"` followed by JSON with object keys sorted by UTF-8 bytes, no whitespace, integer-only numbers, and strings escaping only `\"`, `\\`, control characters (`\\b \\t \\n \\f \\r`, else `\\u00xx`). Required on every envelope except `handshake.hello`/`handshake.ack`; receivers drop an envelope whose signature does not verify against the stored signing key for `senderId` (see schema/envelope-signing-vectors.json and docs/wire-protocol.md).",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   }
 }

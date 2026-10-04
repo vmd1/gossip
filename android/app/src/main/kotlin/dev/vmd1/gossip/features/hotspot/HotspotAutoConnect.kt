@@ -7,7 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 
 private const val TAG = "HotspotAutoConnect"
 

@@ -5,13 +5,12 @@ import CryptoKit
 /// shows up in Spotlight and Launchpad as its own app. An app nested in another app's bundle isn't indexed
 /// individually, so it is copied out — into `/Applications` or `~/Applications`, whichever Gossip lives in.
 ///
-/// **Who does the copying matters.** Gossip is sandboxed, and every file a sandboxed process creates is
-/// quarantined as "created by an AppSandbox", which Gatekeeper refuses to open — and a sandboxed process
-/// cannot clear that flag (verified: the flags stay on). So Gossip only *reads* this state (`status()`) and
-/// starts the embedded, non-sandboxed launcher, which copies itself out and
-/// creates ordinary files and clears any quarantine. This file is compiled into both targets.
+/// Gossip is not sandboxed, so it does the copy itself and clears any quarantine flag the copy inherited
+/// (e.g. when Gossip was downloaded) so Gatekeeper doesn't block the launcher on first open.
+/// This file is compiled into both targets.
 ///
-/// Never touches an app it didn't put there: it only replaces a bundle whose identifier is the launcher's.
+/// Never touches an app it didn't put there: it only replaces a bundle whose identifier is the launcher's. The
+/// replacement is atomic, and "up to date" means the whole bundle matches the embedded one, not just its executable.
 struct LauncherInstaller {
     static let launcherName = "Device Mirroring.app"
     static let launcherBundleIdentifier = "dev.vmd1.gossip.DeviceMirroring"
@@ -24,14 +23,14 @@ struct LauncherInstaller {
         case failed(String)
     }
 
-    /// What `install()` would have to do — read-only, so it is safe to call from the sandboxed Gossip.
+    /// What `install()` would have to do — read-only.
     enum Status: Equatable {
         case notApplicable(String)
         case missing
         /// Installed, but the embedded launcher is newer.
         case outdated
         /// Installed and current, but flagged quarantined so Gatekeeper blocks it (e.g. an earlier copy
-        /// made by the sandboxed app).
+        /// made by the old sandboxed Gossip).
         case quarantined
         case current
     }
@@ -56,8 +55,7 @@ struct LauncherInstaller {
         self.fileManager = fileManager
     }
 
-    /// `/Applications` and the *real* `~/Applications` (a sandboxed app's `NSHomeDirectory()` is its
-    /// container, so the account's home comes from the password database instead).
+    /// `/Applications` and the account's `~/Applications` (home taken from the password database).
     static func defaultAllowedDirectories() -> [URL] {
         var dirs = [URL(fileURLWithPath: "/Applications", isDirectory: true)]
         if let pw = getpwuid(getuid()), let home = pw.pointee.pw_dir {
@@ -98,7 +96,6 @@ struct LauncherInstaller {
     }
 
     /// Copies the embedded launcher out next to Gossip, or refreshes it if the embedded one changed.
-    /// **Must run in a non-sandboxed process** (see the type's doc).
     @discardableResult
     func install() -> Outcome {
         switch status() {
@@ -114,9 +111,17 @@ struct LauncherInstaller {
             guard let embedded = embeddedLauncherURL, let destination = installedLauncherURL else { return .failed("no destination") }
             let existed = fileManager.fileExists(atPath: destination.path)
             do {
-                if existed { try fileManager.removeItem(at: destination) }
-                try fileManager.copyItem(at: embedded, to: destination)
-                Self.stripQuarantine(from: destination, fileManager: fileManager)
+                // Copy next to the destination first, then swap it in atomically, so a failure part way
+                // never leaves a half-copied launcher (or none) in place of a working one.
+                let staging = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).staging.app")
+                defer { try? fileManager.removeItem(at: staging) }
+                try fileManager.copyItem(at: embedded, to: staging)
+                Self.stripQuarantine(from: staging, fileManager: fileManager)
+                if existed {
+                    _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
+                } else {
+                    try fileManager.moveItem(at: staging, to: destination)
+                }
                 return existed ? .updated : .installed
             } catch {
                 return .failed(error.localizedDescription)
@@ -134,14 +139,30 @@ struct LauncherInstaller {
         return dict["CFBundleIdentifier"] as? String
     }
 
-    /// SHA-256 of the app's main executable. The version number never changes between builds, so the
-    /// executable's contents are what tell "same launcher" from "newer launcher".
+    /// SHA-256 over every file in the bundle (relative paths and contents, in a fixed order, symlinks by
+    /// target) — not just the executable — so a launcher whose resources, Info.plist or signature were
+    /// altered no longer reads as "current". Extended attributes are ignored, so the quarantine flag
+    /// doesn't change it.
     static func fingerprint(of appURL: URL) -> String? {
-        let macOS = appURL.appendingPathComponent("Contents/MacOS")
-        guard let name = (try? FileManager.default.contentsOfDirectory(atPath: macOS.path))?.first,
-              let data = try? Data(contentsOf: macOS.appendingPathComponent(name))
-        else { return nil }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(atPath: appURL.path) else { return nil }
+        let paths = enumerator.compactMap { $0 as? String }.sorted { Array($0.utf8).lexicographicallyPrecedes(Array($1.utf8)) }
+        guard !paths.isEmpty else { return nil }
+        var hasher = SHA256()
+        for relative in paths {
+            let url = appURL.appendingPathComponent(relative)
+            hasher.update(data: Data(relative.utf8))
+            if let target = try? fm.destinationOfSymbolicLink(atPath: url.path) {
+                hasher.update(data: Data("->\(target)".utf8))
+            } else {
+                var isDirectory: ObjCBool = false
+                guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return nil }
+                if isDirectory.boolValue { hasher.update(data: Data("/".utf8)); continue }
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                hasher.update(data: data)
+            }
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func hasQuarantine(_ appURL: URL, fileManager: FileManager = .default) -> Bool {
@@ -152,9 +173,9 @@ struct LauncherInstaller {
         return false
     }
 
-    /// Clears the quarantine flag from the whole bundle (only works from a non-sandboxed process). Files a
-    /// sandboxed app creates are quarantined, which would make Gatekeeper block the launcher the
-    /// first time it is opened even though Gossip itself was already approved.
+    /// Clears the quarantine flag from the whole bundle . A copy made from a quarantined
+    /// (downloaded) Gossip can carry the flag, which would make Gatekeeper block the launcher the first
+    /// time it is opened.
     static func stripQuarantine(from appURL: URL, fileManager: FileManager = .default) {
         let name = "com.apple.quarantine"
         removexattr(appURL.path, name, XATTR_NOFOLLOW)

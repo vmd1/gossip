@@ -11,6 +11,8 @@ import dev.vmd1.gossip.protocol.DeviceType
 import dev.vmd1.gossip.transport.DiscoveredPeer
 import dev.vmd1.gossip.transport.DiscoveryEvent
 import dev.vmd1.gossip.transport.TransportManager
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,7 +47,8 @@ data class PairingQrPayload(
 sealed class PairingUiState {
     data object Idle : PairingUiState()
     data object Discovering : PairingUiState()
-    data object Handshaking : PairingUiState()
+    /** [code] is the short code the other device shows too, so the user can check both screens match. */
+    data class Handshaking(val code: String) : PairingUiState()
     data class Success(val deviceId: String, val deviceName: String) : PairingUiState()
     data class Failed(val reason: String) : PairingUiState()
 }
@@ -84,19 +87,20 @@ class PairingViewModel(
                 return@launch
             }
 
-            _uiState.value = PairingUiState.Handshaking
             val remoteStaticKey = Base64.decode(payload.responderPublicKey, Base64.NO_WRAP)
-            transportManager.connect(peer.host, peer.port, remoteStaticKey, deviceId = payload.responderDeviceId)
+            _uiState.value = PairingUiState.Handshaking(transportManager.pairingCodeFor(remoteStaticKey))
+            transportManager.connect(
+                peer.host, peer.port, remoteStaticKey,
+                deviceId = payload.responderDeviceId, pairingToken = payload.pairingToken
+            )
 
-            // Wait for *this specific* device to show up as connected, not just "connected
-            // to anything" — with a mesh, this device may already be connected to some
-            // other trusted device, which would otherwise make a plain CONNECTED check
-            // resolve immediately without actually waiting for this handshake to finish.
-            val connected = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
-                waitForDeviceConnected(payload.responderDeviceId)
-            } ?: false
-
-            if (connected) {
+            // The responder acks the handshake *before* its user confirms, so a plain
+            // "connected" proves nothing about consent. Pairing only counts once the responder
+            // sends its first message, which it does only after its user taps Confirm. The row is
+            // added first (the QR carries the key and signing key) so that message verifies;
+            // it is removed again if the responder never confirms.
+            val rowAlreadyTrusted = trustedDevicesStore.isTrusted(payload.responderDeviceId)
+            if (!rowAlreadyTrusted) {
                 trustedDevicesStore.addDevice(
                     TrustedDevice(
                         deviceId = payload.responderDeviceId,
@@ -107,13 +111,27 @@ class PairingViewModel(
                         signingPublicKey = Base64.decode(payload.responderSigningPublicKey, Base64.NO_WRAP)
                     )
                 )
+            }
+            val firstMessage = async(start = CoroutineStart.UNDISPATCHED) {
+                transportManager.incoming.first { it.senderId == payload.responderDeviceId }
+            }
+            transportManager.connect(
+                peer.host, peer.port, remoteStaticKey,
+                deviceId = payload.responderDeviceId, pairingToken = payload.pairingToken
+            )
+            val confirmed = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { firstMessage.await() } != null
+            firstMessage.cancel()
+
+            if (confirmed) {
                 // Brand-new pairing (not a reconnect to an already-trusted device) —
                 // broadcast the updated roster so the rest of the mesh learns about
                 // this new device without waiting for the periodic resync.
                 rosterGossipManager?.announceNewDevice()
                 _uiState.value = PairingUiState.Success(payload.responderDeviceId, payload.responderDeviceName)
             } else {
-                failWith("Handshake did not complete")
+                if (!rowAlreadyTrusted) trustedDevicesStore.remove(payload.responderDeviceId)
+                transportManager.disconnect(payload.responderDeviceId)
+                failWith("The other device did not confirm the pairing")
             }
         }
     }
@@ -152,12 +170,9 @@ class PairingViewModel(
         return found
     }
 
-    private suspend fun waitForDeviceConnected(deviceId: String): Boolean =
-        transportManager.connectedDeviceIds.first { it.contains(deviceId) }.let { true }
-
     companion object {
         private const val DISCOVERY_TIMEOUT_MS = 15_000L
-        private const val HANDSHAKE_TIMEOUT_MS = 15_000L
+        private const val CONFIRM_TIMEOUT_MS = 60_000L
         private const val ERROR_LIFETIME_MS = 10_000L
     }
 }

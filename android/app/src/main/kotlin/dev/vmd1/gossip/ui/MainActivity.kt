@@ -484,6 +484,14 @@ fun ConnectHomeScreen(
                 SettingsMenuRow("Permissions", "Notifications, Do Not Disturb, Bluetooth and more") {
                     settingsPage = SettingsPage.PERMISSIONS
                 }
+                // "Gossip 17" for a release build, "Gossip dev" for a local one (the release workflow stamps the number).
+                Text(
+                    "Gossip ${dev.vmd1.gossip.BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
 
             SettingsPage.DEVICES -> SettingsPageScaffold("Devices & pairing", onBack = { settingsPage = page.parent }) {
@@ -644,6 +652,7 @@ fun ConnectHomeScreen(
             val meshDeviceIds by (meshDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val batteryStates by (batteryStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.battery.BatteryState>()) })
 
+            val toastContext = androidx.compose.ui.platform.LocalContext.current
             PairedDevicesScreen(
                 devices = devices,
                 nearbyDeviceIds = nearbyDeviceIds,
@@ -671,7 +680,9 @@ fun ConnectHomeScreen(
                     devices = trustedDevicesStore.allDevices()
                 },
                 onSetFallbackHost = { deviceId, fallbackHost ->
-                    trustedDevicesStore.setFallbackHost(deviceId, fallbackHost)
+                    if (!trustedDevicesStore.setFallbackHost(deviceId, fallbackHost)) {
+                        android.widget.Toast.makeText(toastContext, "That isn't a valid IP address or hostname", android.widget.Toast.LENGTH_SHORT).show()
+                    }
                     devices = trustedDevicesStore.allDevices()
                 }
             )

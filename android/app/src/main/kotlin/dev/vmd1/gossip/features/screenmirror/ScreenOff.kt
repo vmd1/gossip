@@ -1,6 +1,6 @@
 package dev.vmd1.gossip.features.screenmirror
 
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 
 /**
  * Puts the device's screen to sleep when a mirroring session ends, by sending the sleep key through Shizuku

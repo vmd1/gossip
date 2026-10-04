@@ -10,7 +10,7 @@ final class PairingViewModel: ObservableObject {
         case idle
         case showingQR
         case waitingForPhone
-        case confirmingTrust(deviceName: String)
+        case confirmingTrust(deviceName: String, code: String)
         case paired(deviceName: String)
         case failed(String)
     }
@@ -32,15 +32,19 @@ final class PairingViewModel: ObservableObject {
     }
 
     private func wireTransport() {
-        transportManager?.onUntrustedHandshake = { [weak self] peer, _, confirm in
+        transportManager?.onUntrustedHandshake = { [weak self] peer, publicKey, confirm in
             guard let self else { confirm(false); return }
+            let code = PairingCode.make(IdentityKeyStore.shared.agreementKey.publicKey.rawRepresentation, publicKey.rawRepresentation)
             DispatchQueue.main.async {
+                // One prompt at a time: a second one never replaces (and so never hijacks) the first.
+                guard self.pendingConfirmation == nil else { confirm(false); return }
                 self.pendingConfirmation = confirm
-                self.state = .confirmingTrust(deviceName: peer.deviceName)
+                self.state = .confirmingTrust(deviceName: peer.deviceName, code: code)
             }
         }
         transportManager?.addOnTrustedConnected { [weak self] peer in
             DispatchQueue.main.async {
+                self?.pendingConfirmation = nil
                 self?.state = .paired(deviceName: peer.deviceName)
             }
         }
@@ -55,6 +59,7 @@ final class PairingViewModel: ObservableObject {
         currentPayload = payload
         qrImage = QRCodeGenerator.image(for: payload)
         state = .showingQR
+        transportManager?.armPairing(token: payload.pairingToken)
         transportManager?.start()
         // Once the phone connects, TransportManager will move through
         // .handshaking to either onUntrustedHandshake or onTrustedConnected.
@@ -65,16 +70,19 @@ final class PairingViewModel: ObservableObject {
     func confirmTrust() {
         pendingConfirmation?(true)
         pendingConfirmation = nil
+        transportManager?.disarmPairing()
     }
 
     /// User taps "Reject" in response to `.confirmingTrust`.
     func rejectTrust() {
         pendingConfirmation?(false)
         pendingConfirmation = nil
+        transportManager?.disarmPairing()
         state = .failed("Pairing rejected")
     }
 
     func reset() {
+        transportManager?.disarmPairing()
         currentPayload = nil
         qrImage = nil
         pendingConfirmation = nil

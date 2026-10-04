@@ -104,7 +104,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             guard settings.authorizationStatus == .notDetermined else { return }
             self.notificationCenter.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
                 if let error {
-                    NSLog("Gossip: notification authorization request failed: \(error)")
+                    gossipError("Gossip: notification authorization request failed: \(error)")
                 } else {
                     NSLog("Gossip: notification authorization granted=\(granted)")
                 }
@@ -117,7 +117,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
     private func handlePosted(_ envelope: Envelope) {
         guard let posted = try? decode(NotificationPostedPayload.self, from: envelope.payload) else {
-            NSLog("Gossip: failed to decode notification.posted payload")
+            gossipError("Gossip: failed to decode notification.posted payload")
             return
         }
 
@@ -139,7 +139,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             )
             self.notificationCenter.add(request) { [weak self] error in
                 if let error {
-                    NSLog("Gossip: failed to post mirrored notification: \(error)")
+                    gossipError("Gossip: failed to post mirrored notification: \(error)")
                 } else {
                     // `trackedIdentifiers` is read by the dismiss poller on main; mutate it there too.
                     DispatchQueue.main.async { self?.trackedIdentifiers.insert(request.identifier) }
@@ -150,7 +150,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
     private func handleRemoved(_ envelope: Envelope) {
         guard let removed = try? decode(NotificationRemovedPayload.self, from: envelope.payload) else {
-            NSLog("Gossip: failed to decode notification.removed payload")
+            gossipError("Gossip: failed to decode notification.removed payload")
             return
         }
         let identifier = localIdentifier(for: removed.id, sourceDeviceId: envelope.senderId)
@@ -204,7 +204,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             let attachment = try UNNotificationAttachment(identifier: UUID().uuidString, url: tmpURL, options: nil)
             content.attachments = [attachment]
         } catch {
-            NSLog("Gossip: failed to attach notification icon: \(error)")
+            gossipError("Gossip: failed to attach notification icon: \(error)")
         }
         completion(content)
     }
@@ -227,7 +227,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             )
             try transportManager.send(envelope: envelope)
         } catch {
-            NSLog("Gossip: failed to send notification.reply: \(error)")
+            gossipError("Gossip: failed to send notification.reply: \(error)")
         }
     }
 
@@ -249,7 +249,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             )
             try transportManager.send(envelope: envelope)
         } catch {
-            NSLog("Gossip: failed to send notification.dismiss: \(error)")
+            gossipError("Gossip: failed to send notification.dismiss: \(error)")
         }
     }
 

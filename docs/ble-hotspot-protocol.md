@@ -147,11 +147,11 @@ Everything from "Not yet built" in the previous version of this doc is now imple
 newest/most-load-bearing first:
 
 - **`TrustedDevice` Ed25519-public-key schema extension**: `signingPublicKey` travels in
-  `handshake.hello`/`handshake.ack` (both directions, every pairing and every reconnect handshake)
+  the Noise payload of `handshake.hello`/`handshake.ack` (both directions, every pairing and every reconnect handshake)
   and in the pairing QR payload (`responderSigningPublicKey`). Persisted as
   `TrustedDevice.signingPublicKey` (Android, nullable `ByteArray`) / `.signingPublicKeyBase64`
-  (Mac, nullable `String`); a row paired before this field existed gets backfilled via
-  `trust.roster_update` gossip (see that row in `schema/message-types.md`) rather than needing a
+  (Mac, nullable `String`); a row paired before this field existed gets it from that device's next authenticated
+  handshake (it is no longer taken from `trust.roster_update` gossip; see `schema/message-types.md`) rather than needing a
   re-pair. **Live-verified**: real Mac↔phone handshakes this session actually carried and consumed
   this field (see the "Live end-to-end test" section below).
 - **Multi-device requester role flexibility**: a phone can run an on-demand secondary BLE scan
@@ -177,6 +177,18 @@ newest/most-load-bearing first:
   depends on MTU negotiation succeeding, trading a few extra round-trips for chunking that just
   always works regardless of stack/OEM behavior). Android peripheral: `HotspotGattServer.kt`.
   Android/Mac central: `HotspotGattClient.kt`/`.swift`. **Live-verified end to end** — see below.
+- **Replay and abuse limits on the GATT channel** (any nearby BLE device can write to it):
+  `hotspot.toggle_request` carries `t`, the requester's Unix-ms clock, and the signature covers
+  `hotspot.toggle_request|<id>|<en>|<n>|<t>`. After the signature verifies, the provider rejects a request
+  whose `t` is more than 2 minutes from its own clock (`REQUEST_FRESHNESS_MS`) and a `n` it has already
+  seen (bounded 256-entry set, `HotspotRequestGate`), so a captured request can't be replayed, in the
+  short term by nonce, in the long term by timestamp. A request without `t` is refused (old clients must
+  update). Before any crypto it also rate-limits each BLE address (6 requests/minute) and bounds the number
+  of tracked addresses/connections. Chunk reassembly is capped at 4 KiB on both sides; an oversized message
+  is discarded with its remaining chunks instead of buffered. **Not done:** the characteristics still use
+  plain (unencrypted) GATT permissions, because link-layer encryption needs bonding, which would defeat the
+  no-pairing design, and the credential key is still static (`SHA256(DH(static, static) ‖ label)`), so a
+  later compromise of either long-term key decrypts previously captured credential blobs.
 - **`hotspot.toggle_request`/`hotspot.status` payload framing**: compact JSON (`HotspotGattProtocol.kt`/
   `.swift`, kept in sync as this feature's own source of truth for this channel, same as
   `schema/message-types.md` is for the mesh transport — this is a GATT payload, not an `Envelope`,

@@ -10,7 +10,7 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.content.Context
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
 import dev.vmd1.gossip.onboarding.OnboardingPreferences
@@ -46,6 +46,7 @@ class HotspotGattServer(
 ) {
     private var gattServer: BluetoothGattServer? = null
     private val reassemblers = ConcurrentHashMap<String, HotspotGattProtocol.ChunkReassembler>()
+    private val gate = HotspotRequestGate()
 
     /** Per-device outbound chunk queue. Firing `notifyCharacteristicChanged` back-to-back
      *  without waiting for the previous chunk's `onNotificationSent` is a known way to
@@ -123,8 +124,14 @@ class HotspotGattServer(
             }
             if (characteristic.uuid != HotspotGattProtocol.REQUEST_CHARACTERISTIC_UUID) return
 
+            // Bound per-address state: any BLE device can write here.
+            if (reassemblers.size >= MAX_TRACKED_CONNECTIONS && !reassemblers.containsKey(device.address)) reassemblers.clear()
             val reassembler = reassemblers.getOrPut(device.address) { HotspotGattProtocol.ChunkReassembler() }
             val complete = reassembler.feed(value) ?: return
+            if (!gate.allowRate(device.address)) {
+                Log.w(TAG, "Rate-limiting hotspot requests from ${device.address}")
+                return
+            }
             val request = HotspotGattProtocol.decodeRequest(complete)
             if (request == null) {
                 Log.w(TAG, "Malformed hotspot.toggle_request from ${device.address}")
@@ -181,6 +188,16 @@ class HotspotGattServer(
             val signingKey = requester?.signingPublicKey
             if (requester == null || signingKey == null || !request.isSignatureValid(signingKey)) {
                 Log.w(TAG, "Rejecting hotspot.toggle_request from untrusted/unverifiable sender ${request.id}")
+                return@launch
+            }
+            // Only after the signature checks out: stale requests (replays captured long ago)
+            // and repeated nonces (replays captured moments ago) are refused.
+            if (!request.isFresh()) {
+                Log.w(TAG, "Rejecting hotspot.toggle_request: timestamp outside the freshness window")
+                return@launch
+            }
+            if (!gate.firstUse(request.n)) {
+                Log.w(TAG, "Rejecting hotspot.toggle_request: nonce already used")
                 return@launch
             }
             // Same X25519 identity key already used for Noise_IK (`TrustedDevice.publicKey`)
@@ -249,5 +266,9 @@ class HotspotGattServer(
         val chunks = HotspotGattProtocol.encodeChunks(HotspotGattProtocol.encodeStatus(status))
         pendingChunks.getOrPut(device.address) { ArrayDeque() }.addAll(chunks)
         drainQueue(device)
+    }
+
+    private companion object {
+        const val MAX_TRACKED_CONNECTIONS = 16
     }
 }

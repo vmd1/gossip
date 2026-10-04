@@ -38,7 +38,10 @@ data class Envelope(
      *  [TransportManager]'s receive loop. */
     val hasRawFollowup: Boolean = false,
     val ts: Long = System.currentTimeMillis(),
-    val payload: JsonObject = JsonObject(emptyMap())
+    val payload: JsonObject = JsonObject(emptyMap()),
+    /** Base64 Ed25519 signature by [senderId] over the envelope's canonical form (see
+     *  [EnvelopeSigning]); `null` only on the `handshake.*` envelopes. */
+    val sig: String? = null
 ) {
     companion object {
         val json = Json {
@@ -93,6 +96,8 @@ object MessageType {
     const val DEVICE_RING = "device.ring"
     const val DEVICE_RING_STATE = "device.ring_state"
     const val BATTERY_UPDATE = "battery.update"
+    const val DISPLAY_INFO = "display.info"
+    const val BLE_BEACON_KEY = "ble.beacon_key"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */

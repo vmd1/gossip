@@ -7,7 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -76,6 +76,10 @@ class QRScanActivity : ComponentActivity() {
                 bottomMargin = 64
             }
             setTextColor(android.graphics.Color.WHITE)
+            textSize = 22f
+            gravity = android.view.Gravity.CENTER
+            setBackgroundColor(0xAA000000.toInt())
+            setPadding(48, 32, 48, 32)
             text = "Point the camera at the device's pairing QR code"
         }
         root.addView(previewView)
@@ -116,7 +120,7 @@ class QRScanActivity : ComponentActivity() {
                 statusView.text = when (state) {
                     is PairingUiState.Idle -> "Point the camera at the device's pairing QR code"
                     is PairingUiState.Discovering -> "Looking for the device on your network…"
-                    is PairingUiState.Handshaking -> "Connecting securely…"
+                    is PairingUiState.Handshaking -> "Connecting securely…\nCheck that the other device shows ${state.code}"
                     is PairingUiState.Success -> "Paired with ${state.deviceName}"
                     is PairingUiState.Failed -> "Pairing failed: ${state.reason}"
                 }

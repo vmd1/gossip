@@ -21,6 +21,9 @@ final class IdentityKeyStore {
         let deviceId: String
         let ed25519PrivateKey: Data
         let x25519PrivateKey: Data
+        /// Random key shared with trusted peers so they can recognise this device's BLE advertisements
+        /// (see `BeaconTag`). Optional so an identity file from before it existed still decodes.
+        var beaconKey: Data?
     }
 
     private let fileURL: URL
@@ -42,7 +45,7 @@ final class IdentityKeyStore {
             // paired device, forcing a full re-pair across the whole mesh for no
             // benefit — not part of the Connect→Gossip rebrand's scope.
             let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            PrivateFile.ensureDirectory(dir)
             self.fileURL = dir.appendingPathComponent("identity.json")
         }
     }
@@ -72,6 +75,19 @@ final class IdentityKeyStore {
             let key = (try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: identity().x25519PrivateKey))
                 ?? Curve25519.KeyAgreement.PrivateKey()
             cachedAgreementKey = key
+            return key
+        }
+    }
+
+    /// This device's BLE beacon key, generated and persisted on first use.
+    var beaconKey: Data {
+        queue.sync {
+            var stored = identity()
+            if let key = stored.beaconKey { return key }
+            let key = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+            stored.beaconKey = key
+            cached = stored
+            persist(stored)
             return key
         }
     }
@@ -107,7 +123,6 @@ final class IdentityKeyStore {
 
     private func persist(_ identity: StoredIdentity) {
         guard let data = try? JSONEncoder().encode(identity) else { return }
-        try? data.write(to: fileURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        PrivateFile.write(data, to: fileURL)
     }
 }

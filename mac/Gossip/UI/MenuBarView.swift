@@ -156,7 +156,7 @@ struct MenuBarView: View {
                 hotspotGattClients[device.deviceId] = nil
                 switch result {
                 case .failed(let reason):
-                    NSLog("Gossip: " + "requestHotspot failed: \(reason)")
+                    gossipError("Gossip: " + "requestHotspot failed: \(reason)")
                 case .success(let enabled, let ssid, let passphrase):
                     hotspotOverrides[device.deviceId] = (enabled, Date())
                     guard enable, enabled, let ssid, let passphrase else { return }
@@ -521,10 +521,15 @@ struct PairingSheetView: View {
                 Text("Waiting for phone to connect…")
                     .foregroundStyle(.secondary)
                 ProgressView()
-            case .confirmingTrust(let deviceName):
+            case .confirmingTrust(let deviceName, let code):
                 Text("Trust this device?")
                     .font(.headline)
                 Text(deviceName)
+                Text(code)
+                    .font(.system(.title2, design: .monospaced))
+                Text("Check that the other device shows this same code.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 HStack {
                     Button("Reject") { pairingViewModel.rejectTrust() }
                     Button("Confirm") { pairingViewModel.confirmTrust() }

@@ -11,7 +11,7 @@ import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Base64
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.DeviceType
 import dev.vmd1.gossip.protocol.MessageType

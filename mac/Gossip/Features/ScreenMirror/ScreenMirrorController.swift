@@ -123,9 +123,10 @@ final class ScreenMirrorController: ObservableObject {
             // Idempotent: the phone re-sends `screen.ready` for every duplicate start we send.
             guard s.client == nil,
                   let port = envelope.payload["port"]?.numberValue,
-                  let token = envelope.payload["token"]?.stringValue,
+                  let secretBase64 = envelope.payload["secret"]?.stringValue,
+                  let secret = Data(base64Encoded: secretBase64), secret.count == 32,
                   let host = s.transport.hostWithZone(for: s.deviceId) else { return }
-            connect(s, host: host, port: UInt16(clamping: Int(port)), token: token)
+            connect(s, host: host, port: UInt16(clamping: Int(port)), secret: secret)
         case "screen.error":
             let reason = envelope.payload["reason"]?.stringValue ?? "unknown"
             fail(s, Self.message(forErrorReason: reason, deviceName: s.deviceName))
@@ -156,16 +157,16 @@ final class ScreenMirrorController: ObservableObject {
         payload.merge(extra) { $1 }
         let envelope = Envelope(
             type: type, senderId: IdentityKeyStore.shared.deviceId,
-            recipientId: s.deviceId, payload: .object(payload)
+            recipientId: s.deviceId, ttl: 0, payload: .object(payload)
         )
         try? s.transport.send(envelope: envelope)
     }
 
     // MARK: - Bridge connection
 
-    private func connect(_ s: Session, host: String, port: UInt16, token: String) {
+    private func connect(_ s: Session, host: String, port: UInt16, secret: Data) {
         NSLog("Gossip: connecting to screen bridge ws://\(host):\(port)")
-        guard let client = ScreenBridgeClient(host: host, port: port, token: token) else {
+        guard let client = ScreenBridgeClient(host: host, port: port, secret: secret, sessionId: s.id) else {
             return fail(s, "The phone sent an invalid screen-mirroring port.")
         }
         s.client = client
@@ -229,7 +230,7 @@ final class ScreenMirrorController: ObservableObject {
     // MARK: - Teardown
 
     private func fail(_ s: Session, _ message: String) {
-        NSLog("Gossip: screen mirroring failed: \(message)")
+        gossipError("Gossip: screen mirroring failed: \(message)")
         send(type: "screen.stop", for: s)
         teardown(s)
         lastError = message

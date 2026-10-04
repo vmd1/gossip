@@ -68,6 +68,7 @@ struct ConnectApp: App {
         dndSyncManager = DNDSyncManager(transportManager: transport)
         _clipboardSyncManager = StateObject(wrappedValue: ClipboardSyncManager(transportManager: transport))
         rosterGossipManager = RosterGossipManager(transportManager: transport)
+        let beaconKeys = BeaconKeyManager(transportManager: transport)
         let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
         _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
         _hotspotStateManager = StateObject(wrappedValue: HotspotStateManager(transportManager: transport))
@@ -80,6 +81,7 @@ struct ConnectApp: App {
         let battery = BatterySyncManager(transportManager: transport)
         _batterySyncManager = StateObject(wrappedValue: battery)
         battery.start()
+        UniversalControlCoordinator.shared.configure(transport: transport, trustedDevices: TrustedDevicesStore.shared, battery: battery)
 
         // Must run unconditionally at process launch, not from the menu-bar
         // dropdown's `.onAppear` (the previous location): for a
@@ -149,30 +151,36 @@ struct ConnectApp: App {
                             featureSettings: FeatureSettings.shared
                         )
                     }
-                } else if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
-                    // TEMPORARY debug hook: `open connect://debug-mirror` starts on-device mirroring of
-                    // the first connected trusted Android device without clicking the tray (remove
-                    // once there's UI-driven test coverage); `debug-stop-mirror` ends it.
-                    if url.host == "debug-stop-mirror" { screenMirror.stop(); continue }
-                    let target = TrustedDevicesStore.shared.devices.first { transport.hostWithZone(for: $0.deviceId) != nil }
-                    guard let target else { NSLog("debug-mirror: no connected trusted device"); continue }
-                    NSLog("debug-mirror: starting for \(target.deviceName)")
-                    screenMirror.start(deviceId: target.deviceId, deviceName: target.deviceName, transport: transport)
-                } else if url.host == "debug-hotspot-request" {
-                    // TEMPORARY debug hook to live-test HotspotGattClient end to end
-                    // before there's a scriptable UI path — remove once this is
-                    // exercised through the real "Request Hotspot" menu bar button
-                    // instead.
-                    let phones = TrustedDevicesStore.shared.devices.filter { $0.deviceType == .androidPhone }
-                    guard let deviceId = phones.first?.deviceId,
-                          let peripheralId = bleMonitor.peripheralIdentifierByDeviceId[deviceId] else {
-                        continue
+                } else if isDebugHookURL(url) {
+                    // Developer hooks (`open connect://debug-mirror` etc.). They exist only in Debug builds: in a
+                    // shipped app any web page or app could open these URLs and start mirroring a phone's screen.
+                    #if DEBUG
+                    if url.host == "debug-mirror" || url.host == "debug-stop-mirror" {
+                        // TEMPORARY debug hook: `open connect://debug-mirror` starts on-device mirroring of
+                        // the first connected trusted Android device without clicking the tray (remove
+                        // once there's UI-driven test coverage); `debug-stop-mirror` ends it.
+                        if url.host == "debug-stop-mirror" { screenMirror.stop(); continue }
+                        let target = TrustedDevicesStore.shared.devices.first { transport.hostWithZone(for: $0.deviceId) != nil }
+                        guard let target else { NSLog("debug-mirror: no connected trusted device"); continue }
+                        NSLog("debug-mirror: starting for \(target.deviceName)")
+                        screenMirror.start(deviceId: target.deviceId, deviceName: target.deviceName, transport: transport)
+                    } else if url.host == "debug-hotspot-request" {
+                        // TEMPORARY debug hook to live-test HotspotGattClient end to end
+                        // before there's a scriptable UI path — remove once this is
+                        // exercised through the real "Request Hotspot" menu bar button
+                        // instead.
+                        let phones = TrustedDevicesStore.shared.devices.filter { $0.deviceType == .androidPhone }
+                        guard let deviceId = phones.first?.deviceId,
+                              let peripheralId = bleMonitor.peripheralIdentifierByDeviceId[deviceId] else {
+                            continue
+                        }
+                        let client = HotspotGattClient()
+                        debugHotspotClientBox.client = client
+                        client.requestToggle(providerId: deviceId, peripheralIdentifier: peripheralId, enable: true) { result in
+                            debugHotspotClientBox.client = nil
+                        }
                     }
-                    let client = HotspotGattClient()
-                    debugHotspotClientBox.client = client
-                    client.requestToggle(providerId: deviceId, peripheralIdentifier: peripheralId, enable: true) { result in
-                        debugHotspotClientBox.client = nil
-                    }
+                    #endif
                 } else {
                     dndSyncManager.handleIncomingURL(url)
                 }
@@ -262,6 +270,7 @@ struct ConnectApp: App {
             .autoconnect()
             .sink { _ in
                 roster.periodicResync()
+                beaconKeys.periodicResync()
             }
     }
 
@@ -291,4 +300,14 @@ struct ConnectApp: App {
         }
         .menuBarExtraStyle(.window)
     }
+}
+
+/// `connect://debug-*` developer hooks: recognised only in Debug builds. In Release this is always false, so those
+/// URLs fall through to the normal handler and do nothing.
+private func isDebugHookURL(_ url: URL) -> Bool {
+    #if DEBUG
+    return ["debug-mirror", "debug-stop-mirror", "debug-hotspot-request"].contains(url.host)
+    #else
+    return false
+    #endif
 }

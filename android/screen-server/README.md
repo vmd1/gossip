@@ -17,7 +17,7 @@ removed: on-device capture is now the only mirroring path, and there is no fallb
 ## Architecture (and why it isn't the one we planned)
 
 ```
-Mac viewer ──WebSocket(token)──▶ ScreenBridge (Gossip app, untrusted_app UID)
+Mac viewer ──WebSocket(sealed with ScreenCipher)──▶ ScreenBridge (Gossip app, untrusted_app UID)
                                       │ Shizuku binder stdio  (framed: video / control / device-msg)
                                       ▼
                            ShellRelay  (app_process from Gossip's own APK, shell UID)
@@ -95,8 +95,10 @@ Both captured on **Android 16**. On Android 12 I did not separately reproduce th
 design was already in place and works there); I'm not claiming it from evidence.
 
 ### 5. Via the relay: valid H.264 + control injection — both versions
-`ScreenBridge` is driven by `ws_test_client.py` (stdlib only, in this directory), which stands in
-for the Mac viewer. Real output, final build:
+`ScreenBridge` was driven by `ws_test_client.py`, a stdlib-only stand-in for the Mac viewer. That
+plaintext client was removed when the WebSocket became encrypted (see below); the output below is from
+that earlier, plaintext revision and is kept as the record of what the relay was verified to do.
+Real output, final build:
 ```
 # Android 16                                          # Android 12
 screen.ready after 1.1s: port=36561                    screen.ready after 1.1s: port=39531
@@ -166,12 +168,13 @@ Still not covered on hardware: control injection, sustained motion, latency, rot
   client prints includes its own wrong-token/second-viewer test steps; it is not a latency number.
   (`screen.ready` itself arrives ~1.1 s after `screen.start`.)
 - **Mac viewer** (`mac/Gossip/Features/ScreenMirror/`): see its own section below for what was and wasn't verified end to end.
-- **Video is not encrypted on the WebSocket.** Auth is a 256-bit per-session token delivered
-  inside the Noise-encrypted mesh, constant-time compared, single viewer; but the WebSocket
-  payload (screen contents + control) is plaintext on the LAN. Reusing the Noise trust
-  end-to-end (Noise-over-WebSocket, or an AEAD key derived from the Noise session and delivered
-  in `screen.ready`) was out of scope for one pass and is the main follow-up before shipping.
-  The listener also binds all interfaces (any LAN host can *connect* — only the token gates it).
+- **The WebSocket is encrypted** (`ScreenCipher`, mirrored by `mac/.../ScreenCipher.swift`): every message is
+  a binary message sealed with ChaCha20-Poly1305 under per-direction HKDF keys derived from a 256-bit
+  per-session `secret` delivered only inside the Noise-encrypted mesh (`screen.ready`, direct-only
+  `ttl: 0`). Counter nonces must strictly increase, so replays are dropped, and the first message must be a
+  sealed hello carrying the session id. Each accepted connection authenticates on its own thread (a junk
+  connection can't hold up the real viewer); the first to authenticate wins and the listener closes. The
+  listener still binds all interfaces, but a connection that can't produce a valid sealed hello gets nothing.
 - Shizuku must be running (re-activate after reboot) and granted; otherwise `screen.error
   shizuku_unavailable`. Not tested: reboot persistence, Shizuku killed mid-session, Android
   13–15, multi-display, `max_size` rotation mid-stream (a session packet is forwarded but I did
@@ -183,7 +186,7 @@ Still not covered on hardware: control injection, sustained motion, latency, rot
 ## Mac viewer (`mac/Gossip/Features/ScreenMirror/`)
 `ScreenMirrorController` negotiates the session (`screen.start` re-sent every 2.5 s until
 `screen.ready`, 20 s timeout, `screen.error` surfaced in the menu), `ScreenBridgeClient`
-(`NWProtocolWebSocket`) connects with the token, `H264SampleFeeder` converts Annex-B→AVCC and
+(`NWProtocolWebSocket`) connects with the session secret, `H264SampleFeeder` converts Annex-B→AVCC and
 feeds an `AVSampleBufferDisplayLayer` (hardware decode), and `ScreenMirrorWindow` shows it with
 Back/Home/Recents buttons, click-drag → touch, trackpad scroll → scroll, typing → text/keys.
 - **Verified:** Mac app builds; 46 Mac unit tests pass, including byte-exact tests of the control

@@ -2,24 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<true/>
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<key>com.apple.security.network.server</key>
-	<true/>
+	<!-- Gossip is NOT sandboxed: Universal Control needs a CGEventTap (Accessibility + Input Monitoring),
+	     which a sandboxed app cannot use, and the Device Mirroring launcher can be copied out directly.
+	     The network entitlements are only meaningful inside a sandbox, so they are gone too. The two
+	     below are still enforced under Hardened Runtime. -->
 	<key>com.apple.security.device.bluetooth</key>
 	<true/>
 	<key>com.apple.security.personal-information.location</key>
 	<true/>
-	<!-- Read-only: lets Gossip see whether the "Device Mirroring" launcher is installed (LauncherInstaller.status()). The copy itself is done by the non-sandboxed launcher. -->
-	<key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
-	<array>
-		<string>/Applications/</string>
-	</array>
-	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
-	<array>
-		<string>/Applications/</string>
-	</array>
 </dict>
 </plist>

@@ -18,7 +18,11 @@ Every frame on the socket has the same shape:
 
 - The 4-byte length prefix is an unsigned big-endian integer giving the length of `payload` in bytes (not including the 4-byte header itself).
 - `payload` is `Noise`-encrypted ciphertext (post-handshake transport messages), except for the handshake frames themselves, whose payload is the raw Noise handshake message bytes as defined by the `Noise_IK` pattern.
-- Readers must buffer until they have the full 4-byte length, then buffer until they have that many additional bytes, before attempting to process a frame. There is no maximum frame size defined in Wave 1; implementations should apply a sane upper bound (e.g. reject/close on an implausibly large length) as a defensive measure.
+- Readers must buffer until they have the full 4-byte length, then buffer until they have that many additional bytes, before attempting to process a frame. Readers must enforce a maximum: **16 KiB** for the two handshake frames (before the peer is authenticated) and **16 MiB** for transport frames; a larger declared length closes the connection. Implementations also bound the number of simultaneous not-yet-handshaken inbound connections (32 total, 4 per source address) and must not allocate a declared frame length up front. After the handshake, a peer that is already trusted must have presented the same Noise static key it was paired with; a different key closes the connection.
+
+## Origin authentication
+
+Hop-by-hop Noise only proves who the *adjacent* peer is. To stop any member from forging a message "from" another device (or re-targeting one), every envelope except the two handshake messages carries `sig`: an Ed25519 signature by `senderId`'s signing key over the envelope's canonical form (see `schema/envelope.schema.json` and `schema/envelope-signing-vectors.json`). The originator signs once; relays forward the envelope unchanged apart from `ttl` (not signed). Receivers verify **before** de-duplicating, acting or relaying, using the signing key stored for `senderId`; a missing key or bad signature drops the envelope (a raw follow-up frame that is already on the wire is still drained and discarded). Payloads therefore may only contain integer numbers.
 
 ## Decrypted plaintext: the JSON envelope
 
@@ -26,6 +30,10 @@ Once a transport frame's ciphertext is decrypted via the established Noise sessi
 
 - `type` selects the message's meaning and payload shape. See `schema/message-types.md` — the authoritative registry both codebases hand-sync against — for the full list of valid types and their payload fields.
 - One decrypted frame carries exactly one envelope (no batching of multiple envelopes into a single frame in Wave 1).
+
+## Frames before trust confirmation
+
+A responder sends `handshake.ack` before an untrusted initiator has been confirmed by the user, so the initiator may send transport frames (roster, initial syncs) during that window. Noise transport nonces are implicit counters, so a responder must never discard those frames undecrypted: it holds them (bounded, 256 frames; closes the connection if exceeded) and decrypts/routes them in arrival order once the peer is confirmed and promoted, or drops them with the connection if the user declines. Mac implements this (`PendingFrameQueue`); Android's responder doesn't read transport frames until after confirmation, so TCP buffers them.
 
 ## Multi-hop relay
 

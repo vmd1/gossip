@@ -76,6 +76,9 @@ private struct SettingsView: View {
     let onOpenDNDSetup: () -> Void
     let onRunSetupAgain: () -> Void
 
+    @ObservedObject private var universalControl = UniversalControlCoordinator.shared
+    @State private var commandMapping = UniversalControlSettings.commandMapping
+    @State private var typingMode = UniversalControlSettings.typingMode
     @State private var launcherEnabled = LauncherPreference.autoInstall
     @State private var launcherMessage: String?
 
@@ -99,6 +102,40 @@ private struct SettingsView: View {
                 Text("Features")
             } footer: {
                 Text("Turning a feature off stops this Mac from sending or receiving it at all. Your other devices keep their own settings.")
+                    .font(.caption)
+            }
+
+            Section {
+                Button("Arrange Devices…") { universalControl.showLayoutWindow() }
+                    .disabled(!features.isEnabled(.universalControl))
+                permissionRow(
+                    "Accessibility", granted: universalControl.accessibilityGranted,
+                    detail: "Lets Gossip capture and redirect your mouse and keyboard.",
+                    request: { ControlEventTap.requestAccessibility(); ControlEventTap.openAccessibilitySettings() }
+                )
+                permissionRow(
+                    "Input Monitoring", granted: universalControl.inputMonitoringGranted,
+                    detail: "Lets Gossip see keystrokes to forward them.",
+                    request: { ControlEventTap.requestInputMonitoring(); ControlEventTap.openInputMonitoringSettings() }
+                )
+                Picker("Command key acts as", selection: Binding(
+                    get: { commandMapping },
+                    set: { commandMapping = $0; UniversalControlSettings.commandMapping = $0 }
+                )) {
+                    Text("Control (Cmd+C copies)").tag(HIDKeyTable.CommandMapping.control)
+                    Text("Meta / Windows key").tag(HIDKeyTable.CommandMapping.meta)
+                }
+                Picker("Typing", selection: Binding(
+                    get: { typingMode },
+                    set: { typingMode = $0; UniversalControlSettings.typingMode = $0 }
+                )) {
+                    Text("Characters (best for non-US layouts)").tag(ControlTypingMode.characters)
+                    Text("Key codes").tag(ControlTypingMode.keys)
+                }
+            } header: {
+                Text("Universal Control")
+            } footer: {
+                Text("Push the pointer off the edge of your Mac's screen towards a device you placed in Arrange Devices. Press Control+Option+Command+Esc to jump back at any time. Keystrokes in password fields aren't visible to Gossip (macOS secure input).")
                     .font(.caption)
             }
 
@@ -134,7 +171,41 @@ private struct SettingsView: View {
                 Button("Do Not Disturb Sync Setup…", action: onOpenDNDSetup)
                 Button("Run Setup Again…", action: onRunSetupAgain)
             }
+
+            Section {
+                Text(Self.versionLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .textSelection(.enabled)
+            }
         }
         .formStyle(.grouped)
+    }
+
+    /// "Gossip 17" for a release build, "Gossip 1.0" for a local one (the release number is stamped into the
+    /// marketing version by the release workflow); the build number is appended when it differs.
+    static var versionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String
+        if let build, build != short, build != "1" { return "Gossip \(short) (\(build))" }
+        return "Gossip \(short)"
+    }
+
+    @ViewBuilder
+    private func permissionRow(_ title: String, granted: Bool, detail: String, request: @escaping () -> Void) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if granted {
+                Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+            } else {
+                Button("Open System Settings", action: request)
+            }
+        }
     }
 }

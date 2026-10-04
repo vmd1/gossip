@@ -5,7 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
-import android.util.Log
+import dev.vmd1.gossip.util.Log
 
 /** Loops the default alarm sound on the alarm stream (audible even when the ringer is on silent/
  *  vibrate), temporarily raising the alarm volume to max and restoring it afterwards. */
