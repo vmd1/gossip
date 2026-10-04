@@ -507,6 +507,11 @@ struct PairingSheetView: View {
         return nil
     }
 
+    private var isPaired: Bool {
+        if case .paired = pairingViewModel.state { return true }
+        return false
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             switch pairingViewModel.state {
@@ -560,6 +565,14 @@ struct PairingSheetView: View {
                     onDismiss()
                 }
             }
+        }
+        // Once paired, show the confirmation briefly and close by itself so setup can carry on.
+        .task(id: isPaired) {
+            guard isPaired else { return }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, isPaired else { return }
+            pairingViewModel.reset()
+            onDismiss()
         }
         // A failure message doesn't linger: 10 seconds after pairing fails, the sheet closes itself.
         // (`.task(id:)` restarts — cancelling the sleep — whenever the failure text changes or clears.)
