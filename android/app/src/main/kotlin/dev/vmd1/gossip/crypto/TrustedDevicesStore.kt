@@ -100,9 +100,12 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     /** Updates just the fallback address for an already-trusted device (see
      *  [TrustedDevice.fallbackHost]). No-ops if [deviceId] isn't trusted. */
     @Synchronized
-    fun setFallbackHost(deviceId: String, fallbackHost: String?) {
-        val existing = getDevice(deviceId) ?: return
-        addDevice(existing.copy(fallbackHost = fallbackHost?.trim()?.takeIf { it.isNotEmpty() }))
+    fun setFallbackHost(deviceId: String, fallbackHost: String?): Boolean {
+        val existing = getDevice(deviceId) ?: return false
+        val trimmed = fallbackHost?.trim()?.takeIf { it.isNotEmpty() }
+        if (trimmed != null && !HostValidator.isValid(trimmed)) return false
+        addDevice(existing.copy(fallbackHost = trimmed))
+        return true
     }
 
     /** Records the signing key a device presented inside an authenticated Noise handshake

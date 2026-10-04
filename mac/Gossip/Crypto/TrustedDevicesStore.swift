@@ -191,14 +191,18 @@ final class TrustedDevicesStore: ObservableObject {
         queue.sync { revoked[deviceId] }
     }
 
-    func setFallbackHost(deviceId: String, fallbackHost: String?) {
+    /// Returns `false` (and changes nothing) if the address isn't a valid IP or hostname; blank clears it.
+    @discardableResult
+    func setFallbackHost(deviceId: String, fallbackHost: String?) -> Bool {
         let trimmed = fallbackHost?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, !trimmed.isEmpty, !HostValidator.isValid(trimmed) { return false }
         queue.sync {
             guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }) else { return }
             devices[index].fallbackHost = (trimmed?.isEmpty == false) ? trimmed : nil
         }
         persist()
         publishOnMain()
+        return true
     }
 
     /// Applies an incoming `lock_on_leave.config` from `deviceId` (see `schema/message-types.md`).
