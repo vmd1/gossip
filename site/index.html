@@ -79,7 +79,7 @@
           <li>Sessions use the Noise <code>IK</code> handshake, and messages are signed.</li>
           <li>You pair by scanning a QR code that carries the public key of the device showing it.</li>
           <li>Only a device you paired, or one a device you trust vouches for, is accepted; an unknown device must be confirmed on screen.</li>
-          <li>Universal Control input uses its own encrypted channel straight to the device. The screen-mirroring video stream itself is not yet encrypted on the LAN — see the <a href="https://github.com/vmd1/gossip/blob/main/ROADMAP.md">roadmap</a>.</li>
+          <li>Universal Control input and the screen-mirroring stream each use their own encrypted channel straight to the device, keyed through the Noise session.</li>
         </ul>
       </div>
     </div>
