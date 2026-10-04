@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gossip — Mac and Android, working as one</title>
+<meta name="description" content="Gossip links a Mac with Android phones and tablets over your local network: notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control. No account, no cloud.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="icon.png" alt="" width="32" height="32">Gossip</a>
+    <nav aria-label="Primary">
+      <ul>
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#guides">Guides</a></li>
+        <li><a href="https://github.com/vmd1/gossip">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<div class="hero" id="top">
+  <div class="wrap">
+    <img src="icon.png" alt="Gossip app icon" width="112" height="112">
+    <h1>Your Mac and your Android devices, working as one.</h1>
+    <p class="lede">Gossip is a Mac ↔ Android continuity app: notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control. Everything stays on your local network — no account, no cloud.</p>
+    <div class="cta">
+      <a class="btn" href="https://github.com/vmd1/gossip/releases/latest">Download the latest release</a>
+      <a class="btn secondary" href="#install">Install steps</a>
+    </div>
+    <p class="fine">macOS 14+ (Apple Silicon build) · Android 10+ · free and open source (Apache 2.0)</p>
+  </div>
+</div>
+
+<section class="alt" id="features" aria-labelledby="features-h">
+  <div class="wrap">
+    <h2 id="features-h">What it does</h2>
+    <p class="sub">Each feature has its own per-device switch in Settings. Features marked Shizuku need it on the Android device.</p>
+    <ul class="grid">
+      <li class="card"><h3>Universal Control</h3><p>Push the Mac's cursor off a screen edge and keep going on your phone or tablet, with the Mac's mouse and keyboard. Mac → Android only.</p><span class="tag">Needs Shizuku</span></li>
+      <li class="card"><h3>Screen mirroring</h3><p>Mirror and control an Android screen from the Mac, with audio.</p><span class="tag">Needs Shizuku</span></li>
+      <li class="card"><h3>Notification mirroring</h3><p>See phone notifications on the Mac, reply inline, and dismiss in sync.</p></li>
+      <li class="card"><h3>Clipboard sync</h3><p>Copy on one device, paste on another — text and images.</p><span class="tag">Background reading needs Shizuku</span></li>
+      <li class="card"><h3>Do Not Disturb / Focus sync</h3><p>Turn it on in one place and it follows everywhere. On the Mac this goes through the Shortcuts app.</p></li>
+      <li class="card"><h3>Media remote</h3><p>See what's playing and control playback on any device.</p></li>
+      <li class="card"><h3>Instant Hotspot</h3><p>Turn on your phone's hotspot from the Mac and join it automatically.</p><span class="tag">Android 16+ needs Shizuku</span></li>
+      <li class="card"><h3>Lock on leave</h3><p>Lock a Mac or tablet when your phone walks out of Bluetooth range.</p></li>
+      <li class="card"><h3>Find my device</h3><p>Make a paired device ring at full volume.</p></li>
+      <li class="card"><h3>Battery sync</h3><p>See every device's battery, with low-battery alerts.</p></li>
+      <li class="card"><h3>Multi-device trust</h3><p>Pair two devices once and every device they already trust learns about the new one.</p></li>
+    </ul>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <h2 id="how-h">How it works</h2>
+    <p class="sub">Your devices talk directly to each other. There is no server in the middle.</p>
+    <div class="two how">
+      <div>
+        <h3>Local only</h3>
+        <ul>
+          <li>Devices find each other on the same local network and connect directly over TCP.</li>
+          <li>No account, no sign-in, no cloud relay. Nothing is sent to the project's authors.</li>
+          <li>Off your home network, a per-device fallback IP (for example a Tailscale address) can be set; a general off-network mode is only on the <a href="https://github.com/vmd1/gossip/blob/main/ROADMAP.md">roadmap</a>.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Trust and encryption</h3>
+        <ul>
+          <li>Sessions use the Noise <code>IK</code> handshake, and messages are signed.</li>
+          <li>You pair by scanning a QR code that carries the public key of the device showing it.</li>
+          <li>Only a device you paired, or one a device you trust vouches for, is accepted; an unknown device must be confirmed on screen.</li>
+          <li>Universal Control input uses its own encrypted channel straight to the device. The screen-mirroring video stream itself is not yet encrypted on the LAN — see the <a href="https://github.com/vmd1/gossip/blob/main/ROADMAP.md">roadmap</a>.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="install" aria-labelledby="install-h">
+  <div class="wrap">
+    <h2 id="install-h">Install and set up</h2>
+    <p class="sub">Requirements: macOS 14 or newer, Android 10 or newer, and both devices on the same local network.</p>
+    <ol class="steps">
+      <li>
+        <h3>Install the Mac app</h3>
+        <p>Download <code>Gossip-Mac-AppleSilicon.zip</code> from the <a href="https://github.com/vmd1/gossip/releases/latest">latest release</a>, unzip it and move <code>Gossip.app</code> to <code>/Applications</code>.</p>
+        <p>The app is self-signed and not notarized, so the first launch is blocked by Gatekeeper: open <strong>System Settings → Privacy &amp; Security</strong> and choose <strong>Open Anyway</strong>.</p>
+      </li>
+      <li>
+        <h3>Install the Android app</h3>
+        <p>Download <code>Gossip-Android-universal.apk</code> from the same release and install it. Allow “install unknown apps” for the app you opened it with. It is a side-loaded build, not a Play Store release.</p>
+      </li>
+      <li>
+        <h3>Pair them</h3>
+        <p>Mac: menu bar icon → <strong>Pair New Device…</strong> shows a QR code. Android: <strong>Pair New Device</strong> (or <strong>Scan a QR Code</strong> during setup), then confirm on both screens.</p>
+      </li>
+      <li>
+        <h3>Set up Shizuku (heavily recommended)</h3>
+        <p>The app works without it, but screen mirroring, Universal Control, Instant Hotspot on Android 16+ and background clipboard reading all need it. Shizuku must be restarted after a device reboot unless the device is rooted. <a href="https://github.com/vmd1/gossip/blob/main/docs/setup-shizuku.md">Setting up Shizuku</a>.</p>
+      </li>
+      <li>
+        <h3>Grant permissions</h3>
+        <p>Each device asks for permissions as you go. Each one unlocks one feature and all are skippable.</p>
+      </li>
+    </ol>
+    <div class="note" role="note">
+      <p><strong>Updating from an older build?</strong> Release 17 changed the wire format, so every device must be on release 17 or newer to talk to the others.</p>
+      <p><strong>Not tested:</strong> Intel Macs (the prebuilt app is Apple Silicon only; building from source is untested) and setups with multiple Mac displays are not covered by this site's claims.</p>
+    </div>
+  </div>
+</section>
+
+<section id="guides" aria-labelledby="guides-h">
+  <div class="wrap">
+    <h2 id="guides-h">Guides</h2>
+    <p class="sub">The full documentation lives in the repository.</p>
+    <ul class="guides">
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/getting-started.md"><strong>Getting started</strong><span>Install, first run, permissions, pairing, optional setup.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/setup-shizuku.md"><strong>Setting up Shizuku</strong><span>What it is, which features need it, how to start it.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/universal-control.md"><strong>Universal Control</strong><span>Set up, shortcuts, limits.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/faq.md"><strong>FAQ</strong><span>Common questions.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/troubleshooting.md"><strong>Troubleshooting</strong><span>Fixes for the usual problems.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/building-and-signing.md"><strong>Building and signing</strong><span>Build from source, tests, signing, releases.</span></a></li>
+    </ul>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Gossip is open source under the <a href="https://github.com/vmd1/gossip/blob/main/LICENSE">Apache 2.0 license</a>. Issues and PRs welcome. This site loads no scripts, fonts or trackers.</p>
+    <ul>
+      <li><a href="https://github.com/vmd1/gossip">Repository</a></li>
+      <li><a href="https://github.com/vmd1/gossip/releases/latest">Latest release</a></li>
+      <li><a href="https://github.com/vmd1/gossip/issues">Issues</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>
