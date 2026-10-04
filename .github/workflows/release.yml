@@ -1,17 +1,14 @@
 name: Release
 
-# Runs only on a push to main that changes something shippable (app code, the wire schema, or
-# this workflow) — a docs-only merge no longer burns a macOS + Android release build. Tests run
-# on the pull request (android.yml / mac.yml), not again here. workflow_dispatch cuts a release
-# manually without an empty push.
+# A release is cut when the `VERSION` file changes on main (MAJOR.MINOR, e.g. `1.1`): the tag is `v<VERSION>`.
+# Merges to main that leave VERSION alone ship nothing. Tests run on the pull request (android.yml / mac.yml),
+# not again here. workflow_dispatch re-runs the release for the VERSION currently on main, e.g. after a failed run
+# (it refuses if that version's tag already exists).
 on:
   push:
     branches: [main]
     paths:
-      - "android/**"
-      - "mac/**"
-      - "schema/**"
-      - ".github/workflows/release.yml"
+      - "VERSION"
   workflow_dispatch:
 
 # Releases are never cancelled mid-flight (a half-published release is worse than a queued one),
@@ -32,22 +29,29 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
       title: ${{ steps.ver.outputs.title }}
     steps:
-      # Releases are numbered consecutively: tag `release-N`, title "Release N (YYYY-MM-DD)". N continues from the
-      # largest number at the end of any existing release tag (the older date-based tags like v2026.10.02-16 end in
-      # their run number), so numbering carries on instead of restarting. Runs are serialised by the `release`
-      # concurrency group below, so two releases can never compute the same number.
+      # The release version comes from the VERSION file (MAJOR.MINOR). The tag is `v<VERSION>`; a version whose tag
+      # already exists is refused, so the same version can never be published twice. Bump the minor for a normal
+      # release and the major for a wire-protocol break (every device must run the same version; version-check.yml
+      # enforces the major bump when schema/ changes).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - id: ver
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          last="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName \
-            -q '[.[].tagName | (capture("(?<n>[0-9]+)$").n // empty) | tonumber] | max // 0')"
-          n=$((last + 1))
-          echo "Previous release number: $last -> this release: $n"
-          echo "number=$n" >> "$GITHUB_OUTPUT"
-          echo "tag=release-$n" >> "$GITHUB_OUTPUT"
-          echo "title=Release $n ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
+          v="$(tr -d '[:space:]' < VERSION)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION must be MAJOR.MINOR (got '$v')"; exit 1; }
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+             || git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/v$v" >/dev/null 2>&1; then
+            echo "::error::v$v is already released; bump VERSION to release again"
+            exit 1
+          fi
+          echo "Releasing v$v"
+          echo "number=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          echo "title=Gossip $v ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
 
   android-release:
     needs: version
