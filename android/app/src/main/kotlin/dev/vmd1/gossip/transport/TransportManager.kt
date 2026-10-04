@@ -603,8 +603,10 @@ class TransportManager(
                 val heartbeatJob = scope.launch { heartbeatLoop(newPeer) }
 
                 try {
+                    val rateLimiter = InboundRateLimiter()
                     while (true) {
                         val frame = readFrame(input)
+                        if (!rateLimiter.allow()) throw IOException("$remoteId is sending too fast")
                         val plaintext = session.decryptTransportMessage(frame)
                         newPeer.lastReceivedAt = System.currentTimeMillis()
                         // A raw (non-envelope) frame armed while handling the metadata
@@ -676,7 +678,9 @@ class TransportManager(
      *  envelope and its raw frame atomically as a pair — never the metadata alone, which
      *  would desync a downstream hop's own "next frame is raw" expectation if some other
      *  message interleaved in between. */
-    private suspend fun handleReceivedEnvelope(envelope: Envelope, arrivedFrom: String) {
+    private suspend fun handleReceivedEnvelope(received: Envelope, arrivedFrom: String) {
+        // `ttl` is the one field a relay can change, so a peer can't be trusted to keep it within the mesh's budget.
+        val envelope = if (received.ttl > Envelope.DEFAULT_TTL) received.copy(ttl = Envelope.DEFAULT_TTL) else received
         // Verified before anything else so a forged copy can neither be acted on, relayed,
         // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that is
         // physically coming next on this connection is still drained, just discarded.
@@ -868,7 +872,8 @@ class TransportManager(
         private const val HEARTBEAT_TIMEOUT_MS = 3 * HEARTBEAT_INTERVAL_MS
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val HANDSHAKE_TIMEOUT_MS = 15_000L
-        private const val DEDUPE_CACHE_LIMIT = 512
+        /** Large enough that flushing it with unique ids (to re-deliver old broadcasts) takes real effort. */
+        private const val DEDUPE_CACHE_LIMIT = 4096
 
         private fun writeFrame(out: DataOutputStream, payload: ByteArray) {
             out.writeInt(payload.size)

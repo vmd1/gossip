@@ -49,6 +49,7 @@ class ControlBridge(
     private val cipher = ControlCipher(secret, sessionId, deviceSide = true)
     private val sendLock = Any()
     private val ended = AtomicBoolean(false)
+    private val claimed = AtomicBoolean(false)
     private var server: ScrcpyServerSession? = null
     private var listener: ServerSocket? = null
     private var ws: WebSocketConnection? = null
@@ -101,36 +102,54 @@ class ControlBridge(
         if (!ended.get()) { Log.i(TAG, "[$sessionId] scrcpy server went away"); end() } // e.g. Shizuku died
     }
 
+    /** Each accepted connection authenticates on its own thread, so a stalled or junk connection can't hold up
+     *  the real Mac; the first to send a valid hello wins and the listener closes. */
     private fun acceptLoop(l: ServerSocket) {
+        val authenticating = java.util.concurrent.atomic.AtomicInteger(0)
         try {
             val deadline = System.currentTimeMillis() + ATTACH_TIMEOUT_MS
-            while (!ended.get()) {
+            while (!ended.get() && !claimed.get()) {
                 val remaining = deadline - System.currentTimeMillis()
                 if (remaining <= 0) { Log.i(TAG, "[$sessionId] no Mac within ${ATTACH_TIMEOUT_MS}ms"); break }
-                l.soTimeout = remaining.toInt()
+                l.soTimeout = minOf(remaining, 1000L).toInt()
                 val sock = try { l.accept() } catch (_: java.net.SocketTimeoutException) { continue }
-                val conn = try {
-                    sock.tcpNoDelay = true // pointer motion: never let Nagle hold a small frame back
-                    sock.soTimeout = AUTH_TIMEOUT_MS
-                    WebSocketConnection.accept(sock)
-                } catch (e: IOException) {
-                    Log.i(TAG, "[$sessionId] rejected non-WebSocket client: $e"); runCatching { sock.close() }; continue
+                if (authenticating.incrementAndGet() > MAX_AUTHENTICATING) {
+                    authenticating.decrementAndGet(); runCatching { sock.close() }; continue
                 }
-                val hello = try { conn.readMessage() } catch (e: IOException) { null }
-                val frame = try { hello?.takeIf { !it.isText }?.let { cipher.open(it.data) } } catch (_: ControlCipher.Failure) { null }
-                if (frame !is ControlFrame.Hello || !constantTimeEquals(frame.sessionId, sessionId)) {
-                    Log.i(TAG, "[$sessionId] client failed the encrypted hello"); conn.close(1008); continue
+                thread("ctl-auth") {
+                    try { authenticateAndServe(sock, l) } finally { authenticating.decrementAndGet() }
                 }
-                sock.soTimeout = IDLE_TIMEOUT_MS // the Mac pings every few seconds; silence means it's gone
-                runCatching { l.close() } // one Mac per session
-                ws = conn
-                sendFrame(ControlFrame.HelloAck(currentDisplayInfo().also { lastInfo = it }))
-                Log.i(TAG, "[$sessionId] Mac attached")
-                frameLoop(conn)
-                break
             }
         } catch (e: Exception) {
-            if (!ended.get()) Log.i(TAG, "[$sessionId] accept/frame loop ended: $e")
+            if (!ended.get()) Log.i(TAG, "[$sessionId] accept loop ended: $e")
+        }
+        if (!claimed.get()) end() // nobody authenticated in time
+    }
+
+    private fun authenticateAndServe(sock: java.net.Socket, l: ServerSocket) {
+        val conn = try {
+            sock.tcpNoDelay = true // pointer motion: never let Nagle hold a small frame back
+            sock.soTimeout = AUTH_TIMEOUT_MS
+            WebSocketConnection.accept(sock)
+        } catch (e: IOException) {
+            Log.i(TAG, "[$sessionId] rejected non-WebSocket client: $e"); runCatching { sock.close() }; return
+        }
+        val hello = try { conn.readMessage() } catch (e: IOException) { null }
+        // The cipher isn't thread-safe and several connections may be authenticating at once.
+        val frame = try { hello?.takeIf { !it.isText }?.let { synchronized(cipher) { cipher.open(it.data) } } } catch (_: ControlCipher.Failure) { null }
+        if (frame !is ControlFrame.Hello || !constantTimeEquals(frame.sessionId, sessionId)) {
+            Log.i(TAG, "[$sessionId] client failed the encrypted hello"); runCatching { conn.close(1008) }; return
+        }
+        if (!claimed.compareAndSet(false, true)) { runCatching { conn.close(1008) }; return }
+        try {
+            sock.soTimeout = IDLE_TIMEOUT_MS // the Mac pings every few seconds; silence means it's gone
+            runCatching { l.close() } // one Mac per session
+            ws = conn
+            sendFrame(ControlFrame.HelloAck(currentDisplayInfo().also { lastInfo = it }))
+            Log.i(TAG, "[$sessionId] Mac attached")
+            frameLoop(conn)
+        } catch (e: Exception) {
+            if (!ended.get()) Log.i(TAG, "[$sessionId] frame loop ended: $e")
         }
         end()
     }
@@ -255,6 +274,7 @@ class ControlBridge(
         const val ATTACH_TIMEOUT_MS = 30_000L
         const val DEVICE_GRACE_MS = 8_000L
         private const val AUTH_TIMEOUT_MS = 10_000
+        private const val MAX_AUTHENTICATING = 4
         private const val IDLE_TIMEOUT_MS = 20_000
     }
 }
