@@ -68,6 +68,7 @@ struct ConnectApp: App {
         dndSyncManager = DNDSyncManager(transportManager: transport)
         _clipboardSyncManager = StateObject(wrappedValue: ClipboardSyncManager(transportManager: transport))
         rosterGossipManager = RosterGossipManager(transportManager: transport)
+        let beaconKeys = BeaconKeyManager(transportManager: transport)
         let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
         _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
         _hotspotStateManager = StateObject(wrappedValue: HotspotStateManager(transportManager: transport))
@@ -269,6 +270,7 @@ struct ConnectApp: App {
             .autoconnect()
             .sink { _ in
                 roster.periodicResync()
+                beaconKeys.periodicResync()
             }
     }
 

@@ -32,7 +32,10 @@ data class TrustedDevice(
      *  key-agreement key used for Noise_IK) — used to verify signed GATT requests (e.g.
      *  Instant Hotspot's `hotspot.toggle_request`). `null` for a row paired before this
      *  field existed; see [TrustedDevicesStore.backfillSigningPublicKey]. */
-    val signingPublicKey: ByteArray? = null
+    val signingPublicKey: ByteArray? = null,
+    /** The key this device uses to tag its BLE advertisements, shared over the encrypted mesh
+     *  (`ble.beacon_key`); `null` until received. See `BeaconTag`. */
+    val beaconKey: ByteArray? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -48,7 +51,8 @@ data class TrustedDevice(
                 signingPublicKey == null && other.signingPublicKey == null -> true
                 signingPublicKey == null || other.signingPublicKey == null -> false
                 else -> signingPublicKey.contentEquals(other.signingPublicKey)
-            }
+            } &&
+            (beaconKey?.contentEquals(other.beaconKey ?: return false) ?: (other.beaconKey == null))
     }
 
     override fun hashCode(): Int = deviceId.hashCode()
@@ -63,7 +67,8 @@ private data class TrustedDeviceRow(
     val addedAt: Long,
     val fallbackHost: String? = null,
     val lockOnLeaveEnabled: Boolean = false,
-    val signingPublicKeyBase64: String? = null
+    val signingPublicKeyBase64: String? = null,
+    val beaconKeyBase64: String? = null
 )
 
 /**
@@ -89,7 +94,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             addedAt = device.addedAt,
             fallbackHost = device.fallbackHost,
             lockOnLeaveEnabled = device.lockOnLeaveEnabled,
-            signingPublicKeyBase64 = device.signingPublicKey?.let { Base64.getEncoder().encodeToString(it) }
+            signingPublicKeyBase64 = device.signingPublicKey?.let { Base64.getEncoder().encodeToString(it) },
+            beaconKeyBase64 = device.beaconKey?.let { Base64.getEncoder().encodeToString(it) }
         )
         prefs.edit()
             .putString(rowKey(device.deviceId), Json.encodeToString(TrustedDeviceRow.serializer(), row))
@@ -116,6 +122,16 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
         val existing = getDevice(deviceId) ?: return
         if (existing.signingPublicKey?.contentEquals(signingPublicKey) == true) return
         addDevice(existing.copy(signingPublicKey = signingPublicKey))
+    }
+
+    /** Records the beacon key a trusted device sent over the mesh. Returns true if it changed anything;
+     *  idempotent, and a no-op for an unknown device. */
+    @Synchronized
+    fun setBeaconKey(deviceId: String, beaconKey: ByteArray): Boolean {
+        val existing = getDevice(deviceId) ?: return false
+        if (existing.beaconKey?.contentEquals(beaconKey) == true) return false
+        addDevice(existing.copy(beaconKey = beaconKey))
+        return true
     }
 
     /** Updates just the Lock-on-Leave flag for an already-trusted Mac (see
@@ -169,7 +185,8 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
             addedAt = row.addedAt,
             fallbackHost = row.fallbackHost,
             lockOnLeaveEnabled = row.lockOnLeaveEnabled,
-            signingPublicKey = row.signingPublicKeyBase64?.let { Base64.getDecoder().decode(it) }
+            signingPublicKey = row.signingPublicKeyBase64?.let { Base64.getDecoder().decode(it) },
+            beaconKey = row.beaconKeyBase64?.let { Base64.getDecoder().decode(it) }
         )
     }
 

@@ -54,6 +54,7 @@ class SyncForegroundService : Service() {
     private lateinit var clipboardSyncManager: ClipboardSyncManager
     private lateinit var dndSyncManager: DndSyncManager
     private lateinit var rosterGossipManager: RosterGossipManager
+    private lateinit var beaconKeyManager: dev.vmd1.gossip.features.proximity.BeaconKeyManager
     private lateinit var bleProximityMonitor: BLEProximityMonitor
     private lateinit var lockOnLeaveManager: LockOnLeaveManager
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
@@ -153,6 +154,14 @@ class SyncForegroundService : Service() {
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             deviceType = deviceType
+        )
+        beaconKeyManager = dev.vmd1.gossip.features.proximity.BeaconKeyManager(
+            transportManager = transportManager,
+            trustedDevicesStore = trustedDevices,
+            identityKeyStore = identity,
+            messageRouter = messageRouter,
+            scope = serviceScope,
+            onKeysChanged = { bleProximityMonitor.rebuildFingerprintMap() }
         )
         // Seed the "hotspot available" capability bit from the persisted toggle before
         // the first advertise — the toggle's own UI callback only fires on a live
@@ -588,6 +597,7 @@ class SyncForegroundService : Service() {
             while (isActive) {
                 delay(ROSTER_RESYNC_INTERVAL_MS)
                 rosterGossipManager.periodicResync()
+                beaconKeyManager.periodicResync()
             }
         }
     }

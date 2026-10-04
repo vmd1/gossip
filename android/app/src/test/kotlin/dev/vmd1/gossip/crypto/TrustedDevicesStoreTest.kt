@@ -121,4 +121,14 @@ class TrustedDevicesStoreTest {
         store.setSigningPublicKey("unknown", byteArrayOf(3))
         assertFalse(store.isTrusted("unknown"))
     }
+
+    @Test
+    fun `a beacon key is stored once, idempotently, only for known devices`() {
+        store.addDevice(device("a"))
+        assertTrue(store.setBeaconKey("a", byteArrayOf(1, 2)))
+        assertFalse(store.setBeaconKey("a", byteArrayOf(1, 2))) // same key: nothing changed
+        assertFalse(store.setBeaconKey("unknown", byteArrayOf(1)))
+        assertFalse(store.isTrusted("unknown"))
+        assertTrue(store.getDevice("a")!!.beaconKey!!.contentEquals(byteArrayOf(1, 2)))
+    }
 }

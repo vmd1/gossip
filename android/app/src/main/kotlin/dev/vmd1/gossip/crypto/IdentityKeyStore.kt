@@ -31,6 +31,9 @@ class IdentityKeyStore private constructor(private val prefs: SharedPreferences)
 
     val ed25519PrivateKey: ByteArray by lazy { loadOrCreateEd25519() }
 
+    /** Random key shared with trusted peers so they can recognise this device's BLE advertisements (see `BeaconTag`). */
+    val beaconKey: ByteArray by lazy { loadOrCreateBeaconKey() }
+
     val ed25519PublicKey: ByteArray by lazy {
         Ed25519PrivateKeyParameters(ed25519PrivateKey, 0).generatePublicKey().encoded
     }
@@ -63,6 +66,14 @@ class IdentityKeyStore private constructor(private val prefs: SharedPreferences)
         return seed
     }
 
+    private fun loadOrCreateBeaconKey(): ByteArray {
+        val stored = prefs.getString(KEY_BEACON, null)
+        if (stored != null) return decode(stored)
+        val key = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        prefs.edit().putString(KEY_BEACON, encode(key)).apply()
+        return key
+    }
+
     private fun encode(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
     private fun decode(value: String): ByteArray = Base64.decode(value, Base64.NO_WRAP)
 
@@ -72,6 +83,7 @@ class IdentityKeyStore private constructor(private val prefs: SharedPreferences)
         private const val KEY_X25519_PRIVATE = "x25519_private"
         private const val KEY_X25519_PUBLIC = "x25519_public"
         private const val KEY_ED25519_PRIVATE = "ed25519_private"
+        private const val KEY_BEACON = "ble_beacon_key"
 
         @Volatile
         private var instance: IdentityKeyStore? = null

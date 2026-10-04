@@ -51,6 +51,9 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
     /// `TrustedDevicesStore.backfillSigningPublicKey`. Decodes safely when absent from
     /// an older persisted file, same reasoning as `lockOnLeaveEnabled` above.
     var signingPublicKeyBase64: String? = nil
+    /// The key this device uses to tag its BLE advertisements, shared over the encrypted mesh (`ble.beacon_key`);
+    /// `nil` until it has been received. See `BeaconTag`.
+    var beaconKeyBase64: String? = nil
 
     init(
         deviceId: String,
@@ -60,7 +63,8 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         addedAt: Date,
         fallbackHost: String? = nil,
         lockOnLeaveEnabled: Bool = false,
-        signingPublicKeyBase64: String? = nil
+        signingPublicKeyBase64: String? = nil,
+        beaconKeyBase64: String? = nil
     ) {
         self.deviceId = deviceId
         self.publicKeyBase64 = publicKeyBase64
@@ -70,6 +74,7 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         self.fallbackHost = fallbackHost
         self.lockOnLeaveEnabled = lockOnLeaveEnabled
         self.signingPublicKeyBase64 = signingPublicKeyBase64
+        self.beaconKeyBase64 = beaconKeyBase64
     }
 
     init(from decoder: Decoder) throws {
@@ -82,6 +87,7 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
         fallbackHost = try container.decodeIfPresent(String.self, forKey: .fallbackHost)
         lockOnLeaveEnabled = try container.decodeIfPresent(Bool.self, forKey: .lockOnLeaveEnabled) ?? false
         signingPublicKeyBase64 = try container.decodeIfPresent(String.self, forKey: .signingPublicKeyBase64)
+        beaconKeyBase64 = try container.decodeIfPresent(String.self, forKey: .beaconKeyBase64)
     }
 }
 
@@ -178,6 +184,20 @@ final class TrustedDevicesStore: ObservableObject {
 
     /// Removes the device and records a tombstone so gossip can't quietly bring it back.
     /// `revokedAt` is when the revocation happened (Unix ms); keeps the later of two.
+    /// Records the beacon key a trusted device sent over the mesh. Idempotent; no-ops for an unknown device.
+    func setBeaconKey(deviceId: String, beaconKeyBase64: String) {
+        var changed = false
+        queue.sync {
+            guard let index = devices.firstIndex(where: { $0.deviceId == deviceId }),
+                  devices[index].beaconKeyBase64 != beaconKeyBase64 else { return }
+            devices[index].beaconKeyBase64 = beaconKeyBase64
+            changed = true
+        }
+        guard changed else { return }
+        persist()
+        publishOnMain()
+    }
+
     func revoke(deviceId: String, revokedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
         queue.sync {
             devices.removeAll { $0.deviceId == deviceId }

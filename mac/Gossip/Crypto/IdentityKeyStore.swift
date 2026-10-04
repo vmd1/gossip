@@ -21,6 +21,9 @@ final class IdentityKeyStore {
         let deviceId: String
         let ed25519PrivateKey: Data
         let x25519PrivateKey: Data
+        /// Random key shared with trusted peers so they can recognise this device's BLE advertisements
+        /// (see `BeaconTag`). Optional so an identity file from before it existed still decodes.
+        var beaconKey: Data?
     }
 
     private let fileURL: URL
@@ -72,6 +75,19 @@ final class IdentityKeyStore {
             let key = (try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: identity().x25519PrivateKey))
                 ?? Curve25519.KeyAgreement.PrivateKey()
             cachedAgreementKey = key
+            return key
+        }
+    }
+
+    /// This device's BLE beacon key, generated and persisted on first use.
+    var beaconKey: Data {
+        queue.sync {
+            var stored = identity()
+            if let key = stored.beaconKey { return key }
+            let key = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+            stored.beaconKey = key
+            cached = stored
+            persist(stored)
             return key
         }
     }
