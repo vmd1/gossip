@@ -135,7 +135,7 @@ private struct SettingsView: View {
             } header: {
                 Text("Universal Control")
             } footer: {
-                Text("Push the pointer off the edge of your Mac's screen towards a device you placed in Arrange Devices. Press Control+Option+Command+Esc to jump back at any time. Both permissions are tied to Gossip's code signature, so they reset if you rebuild without a stable signing certificate. Keystrokes in password fields aren't visible to Gossip (macOS secure input).")
+                Text("Push the pointer off the edge of your Mac's screen towards a device you placed in Arrange Devices. Press Control+Option+Command+Esc to jump back at any time. Keystrokes in password fields aren't visible to Gossip (macOS secure input).")
                     .font(.caption)
             }
 
@@ -171,8 +171,26 @@ private struct SettingsView: View {
                 Button("Do Not Disturb Sync Setup…", action: onOpenDNDSetup)
                 Button("Run Setup Again…", action: onRunSetupAgain)
             }
+
+            Section {
+                Text(Self.versionLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .textSelection(.enabled)
+            }
         }
         .formStyle(.grouped)
+    }
+
+    /// "Gossip 17" for a release build, "Gossip 1.0" for a local one (the release number is stamped into the
+    /// marketing version by the release workflow); the build number is appended when it differs.
+    static var versionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String
+        if let build, build != short, build != "1" { return "Gossip \(short) (\(build))" }
+        return "Gossip \(short)"
     }
 
     @ViewBuilder
