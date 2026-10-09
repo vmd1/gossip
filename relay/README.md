@@ -92,7 +92,7 @@ All defaults live in `src/config.ts`.
 - **Kill switch:** on = new connections get HTTP 503, joins get `disabled`, and existing connections get `relay.error disabled` + close 1012. Triggers (any is enough): `KILL_SWITCH=1` at start, the existence of `KILL_SWITCH_FILE` (polled every 2 s; `touch` to enable, `rm` to disable), or `kill -USR2 <pid>` to toggle at runtime. Clients treat it like any outage and back off.
 - **Ban list:** `BAN_FILE`, one entry per line: `key <hex SHA-256(publicKey)> [expiry ISO-8601]` or `ip <addr> [expiry]` (IPv6 bans the /64). Reloaded every `BAN_RELOAD_MS`; no expiry means permanent.
 - **Logging:** JSON lines with event names and coarse reasons only; client IPs are truncated to a /24 (v4) or /48 (v6). No payloads, tags, topic ids or key hashes.
-- **Deployment:** behind a TLS proxy with its own connection and rate limits; set `RELAY_ORIGIN`, and `TRUSTED_PROXY=true` only if the proxy overwrites the forwarded header. Docker: `docker build -t gossip-relay . && docker run -p 8080:8080 -e RELAY_ORIGIN=wss://... gossip-relay`.
+- **Deployment:** behind a TLS proxy with its own connection and rate limits; set `RELAY_ORIGIN`, and `TRUSTED_PROXY=true` only if the proxy overwrites the forwarded header. Docker: `docker build -t gossip-relay . && docker run -p 8080:8080 -e RELAY_ORIGIN=wss://... gossip-relay`, or `docker compose up --build` (read-only filesystem, all capabilities dropped; the image has a `/healthz` healthcheck). Multi-arch (amd64 and arm64) images are built on native runners by `.github/workflows/relay-image.yml` and published to `ghcr.io/<owner>/<repo>/relay` (`latest` from the default branch, branch, `sha-` and version tags).
 
 ## Threat model summary
 
