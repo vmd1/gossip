@@ -4,6 +4,8 @@ import Foundation
 enum Connectivity: Equatable {
     /// A live connection straight to that device.
     case direct
+    /// Connected, but only through the relay (not on the same network): messages flow, same-network features do not.
+    case relayed
     /// No direct connection, but it was heard from recently through another device (the mesh relays every
     /// broadcast, so its periodic updates still arrive).
     case mesh
@@ -22,8 +24,9 @@ enum DeviceConnectivity {
         Set(lastHeard.filter { id, at in id != selfId && !directIds.contains(id) && now.timeIntervalSince(at) < ttl }.keys)
     }
 
-    static func classify(_ deviceId: String, directIds: Set<String>, meshIds: Set<String>) -> Connectivity {
+    static func classify(_ deviceId: String, directIds: Set<String>, meshIds: Set<String>, relayedIds: Set<String> = []) -> Connectivity {
         if directIds.contains(deviceId) { return .direct }
+        if relayedIds.contains(deviceId) { return .relayed }
         if meshIds.contains(deviceId) { return .mesh }
         return .none
     }

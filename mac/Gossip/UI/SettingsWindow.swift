@@ -14,11 +14,11 @@ final class SettingsWindow: NSWindow {
     private var dndSetupWindow: DNDSetupWindow?
     private var onboardingWindow: OnboardingWindow?
 
-    init(featureSettings: FeatureSettings, pairingViewModel: PairingViewModel, notificationMirrorManager: NotificationMirrorManager) {
+    init(featureSettings: FeatureSettings, transportManager: TransportManager, pairingViewModel: PairingViewModel, notificationMirrorManager: NotificationMirrorManager) {
         self.pairingViewModel = pairingViewModel
         self.notificationMirrorManager = notificationMirrorManager
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 640),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -28,6 +28,7 @@ final class SettingsWindow: NSWindow {
         contentView = NSHostingView(
             rootView: SettingsView(
                 features: featureSettings,
+                transport: transportManager,
                 onPairNewDevice: { [weak self] in self?.openPairing() },
                 onOpenDNDSetup: { [weak self] in self?.openDNDSetup() },
                 onRunSetupAgain: { [weak self] in self?.openOnboarding() }
@@ -72,6 +73,7 @@ final class SettingsWindow: NSWindow {
 
 private struct SettingsView: View {
     @ObservedObject var features: FeatureSettings
+    @ObservedObject var transport: TransportManager
     let onPairNewDevice: () -> Void
     let onOpenDNDSetup: () -> Void
     let onRunSetupAgain: () -> Void
@@ -104,6 +106,8 @@ private struct SettingsView: View {
                 Text("Turning a feature off stops this Mac from sending or receiving it at all. Your other devices keep their own settings.")
                     .font(.caption)
             }
+
+            RelaySettingsSection(settings: .shared, transport: transport)
 
             Section {
                 Button("Arrange Devices…") { universalControl.showLayoutWindow() }

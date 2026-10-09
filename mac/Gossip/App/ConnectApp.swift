@@ -260,16 +260,11 @@ struct ConnectApp: App {
                 }
             }
 
-        // Self-healing backstop for roster gossip, on top of the event-driven paths
-        // (a fresh connection, or a brand-new pairing): periodically re-broadcasts the
-        // full local roster to every connected peer. Mirrors the DND resync loop above
-        // — safe to call repeatedly, since re-adding an already-trusted device is a
-        // no-op (see `RosterGossipManager.handleRosterUpdate`).
-        let roster = rosterGossipManager
+        // Self-healing backstop for the beacon keys, on top of the event-driven path (a fresh connection). The roster's
+        // own periodic resync is scheduled by the Rust engine (`TransportManager` answers its `trust.roster_update`).
         rosterResyncSubscriptions.cancellable = Timer.publish(every: 300, on: .main, in: .common)
             .autoconnect()
             .sink { _ in
-                roster.periodicResync()
                 beaconKeys.periodicResync()
             }
     }

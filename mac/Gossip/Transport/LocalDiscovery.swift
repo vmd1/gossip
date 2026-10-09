@@ -47,10 +47,18 @@ final class LocalDiscovery {
                 self?.onIncomingConnection?(connection)
             }
         }
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
             switch state {
             case .failed(let error):
                 gossipError("Gossip: Bonjour listener failed: \(error)")
+                // NWListener reports "address already in use" here, asynchronously, not by throwing from the initialiser. If
+                // the fixed port was taken (another instance, or a second copy of the app), fall back to an ephemeral
+                // one so pairing and on-LAN discovery still work; only a direct dial to the fixed port is lost.
+                guard let self, let failed = listener, self.listener === failed, port != nil else { return }
+                failed.cancel()
+                self.listener = nil
+                gossipError("Gossip: retrying the listener on an ephemeral port")
+                try? self.startAdvertising(deviceId: deviceId, deviceName: deviceName, publicKeyFingerprint: publicKeyFingerprint, port: nil)
             default:
                 break
             }

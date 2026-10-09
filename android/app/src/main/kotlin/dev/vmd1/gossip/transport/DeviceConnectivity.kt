@@ -4,6 +4,8 @@ package dev.vmd1.gossip.transport
 enum class Connectivity {
     /** A live connection straight to that device. */
     DIRECT,
+    /** Connected, but only through the relay (not on the same network): messages flow, same-network features do not. */
+    RELAYED,
     /** No direct connection, but it was heard from recently through another device (the mesh relays
      *  every broadcast, so its periodic updates still arrive). */
     MESH,
@@ -26,8 +28,14 @@ object DeviceConnectivity {
     ): Set<String> =
         lastHeard.filter { (id, at) -> id != selfId && id !in directIds && now - at < ttlMs }.keys
 
-    fun classify(deviceId: String, directIds: Set<String>, meshIds: Set<String>): Connectivity = when {
+    fun classify(
+        deviceId: String,
+        directIds: Set<String>,
+        meshIds: Set<String>,
+        relayedIds: Set<String> = emptySet()
+    ): Connectivity = when {
         deviceId in directIds -> Connectivity.DIRECT
+        deviceId in relayedIds -> Connectivity.RELAYED
         deviceId in meshIds -> Connectivity.MESH
         else -> Connectivity.NONE
     }

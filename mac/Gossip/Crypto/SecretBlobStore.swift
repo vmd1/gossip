@@ -8,6 +8,30 @@ protocol SecretBlobStore {
     @discardableResult func write(_ data: Data) -> Bool
 }
 
+/// Picks the production blob store for `account`: the login Keychain in the real app, but a throwaway file when the
+/// app is only the host of a unit-test run. The Keychain is the wrong place for tests twice over: a test host built
+/// moments ago has a new code hash, which macOS treats as a different app and answers with an access prompt that a
+/// headless run never sees (the host then hangs at launch), and the test host would otherwise read, and could write, the
+/// real device identity and paired devices of whoever is running the tests, and advertise as their Mac.
+enum ProductionBlobStore {
+    static var isRunningUnderTest: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
+    }
+
+    static func make(account: String, legacyFile: URL) -> SecretBlobStore {
+        guard isRunningUnderTest else { return KeychainBlobStore(account: account, legacyFile: legacyFile) }
+        return FileBlobStore(url: scratchDirectory.appendingPathComponent("\(account).json"))
+    }
+
+    /// Per test process, so parallel runs do not share state; the system cleans the temporary directory.
+    private static let scratchDirectory: URL = {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("gossip-test-stores-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        PrivateFile.ensureDirectory(dir)
+        return dir
+    }()
+}
+
 /// A `0600` file written atomically via `PrivateFile`. Used by tests, and as the legacy location that
 /// `KeychainBlobStore` migrates out of.
 struct FileBlobStore: SecretBlobStore {

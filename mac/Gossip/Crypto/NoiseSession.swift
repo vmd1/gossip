@@ -231,13 +231,15 @@ final class NoiseSession {
 
     /// Builds handshake message 1. `payload` (e.g. a JSON-encoded `handshake.hello`
     /// device-info blob) is encrypted under the key derived from `es`.
-    func createMessage1(payload: Data) throws -> Data {
+    /// `ephemeral` exists so the shared conformance vectors (`schema/noise-ik-vectors.json`) can fix the ephemeral key;
+    /// production callers leave it `nil` and get a fresh random one.
+    func createMessage1(payload: Data, ephemeral: Curve25519.KeyAgreement.PrivateKey? = nil) throws -> Data {
         guard role == .initiator else { throw NoiseError.wrongRole }
         guard state == .uninitialized else { throw NoiseError.alreadyEstablished }
         guard let rs = remoteStatic else { throw NoiseError.missingRemoteStatic }
         state = .handshaking
 
-        let e = Curve25519.KeyAgreement.PrivateKey()
+        let e = ephemeral ?? Curve25519.KeyAgreement.PrivateKey()
         localEphemeral = e
 
         var buffer = Data()
@@ -301,12 +303,12 @@ final class NoiseSession {
 
     /// Builds handshake message 2 and completes the handshake for the responder,
     /// splitting into transport cipher states.
-    func createMessage2(payload: Data) throws -> Data {
+    func createMessage2(payload: Data, ephemeral: Curve25519.KeyAgreement.PrivateKey? = nil) throws -> Data {
         guard role == .responder else { throw NoiseError.wrongRole }
         guard state == .handshaking else { throw NoiseError.notEstablished }
         guard let re = remoteEphemeral else { throw NoiseError.invalidMessage }
 
-        let e = Curve25519.KeyAgreement.PrivateKey()
+        let e = ephemeral ?? Curve25519.KeyAgreement.PrivateKey()
         localEphemeral = e
 
         var buffer = Data()

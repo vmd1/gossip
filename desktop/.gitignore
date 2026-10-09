@@ -1,0 +1,4 @@
+target/
+ffi/kotlin/build/
+ffi/kotlin/.gradle/
+ffi/kotlin/.kotlin/

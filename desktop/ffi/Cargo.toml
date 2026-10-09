@@ -1,0 +1,26 @@
+[package]
+name = "gossip-ffi"
+description = "UniFFI bindings (Swift, Kotlin) over gossip-core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "gossip_ffi"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+gossip-core = { path = "../core" }
+serde_json = "1"
+thiserror = "2"
+uniffi = { version = "0.32", features = ["cli"] }
+ed25519-dalek = "2"
+base64 = "0.22"
+
+[dev-dependencies]
+hex = "0.4"

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["core", "ffi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.80"
+
+[profile.release]
+lto = true
+codegen-units = 1
+# UniFFI library mode reads symbols from the built library, so keep them; AGP strips jniLibs when packaging.
+strip = "debuginfo"

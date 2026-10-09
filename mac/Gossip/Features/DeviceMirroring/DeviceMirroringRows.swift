@@ -14,11 +14,11 @@ struct MirrorRow: Equatable, Identifiable {
 enum DeviceMirroringRows {
     /// The devices that can be mirrored — Android phones and tablets (a Mac has nothing to stream) —
     /// connected ones first, then by name.
-    static func rows(devices: [TrustedDevice], connectedIds: Set<String>, meshIds: Set<String> = [], batteries: [String: BatteryState]) -> [MirrorRow] {
+    static func rows(devices: [TrustedDevice], connectedIds: Set<String>, meshIds: Set<String> = [], relayedIds: Set<String> = [], batteries: [String: BatteryState]) -> [MirrorRow] {
         devices
             .filter { $0.deviceType != .mac }
             .map { MirrorRow(id: $0.deviceId, name: $0.deviceName, deviceType: $0.deviceType,
-                             connectivity: DeviceConnectivity.classify($0.deviceId, directIds: connectedIds, meshIds: meshIds),
+                             connectivity: DeviceConnectivity.classify($0.deviceId, directIds: connectedIds, meshIds: meshIds, relayedIds: relayedIds),
                              battery: batteries[$0.deviceId]) }
             .sorted {
                 let a = $0.connectivity.sortRank, b = $1.connectivity.sortRank
@@ -29,5 +29,5 @@ enum DeviceMirroringRows {
 }
 
 private extension Connectivity {
-    var sortRank: Int { switch self { case .direct: return 0; case .mesh: return 1; case .none: return 2 } }
+    var sortRank: Int { switch self { case .direct: return 0; case .relayed: return 1; case .mesh: return 2; case .none: return 3 } }
 }

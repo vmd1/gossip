@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "android/**"
+      - "desktop/**"
       - "schema/**"
       - ".github/workflows/android.yml"
   workflow_dispatch:
@@ -36,6 +37,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      # The app's protocol engine is the Rust core (desktop/core). Gradle builds it (scripts/build-android.sh) with the NDK
+      # that ships on the runner, so the toolchain, the four Android targets and cargo-ndk are needed first.
+      - name: Set up the Rust toolchain for the protocol engine
+        working-directory: desktop
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          cargo install cargo-ndk --locked
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4

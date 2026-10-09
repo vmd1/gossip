@@ -45,7 +45,7 @@ final class IdentityKeyStore {
         // would orphan the legacy file we migrate from.
         let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
         PrivateFile.ensureDirectory(dir)
-        self.init(blob: KeychainBlobStore(account: "identity", legacyFile: dir.appendingPathComponent("identity.json")))
+        self.init(blob: ProductionBlobStore.make(account: "identity", legacyFile: dir.appendingPathComponent("identity.json")))
     }
 
     // MARK: - Public API
