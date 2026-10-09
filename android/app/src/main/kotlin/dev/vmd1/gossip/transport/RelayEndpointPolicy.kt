@@ -30,7 +30,7 @@ object RelayEndpointPolicy {
      * the current relay. While it is this placeholder the app does not poll at all (that is not an error): it just uses
      * [DEFAULT_ORIGIN]. See `docs/plans/relay.md` "Relay directory".
      */
-    const val DIRECTORY_ENDPOINT = "https://gossip.vmd1.dev/TODO-directory"
+    const val DIRECTORY_ENDPOINT = "https://api.vmd1.dev/v1/config/gossip"
 
     fun isDirectoryPlaceholder(endpoint: String = DIRECTORY_ENDPOINT): Boolean = endpoint.endsWith("/TODO-directory")
 

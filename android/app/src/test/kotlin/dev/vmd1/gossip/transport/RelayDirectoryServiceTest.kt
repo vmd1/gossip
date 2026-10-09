@@ -173,7 +173,7 @@ class RelayDirectoryServiceTest {
     @Test
     fun thePlaceholderEndpointNeverPolls() {
         val http = FakeHttp().apply { response = blob("wss://a.vmd1.dev") }
-        val svc = service(http, Clock(), endpoint = RelayEndpointPolicy.DIRECTORY_ENDPOINT)
+        val svc = service(http, Clock(), endpoint = "https://api.vmd1.dev/TODO-directory")
         assertFalse(svc.pollingEnabled)
         assertFalse("nothing to wait for", svc.state.value.awaitingFirstAnswer)
         svc.tick(); svc.noteRelayConnectFailure()

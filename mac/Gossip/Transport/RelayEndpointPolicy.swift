@@ -20,7 +20,7 @@ enum RelayEndpointPolicy {
     /// THE ONE PLACE to set the relay directory's HTTPS URL: an endpoint returning JSON with a `relayServer` key that
     /// names the current relay. While it is this placeholder the app does not poll at all (that is not an error): it
     /// just uses `defaultOrigin`. See `docs/plans/relay.md` "Relay directory".
-    static let directoryEndpoint = "https://gossip.vmd1.dev/TODO-directory"
+    static let directoryEndpoint = "https://api.vmd1.dev/v1/config/gossip"
 
     static var directoryEndpointIsPlaceholder: Bool { directoryEndpoint.hasSuffix("/TODO-directory") }
 

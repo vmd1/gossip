@@ -31,10 +31,10 @@ class RelayEndpointPolicyTest {
     }
 
     @Test
-    fun theDirectoryEndpointIsAPlaceholderUntilTheOperatorSetsIt() {
-        assertTrue(RelayEndpointPolicy.isDirectoryPlaceholder())
-        assertTrue(RelayEndpointPolicy.DIRECTORY_ENDPOINT.startsWith("https://"))
-        assertFalse(RelayEndpointPolicy.isDirectoryPlaceholder("https://gossip.vmd1.dev/relay.json"))
+    fun theDirectoryEndpointIsTheRealApiUrl() {
+        assertFalse(RelayEndpointPolicy.isDirectoryPlaceholder())
+        assertEquals("https://api.vmd1.dev/v1/config/gossip", RelayEndpointPolicy.DIRECTORY_ENDPOINT)
+        assertTrue(RelayEndpointPolicy.isDirectoryPlaceholder("https://api.vmd1.dev/TODO-directory"))
     }
 
     @Test

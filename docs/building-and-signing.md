@@ -144,7 +144,7 @@ The Mac app can reach paired devices that are not on the same network through th
 The built-in default is `RelayEndpointPolicy.defaultOrigin`, `wss://gossip.vmd1.dev`. The relay actually used is the
 custom address if set, else the `relayServer` named by the relay directory, else that default. The directory is an HTTPS
 JSON endpoint whose URL is one constant, `RelayEndpointPolicy.directoryEndpoint`
-(`mac/Gossip/Transport/RelayEndpointPolicy.swift`), currently the placeholder `https://gossip.vmd1.dev/TODO-directory`:
+(`mac/Gossip/Transport/RelayEndpointPolicy.swift`), currently `https://api.vmd1.dev/v1/config/gossip`:
 **set it to the real URL before release**; while it is the placeholder the app does not poll and just uses the default.
 `RelayDirectoryService` polls only while the relay is on (on launch, every 6 h, with backoff on failure and once more when
 the relay socket cannot connect), validates the answer in the Rust core (the host must be `vmd1.dev` or a subdomain) and
@@ -166,9 +166,8 @@ The Android app reaches paired devices that are not on the same network through 
 validation as on the Mac; the keyboard's Done key or "Save address" commits it), the relay server in use with its source
 (`custom`, `directory`, `cached (offline)`, `default`) and the directory's last check, a status line and the privacy note.
 As on the Mac, the default is `wss://gossip.vmd1.dev` and the relay directory URL is one constant,
-`RelayEndpointPolicy.DIRECTORY_ENDPOINT` in `android/.../transport/RelayEndpointPolicy.kt`, currently the placeholder
-`https://gossip.vmd1.dev/TODO-directory`: **set it to the real URL before release**; while it is the placeholder nothing is
-polled. `RelayDirectoryService` (OkHttp) has no timer of its own: the transport's once-a-second engine loop inside the
+`RelayEndpointPolicy.DIRECTORY_ENDPOINT` in `android/.../transport/RelayEndpointPolicy.kt`, currently
+`https://api.vmd1.dev/v1/config/gossip`. `RelayDirectoryService` (OkHttp) has no timer of its own: the transport's once-a-second engine loop inside the
 foreground service asks it whether a poll is due, so polling never wakes the device. The last good answer is kept in
 `filesDir/relay-directory.json`.
 

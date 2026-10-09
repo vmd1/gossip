@@ -52,9 +52,9 @@ final class RelayEndpointPolicyTests: XCTestCase {
         for host in ["evilvmd1.dev", "vmd1.dev.evil.com", "gossip.vmd1.dev.evil.com", "vmd1.devx", "dev", ""] { XCTAssertFalse(RelayEndpointPolicy.isAllowedHost(host), host) }
     }
 
-    func testDirectoryEndpointIsAPlaceholderUntilTheOperatorSetsIt() {
-        XCTAssertTrue(RelayEndpointPolicy.directoryEndpointIsPlaceholder)
-        XCTAssertTrue(RelayEndpointPolicy.directoryEndpoint.hasPrefix("https://"))
+    func testDirectoryEndpointIsTheRealApiUrl() {
+        XCTAssertFalse(RelayEndpointPolicy.directoryEndpointIsPlaceholder)
+        XCTAssertEqual(RelayEndpointPolicy.directoryEndpoint, "https://api.vmd1.dev/v1/config/gossip")
     }
 
     func testLoggableShowsOnlyTheHost() {

@@ -170,7 +170,7 @@ final class RelayDirectoryServiceTests: XCTestCase {
     func testPlaceholderEndpointNeverPolls() {
         let http = FakeHTTP(); let clock = Clock()
         http.response = blob("wss://a.vmd1.dev")
-        let service = makeService(http: http, clock: clock, endpoint: RelayEndpointPolicy.directoryEndpoint)
+        let service = makeService(http: http, clock: clock, endpoint: "https://api.vmd1.dev/TODO-directory")
         XCTAssertFalse(service.pollingEnabled)
         service.setActive(true); service.tick(); service.noteRelayConnectFailure(); settle(service)
         XCTAssertEqual(http.calls, 0)
