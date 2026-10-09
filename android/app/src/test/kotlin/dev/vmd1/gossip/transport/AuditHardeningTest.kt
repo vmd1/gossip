@@ -1,9 +1,7 @@
 package dev.vmd1.gossip.transport
 
 import dev.vmd1.gossip.features.trust.RosterGossipManager
-import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.PairingCode
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,18 +11,8 @@ import org.junit.Test
 import java.security.MessageDigest
 
 class AuditHardeningTest {
-    @Test fun rawFrameHashIsBoundIntoThePayloadAndChecked() {
-        val raw = byteArrayOf(1, 2, 3, 4)
-        val bound = TransportManager.bindingRawFrame(raw, Envelope(type = "clipboard.update", senderId = "s", hasRawFollowup = true))
-        assertTrue(TransportManager.rawFrameMatches(raw, bound))
-        assertFalse(TransportManager.rawFrameMatches(byteArrayOf(1, 2, 3, 5), bound))
-        assertFalse(TransportManager.rawFrameMatches(raw, Envelope(type = "clipboard.update", senderId = "s")))
-    }
-
-    @Test fun rawBindingLeavesASignedEnvelopeAlone() {
-        val signed = Envelope(type = "x", senderId = "s", sig = "abc", payload = JsonObject(mapOf("a" to JsonPrimitive(1))))
-        assertEquals(signed, TransportManager.bindingRawFrame(byteArrayOf(9), signed))
-    }
+    // Envelope shape checks, raw-frame hash binding, replay windows and the other wire-level hardening moved into the
+    // Rust engine along with the code (see desktop/core/tests/engine.rs); the cases below are what stays in the app.
 
     @Test fun fingerprintAcceptsBothAdvertisementFormatsAndRejectsOthers() {
         val key = ByteArray(32) { it.toByte() }

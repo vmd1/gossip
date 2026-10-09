@@ -4,21 +4,25 @@ How to build, test and sign Gossip, and how releases are made.
 
 ## Prerequisites
 
+- **Both apps: a Rust toolchain.** The wire protocol (Noise handshake, framing, signatures, mesh routing, trust) lives in the Rust core in [`desktop/`](../desktop), which both apps call through generated bindings
+  - `brew install rustup && rustup default stable` (or [rustup.rs](https://rustup.rs)); `desktop/rust-toolchain.toml` pins the channel
 - **Mac app**
   - a recent Xcode (CI uses the latest stable; macOS 14 or newer is the deployment target)
   - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
 - **Android app**
   - JDK 17
-  - the Android SDK (the project compiles against API 36)
+  - the Android SDK (the project compiles against API 36) and an NDK (r26 or newer; `sdkmanager "ndk;27.3.13750724"`)
+  - Rust Android targets and cargo-ndk: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android` and `cargo install cargo-ndk`
 - **Optional:** `adb` (Android SDK Platform Tools) for installing builds and running the device end-to-end tests
 
 ## Build
 
 - **Mac**
-  - generate the Xcode project (it is not checked in), then build in Xcode or from the command line:
+  - build the protocol engine as a Swift package first (re-run after changing anything under `desktop/`), then generate the Xcode project (it is not checked in) and build in Xcode or from the command line:
 
 ```bash
 cd mac
+scripts/build-core.sh        # this machine's architecture; add --universal for arm64 + x86_64
 xcodegen generate
 xcodebuild -project Gossip.xcodeproj -scheme Gossip -configuration Release -destination 'platform=macOS' build
 ```
@@ -32,12 +36,16 @@ cd android
 ./gradlew assembleDebug      # app/build/outputs/apk/debug/app-debug.apk
 ```
 
+  - Gradle builds the protocol engine itself (`desktop/scripts/build-android.sh`, all four ABIs) the first time and skips it while `desktop/target/android` exists; `-PrebuildCore` forces a rebuild
+  - for quick local builds set `GOSSIP_CORE_ABIS=arm64-v8a` to build just the ABI your device needs
+
 ## Test
 
+- **Rust core and bindings:** `cd desktop && cargo test`; see [`desktop/README.md`](../desktop/README.md) for the interop tests against the apps' own code and for running the suite on a device
 - **Mac unit tests**
   - `xcodebuild test -project Gossip.xcodeproj -scheme Gossip -destination 'platform=macOS'`
-  - the app is the test host, so it launches during the run; avoid running it while a live Gossip session matters to you, and redirect the output to a file because it is long
-- **Android unit tests:** `cd android && ./gradlew testDebugUnitTest`
+  - the app is the test host, so it launches during the run (with throwaway identity and trust stores, never the real Keychain items), and redirect the output to a file because it is long
+- **Android unit tests:** `cd android && ./gradlew testDebugUnitTest` (this builds a host copy of the protocol engine with `cargo build -p gossip-ffi` the first time)
 - **Device end-to-end (Universal Control):** `mac/scripts/run-tablet-e2e.sh [adb-serial] [scenario...]`
   - drives a real device with the same protocol code the Mac app uses and asserts on logcat and `dumpsys input`
   - needs the debug APK installed, Gossip's service running and Shizuku running on the device
@@ -111,7 +119,13 @@ android/scripts/signing.sh adopt     # copies ~/.android/debug.keystore into ~/.
 ## Contributing
 
 - development happens on `dev`: open pull requests against it; merging to `main` ships nothing by itself; a release is cut by bumping `VERSION` (see above)
-- the Mac and Android apps share no code — keep them in sync through [`schema/message-types.md`](../schema/message-types.md)
+- the Mac and Android apps share their protocol engine, the Rust core in [`desktop/`](../desktop); the rest (UI, sockets, OS integration, feature managers) is separate — keep them in sync through [`schema/message-types.md`](../schema/message-types.md)
   - any change to what a message carries, when it is sent or how it is handled updates that file in the same change
   - handlers must be idempotent, and messages that configure persistent state need a resync, so a dropped message heals itself
 - see [architecture](architecture.md), the [wire protocol](wire-protocol.md) and the [ADRs](adr) for the design
+
+## End-to-end test against an Android emulator
+
+`mac/scripts/e2e-emulator.sh [avd]` runs the Mac transport against the Android app on an emulator (headless if none is
+booted): QR pairing, nested-Unicode and 1 MiB payloads, 3 MiB raw frames both ways, feature gating, a 70 s heartbeat
+soak, reconnect without a prompt, and revocation. It never touches a real phone or the Mac app's Keychain data.

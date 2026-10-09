@@ -76,6 +76,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # The app's protocol engine is the Rust core (desktop/core); Gradle builds it for all four ABIs with the NDK that
+      # ships on the runner (scripts/build-android.sh).
+      - name: Set up the Rust toolchain for the protocol engine
+        working-directory: desktop
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          cargo install cargo-ndk --locked
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
@@ -168,6 +177,13 @@ jobs:
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: latest-stable
+
+      # The app's protocol engine is the Rust core (desktop/core), consumed as a local Swift package. Built for both Mac
+      # architectures because the Release configuration links both (the package must contain every slice the app links).
+      - name: Build the protocol engine
+        run: |
+          (cd ../desktop && (rustup show active-toolchain || rustup toolchain install) && rustup target add aarch64-apple-darwin x86_64-apple-darwin)
+          scripts/build-core.sh --universal
 
       - name: Install XcodeGen
         run: brew install xcodegen

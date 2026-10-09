@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "mac/**"
+      - "desktop/**"
       - "schema/**"
       - ".github/workflows/mac.yml"
   workflow_dispatch:
@@ -38,6 +39,13 @@ jobs:
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: latest-stable
+
+      # The app's protocol engine is the Rust core (desktop/core), consumed as a local Swift package that must exist
+      # before the Xcode project is generated. Host architecture only: the runner is the only target here.
+      - name: Build the protocol engine
+        run: |
+          (cd ../desktop && (rustup show active-toolchain || rustup toolchain install))
+          scripts/build-core.sh
 
       - name: Install XcodeGen
         run: brew install xcodegen

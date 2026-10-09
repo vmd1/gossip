@@ -132,3 +132,59 @@ class TrustedDevicesStoreTest {
         assertTrue(store.getDevice("a")!!.beaconKey!!.contentEquals(byteArrayOf(1, 2)))
     }
 }
+
+/** The snapshot format shared with the Rust engine (`desktop/core` `TrustSnapshot`) and the store's change listener. */
+class TrustedDevicesStoreCoreSnapshotTest {
+    private fun key(n: Int) = ByteArray(32) { n.toByte() }
+
+    @Test
+    fun exportAndImportRoundTripKeepsEveryField() {
+        val a = TrustedDevicesStore(FakeSharedPreferences())
+        a.addDevice(TrustedDevice("dev-1", key(3), "Pixel", dev.vmd1.gossip.protocol.DeviceType.ANDROID_PHONE, 1234L, signingPublicKey = key(4)))
+        a.revoke("dev-gone", 999L)
+        val json = a.exportCoreSnapshot()
+        val parsed = kotlinx.serialization.json.Json.parseToJsonElement(json) as kotlinx.serialization.json.JsonObject
+        val row = (parsed["devices"] as kotlinx.serialization.json.JsonArray).first() as kotlinx.serialization.json.JsonObject
+        assertEquals("dev-1", (row["device_id"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("android-phone", (row["device_type"] as kotlinx.serialization.json.JsonPrimitive).content)
+
+        val b = TrustedDevicesStore(FakeSharedPreferences())
+        assertTrue(b.importCoreSnapshot(json))
+        assertEquals("Pixel", b.getDevice("dev-1")?.deviceName)
+        assertEquals(999L, b.revokedAt("dev-gone"))
+        assertFalse("importing the same snapshot again changes nothing", b.importCoreSnapshot(json))
+    }
+
+    @Test
+    fun importNeverDeletesARowTheEngineHasNotHeardOfUnlessItIsTombstoned() {
+        val store = TrustedDevicesStore(FakeSharedPreferences())
+        store.addDevice(TrustedDevice("new-row", key(1), "Added after the snapshot", dev.vmd1.gossip.protocol.DeviceType.ANDROID_TABLET, 1L))
+        store.addDevice(TrustedDevice("revoked-row", key(2), "Revoked", dev.vmd1.gossip.protocol.DeviceType.ANDROID_PHONE, 1L))
+        store.importCoreSnapshot("""{"devices":[],"revoked":{"revoked-row":99}}""")
+        assertTrue("a row the app added after the engine's snapshot survives", store.isTrusted("new-row"))
+        assertFalse("a tombstoned row is removed", store.isTrusted("revoked-row"))
+        assertEquals(99L, store.revokedAt("revoked-row"))
+    }
+
+    @Test
+    fun malformedSnapshotsAreIgnored() {
+        val store = TrustedDevicesStore(FakeSharedPreferences())
+        assertFalse(store.importCoreSnapshot("not json"))
+        assertFalse(store.importCoreSnapshot("{}"))
+        assertFalse(store.importCoreSnapshot("""{"devices":[{"device_id":1}]}"""))
+        assertTrue(store.allDevices().isEmpty())
+    }
+
+    @Test
+    fun changeListenersHearEveryEditButNotTheEnginesOwnImports() {
+        val store = TrustedDevicesStore(FakeSharedPreferences())
+        var calls = 0
+        store.addChangeListener { calls++ }
+        store.markProvisional("x")
+        store.addDevice(TrustedDevice("x", key(1), "X", dev.vmd1.gossip.protocol.DeviceType.MAC, 1L))
+        store.clearProvisional("x")
+        store.revoke("x")
+        assertEquals(4, calls)
+        assertEquals(listOf<String>(), store.provisionalIds())
+    }
+}

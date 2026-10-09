@@ -103,8 +103,13 @@ class SyncForegroundService : Service() {
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter,
             deviceType = deviceType,
-            isMessageAllowed = featureSettings::isMessageAllowed
+            isMessageAllowed = featureSettings::isMessageAllowed,
+            initialDisabledFeatures = featureSettings.disabled.value.map(::coreFeatureKey)
         )
+        // The engine applies the same per-feature gate on delivery, so it needs to hear about every change.
+        featureSettings.disabled
+            .onEach { transportManager.setDisabledFeatures(it.map(::coreFeatureKey)) }
+            .launchIn(serviceScope)
         mediaControlBridge = MediaControlBridge(
             context = applicationContext,
             messageRouter = messageRouter,
@@ -140,15 +145,7 @@ class SyncForegroundService : Service() {
             messageRouter = messageRouter,
             scope = serviceScope
         )
-        rosterGossipManager = RosterGossipManager(
-            transportManager = transportManager,
-            trustedDevicesStore = trustedDevices,
-            identityKeyStore = identity,
-            messageRouter = messageRouter,
-            scope = serviceScope,
-            deviceName = Build.MODEL ?: "Android device",
-            deviceType = deviceType
-        )
+        rosterGossipManager = RosterGossipManager(transportManager)
         bleProximityMonitor = BLEProximityMonitor(
             context = applicationContext,
             identityKeyStore = identity,
@@ -596,7 +593,6 @@ class SyncForegroundService : Service() {
         serviceScope.launch {
             while (isActive) {
                 delay(ROSTER_RESYNC_INTERVAL_MS)
-                rosterGossipManager.periodicResync()
                 beaconKeyManager.periodicResync()
             }
         }
@@ -776,3 +772,7 @@ class SyncForegroundService : Service() {
         private const val ROSTER_RESYNC_INTERVAL_MS = 300_000L
     }
 }
+
+/** The engine's key for a feature (`desktop/core` `Feature::key`): the enum name in lowerCamelCase. */
+private fun coreFeatureKey(feature: dev.vmd1.gossip.features.settings.Feature): String =
+    feature.name.lowercase().split('_').mapIndexed { i, part -> if (i == 0) part else part.replaceFirstChar { it.uppercase() } }.joinToString("")

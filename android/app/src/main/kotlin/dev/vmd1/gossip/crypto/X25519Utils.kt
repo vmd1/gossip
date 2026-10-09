@@ -26,6 +26,10 @@ object X25519Utils {
         return X25519KeyPair(priv.encoded, pub.encoded)
     }
 
+    /** The key pair for a known private key (used by the shared conformance vectors). */
+    fun keyPairFromPrivate(privateKey: ByteArray): X25519KeyPair =
+        X25519KeyPair(privateKey, X25519PrivateKeyParameters(privateKey, 0).generatePublicKey().encoded)
+
     /** Diffie-Hellman agreement between a local private key and a remote public key. */
     fun dh(privateKey: ByteArray, publicKey: ByteArray): ByteArray {
         val priv = X25519PrivateKeyParameters(privateKey, 0)

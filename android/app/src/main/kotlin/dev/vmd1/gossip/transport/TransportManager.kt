@@ -2,25 +2,18 @@ package dev.vmd1.gossip.transport
 
 import android.content.Context
 import android.os.Build
-import android.util.Base64
-import dev.vmd1.gossip.util.Log
 import dev.vmd1.gossip.crypto.IdentityKeyStore
-import dev.vmd1.gossip.crypto.NoiseRole
-import dev.vmd1.gossip.crypto.NoiseSession
-import dev.vmd1.gossip.crypto.TrustedDevice
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
 import dev.vmd1.gossip.protocol.DeviceType
 import dev.vmd1.gossip.protocol.Envelope
-import dev.vmd1.gossip.protocol.EnvelopeSigning
-import dev.vmd1.gossip.protocol.HandshakeIdentity
-import dev.vmd1.gossip.protocol.HandshakePayload
-import dev.vmd1.gossip.protocol.PairingCode
-import dev.vmd1.gossip.protocol.MessageType
+import dev.vmd1.gossip.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,32 +21,28 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 private const val TAG = "TransportManager"
 
 enum class ConnectionState { DISCONNECTED, DISCOVERING, HANDSHAKING, CONNECTED }
 
-/** Everything learned about a peer from its `handshake.hello`/`handshake.ack` envelope —
- *  mirrors Mac's `HandshakePeerInfo`. [signingPublicKey] is the peer's raw Ed25519
- *  signing public key. */
+/** Everything learned about a peer from its authenticated handshake — mirrors Mac's `HandshakePeerInfo`.
+ *  [signingPublicKey] is the peer's raw Ed25519 signing public key. */
 data class HandshakePeerInfo(
     val deviceId: String,
     val deviceName: String,
@@ -64,20 +53,18 @@ data class HandshakePeerInfo(
 )
 
 /**
- * Owns the connection lifecycle to every trusted peer device simultaneously (a mesh, not
- * a single pair): drives [NsdDiscovery] to advertise, accepts any number of concurrent
- * inbound [Socket]s, performs the Noise_IK handshake via [NoiseSession] on each before
- * ever tracking it as connected, and frames/deframes envelopes per the wire protocol —
- * `[4-byte big-endian length][payload]`.
+ * Owns the sockets to every trusted peer device simultaneously (a mesh, not a single pair).
  *
- * Also makes the deliver-vs-forward decision for every received envelope (see
- * [handleReceivedEnvelope]), which is what makes multi-hop relay and roster-gossip
- * broadcast actually reach devices this device has no direct connection to.
+ * The protocol itself lives in the Rust engine (`desktop/core`, reached only through [CoreBridge]): the Noise_IK
+ * handshake and transport, framing, envelope signing/verification, de-duplication, the deliver-vs-forward decision that
+ * makes multi-hop relay work, trust gating of unknown devices, heartbeats and reconciliation timing. This class is the
+ * shell around it: it drives [NsdDiscovery], accepts and dials [Socket]s, feeds the engine the bytes that arrive,
+ * writes the bytes it returns, and turns its events into the flows and callbacks the rest of the app uses.
  *
- * `handshake.hello` / `handshake.ack` envelopes are the one pair sent as plaintext JSON
- * (no Noise transport key exists yet); their payload carries the raw Noise_IK handshake
- * message bytes, base64-encoded, alongside `deviceName`/`deviceType`. Every envelope
- * after the handshake completes is Noise-encrypted ciphertext.
+ * Ordering matters: the engine's Noise nonces are implicit counters, so the order in which its output reaches a socket
+ * must be the order it was produced in. Every engine call therefore happens under [engineLock], which also enqueues
+ * the resulting writes (each connection has its own writer, so a slow peer never holds the lock). Events for the rest
+ * of the app are queued under the same lock and delivered, in order, by one dispatcher.
  */
 class TransportManager(
     private val context: Context,
@@ -87,7 +74,9 @@ class TransportManager(
     private val deviceName: String = Build.MODEL ?: "Android device",
     private val deviceType: DeviceType = DeviceType.ANDROID_PHONE,
     /** Per-device feature toggles: sends for a feature turned off on this device are silently skipped. */
-    private val isMessageAllowed: (type: String) -> Boolean = { true }
+    private val isMessageAllowed: (type: String) -> Boolean = { true },
+    /** Keys of the features turned off on this device, for the engine's own gate (see [setDisabledFeatures]). */
+    initialDisabledFeatures: List<String> = emptyList()
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -117,7 +106,7 @@ class TransportManager(
     val connectedDeviceIds: StateFlow<Set<String>> = _connectedDeviceIds.asStateFlow()
 
     /** When each device (other than us) was last heard from, by any message — directly or relayed. */
-    private val lastHeard = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val lastHeard = ConcurrentHashMap<String, Long>()
     private val _meshReachableDeviceIds = MutableStateFlow<Set<String>>(emptySet())
 
     /** Devices we have no direct connection to but that were heard from recently via the mesh
@@ -133,7 +122,7 @@ class TransportManager(
 
     private val meshExpiryJob = scope.launch {
         while (true) {
-            kotlinx.coroutines.delay(15_000)
+            delay(15_000)
             refreshMeshReachable()
         }
     }
@@ -155,57 +144,249 @@ class TransportManager(
      *  section. Single-subscriber, like [onUntrustedHandshake]/[onNewDevicePaired]. */
     var onRawFrameReceived: ((Envelope, ByteArray) -> Unit)? = null
 
-    /** One-shot handlers for the raw binary frame expected to follow a metadata
-     *  envelope from a specific peer, keyed by that peer's `deviceId`. Every envelope
-     *  with `hasRawFollowup = true` arms exactly one entry here — even a duplicate
-     *  being dropped, or one neither addressed to us nor being forwarded — since the
-     *  raw frame is physically coming next on this connection regardless, and must be
-     *  consumed to keep the frame boundary in sync even when discarded. */
-    private val pendingRawFrameHandlers = ConcurrentHashMap<String, suspend (ByteArray) -> Unit>()
-
     val discovery = NsdDiscovery(context, identityKeyStore.deviceId, identityKeyStore.publicKeyFingerprint())
 
-    /** A single live connection to one peer, tracked once its handshake resolves the
-     *  remote `deviceId`. */
-    private class PeerConnection(
-        val deviceId: String,
-        val socket: Socket,
-        val output: DataOutputStream,
-        val noiseSession: NoiseSession
-    ) {
-        /** Updated on every successfully-decrypted frame (any type, not just heartbeats)
-         *  — see [heartbeatLoop]'s doc for why this exists. */
-        @Volatile var lastReceivedAt: Long = System.currentTimeMillis()
+    // ---- The engine ---------------------------------------------------------------------------------------------
 
-        /** Serializes every `encrypt` + write pair for *this* peer's Noise session.
-         *  `CipherState`'s nonce counter is a plain, unsynchronized `var` — concurrent
-         *  encrypts on the same session race the nonce, and the receiver's AEAD nonce
-         *  only advances on a successful decrypt, so one corrupted frame permanently
-         *  desyncs the cipher for the rest of the connection. Per-peer, not global, now
-         *  that there can be more than one session. */
-        val sendMutex = Mutex()
+    /** Created on first use, so merely constructing a [TransportManager] (some tests do) loads no native code. */
+    private val bridge: CoreBridge by lazy {
+        CoreBridge(
+            deviceId = identityKeyStore.deviceId,
+            noiseSecret = identityKeyStore.x25519KeyPair.privateKey,
+            signingSeed = identityKeyStore.ed25519PrivateKey,
+            deviceName = deviceName,
+            deviceType = deviceType,
+            trustedDevices = trustedDevicesStore,
+            disabledFeatures = currentDisabledFeatures
+        )
+    }
+    @Volatile private var currentDisabledFeatures: List<String> = initialDisabledFeatures
+
+    /** Guards the engine and the ordering of everything it produces. Never held across a blocking socket operation. */
+    private val engineLock = ReentrantLock()
+
+    /** Events for the rest of the app, queued under [engineLock] and delivered in that order by one dispatcher. */
+    private val events = Channel<CoreBridge.BridgeAction>(Channel.UNLIMITED)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val dispatcher = scope.launch(Dispatchers.IO.limitedParallelism(1)) {
+        for (event in events) {
+            runCatching { dispatch(event) }.onFailure { Log.w(TAG, "Event handler failed: ${it.message}") }
+        }
     }
 
-    /** Established connections, keyed by the remote device's stable UUID. */
-    private val peers = ConcurrentHashMap<String, PeerConnection>()
+    /** The app edited its own trust table (the pairing flow adds a provisional row before dialing): tell the engine. */
+    private val trustChanged = Channel<Unit>(Channel.CONFLATED)
 
-    /** Device IDs currently being dialed (outbound only) or mid-handshake (either role),
-     *  so the fallback-dial loop doesn't pile up overlapping attempts at the same peer. */
-    private val dialingDeviceIds = ConcurrentHashMap.newKeySet<String>()
-    private val inFlightHandshakes = AtomicInteger(0)
+    init {
+        trustedDevicesStore.addChangeListener { trustChanged.trySend(Unit) }
+        scope.launch {
+            for (ignored in trustChanged) {
+                runCatching { engineLock.withLock { bridge.syncTrustFromStore() } }
+                    .onFailure { Log.w(TAG, "Could not sync trust into the engine: ${it.message}") }
+            }
+        }
+        // The engine's clock: heartbeats, stale and stuck-handshake cleanup, pairing expiry, reconciliation.
+        scope.launch {
+            while (isActive) {
+                delay(TICK_INTERVAL_MS)
+                runCatching { runEngine { bridge.tick() } }.onFailure { Log.w(TAG, "Engine tick failed: ${it.message}") }
+            }
+        }
+    }
 
+    /** Runs one engine call and carries out what it decided; the lock is released before this returns. */
+    private fun runEngine(body: () -> List<CoreBridge.BridgeAction>) {
+        engineLock.withLock { carryOut(body()) }
+    }
+
+    /** Must be called with [engineLock] held. Writes and closes happen in order; events are queued for the dispatcher. */
+    private fun carryOut(actions: List<CoreBridge.BridgeAction>) {
+        for (action in actions) {
+            when (action) {
+                is CoreBridge.BridgeAction.Close -> closeLink(action.conn, notifyEngine = false)
+                is CoreBridge.BridgeAction.PeerConnected -> {
+                    links[action.conn]?.let { link ->
+                        link.deviceId = action.peer.deviceId
+                        linkByDevice[action.peer.deviceId] = action.conn
+                        releaseInbound(link)
+                    }
+                    recomputeConnectionState()
+                    events.trySend(action)
+                }
+                is CoreBridge.BridgeAction.PeerDisconnected -> {
+                    linkByDevice[action.deviceId]?.let { conn -> if (links[conn] == null) linkByDevice.remove(action.deviceId, conn) }
+                    recomputeConnectionState()
+                    events.trySend(action)
+                }
+                // The trust table is the app's too: apply the engine's change before anything else can observe it.
+                is CoreBridge.BridgeAction.TrustChanged -> trustedDevicesStore.importCoreSnapshot(action.snapshotJson)
+                else -> events.trySend(action)
+            }
+        }
+    }
+
+    private suspend fun dispatch(event: CoreBridge.BridgeAction) {
+        when (event) {
+            is CoreBridge.BridgeAction.PeerConnected -> {
+                _lastConnectedDeviceId.value = event.peer.deviceId
+                Log.i(TAG, "Connected to device ${event.peer.deviceId}")
+                if (event.newlyPaired) onNewDevicePaired?.invoke(event.peer)
+            }
+            is CoreBridge.BridgeAction.PeerDisconnected -> Unit
+            is CoreBridge.BridgeAction.PairingPrompt -> {
+                // The user answers on their own time; never block the dispatcher (or the lock) while they decide.
+                promptJobs[event.conn] = scope.launch {
+                    val confirmed = runCatching { onUntrustedHandshake?.invoke(event.peer, event.publicKey) ?: false }.getOrDefault(false)
+                    promptJobs.remove(event.conn)
+                    runCatching { runEngine { bridge.confirmPairing(event.conn, confirmed) } }
+                }
+            }
+            is CoreBridge.BridgeAction.PairingPromptCancelled -> promptJobs.remove(event.conn)?.cancel()
+            is CoreBridge.BridgeAction.Deliver -> {
+                _incoming.emit(event.envelope)
+                messageRouter.dispatch(event.envelope)
+                event.raw?.let { onRawFrameReceived?.invoke(event.envelope, it) }
+            }
+            is CoreBridge.BridgeAction.Heard -> {
+                val first = lastHeard.put(event.deviceId, System.currentTimeMillis()) == null
+                if (first || event.deviceId !in _meshReachableDeviceIds.value) refreshMeshReachable()
+            }
+            is CoreBridge.BridgeAction.ReconcileDue -> {
+                // Only trust gossip is scheduled by the engine for now; each feature still runs its own resync loop.
+                if (event.task == "trust.roster_update") sendRoster(event.peer)
+            }
+            is CoreBridge.BridgeAction.DeviceRevoked -> Unit
+            else -> Unit
+        }
+    }
+
+    private val promptJobs = ConcurrentHashMap<ULong, Job>()
+
+    // ---- Sockets --------------------------------------------------------------------------------------------------
+
+    /** One socket. While a handshake is in flight [deviceId] is `null`; the engine tells us who it is on promotion. */
+    private inner class Link(val conn: ULong, val socket: Socket, val dialTarget: String?, val inboundHost: String?) {
+        @Volatile var deviceId: String? = null
+        @Volatile var closed = false
+        val inboundReleased = AtomicBoolean(inboundHost == null)
+        private val writes = Channel<ByteArray>(Channel.UNLIMITED)
+        private val queuedBytes = AtomicLong(0)
+        val peerIpAddress: String? get() = socket.inetAddress?.hostAddress?.substringBefore('%')
+
+        /** Called under [engineLock]; never blocks. A peer that stops reading is dropped rather than buffered forever. */
+        fun enqueue(bytes: ByteArray) {
+            if (closed) return
+            if (queuedBytes.addAndGet(bytes.size.toLong()) > MAX_QUEUED_WRITE_BYTES) {
+                Log.w(TAG, "Peer is not reading; dropping the connection")
+                scope.launch { closeLink(conn, notifyEngine = true) }
+                return
+            }
+            writes.trySend(bytes)
+        }
+
+        fun startWriter() = scope.launch {
+            val out: OutputStream = socket.getOutputStream()
+            try {
+                for (bytes in writes) {
+                    out.write(bytes)
+                    out.flush()
+                    queuedBytes.addAndGet(-bytes.size.toLong())
+                }
+            } catch (e: IOException) {
+                if (!closed) closeLink(conn, notifyEngine = true)
+            }
+        }
+
+        fun startReader() = scope.launch {
+            val buffer = ByteArray(READ_BUFFER_BYTES)
+            try {
+                val input = socket.getInputStream()
+                while (isActive && !closed) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    runEngine { bridge.bytesReceived(conn, buffer.copyOf(n)) }
+                }
+            } catch (e: IOException) {
+                if (!closed) Log.w(TAG, "Connection read ended: ${e.message}")
+            } finally {
+                closeLink(conn, notifyEngine = true)
+            }
+        }
+
+        fun close() {
+            closed = true
+            writes.close()
+            runCatching { socket.close() }
+        }
+    }
+
+    private val links = ConcurrentHashMap<ULong, Link>()
+    private val linkByDevice = ConcurrentHashMap<String, ULong>()
+
+    /** Devices with an outbound socket still connecting (before the engine's own dial guard applies). */
+    private val connecting = ConcurrentHashMap.newKeySet<String>()
+    private val nextConn = AtomicLong(1)
     private var serverSocket: ServerSocket? = null
-
-    /** Tracks the continuous NSD discovery collection started by [listen], so
-     *  [stopListening] can cancel it. See [handleDiscoveryEvent]. */
     private var discoveryJob: Job? = null
 
-    /** Bounded, size-capped cache of recently-seen envelope IDs, used to avoid
-     *  re-forwarding/re-delivering the same broadcast or relayed message twice when the
-     *  mesh has more than one path between two devices. */
-    private val dedupeLock = Any()
-    private val recentEnvelopeIds = ArrayDeque<String>()
-    private val recentEnvelopeIdSet = HashSet<String>()
+    /** Removes a socket. [notifyEngine] is false when the engine itself asked for the close (it has already forgotten it). */
+    private fun closeLink(conn: ULong, notifyEngine: Boolean) {
+        val link = links.remove(conn) ?: return
+        link.close()
+        releaseInbound(link)
+        link.dialTarget?.let { connecting.remove(it) }
+        link.deviceId?.let { id -> linkByDevice.remove(id, conn) }
+        if (notifyEngine) {
+            // Not under the engine lock yet (this can be called from a socket thread): take it for the engine call.
+            runCatching { runEngine { bridge.connectionClosed(conn) } }
+        }
+        recomputeConnectionState()
+    }
+
+    private fun recomputeConnectionState() {
+        val ids = linkByDevice.keys.toSet()
+        _connectedDeviceIds.value = ids
+        refreshMeshReachable()
+        _connectionState.value = when {
+            ids.isNotEmpty() -> ConnectionState.CONNECTED
+            links.values.any { it.deviceId == null } -> ConnectionState.HANDSHAKING
+            serverSocket?.isClosed == false || connecting.isNotEmpty() -> ConnectionState.DISCOVERING
+            else -> ConnectionState.DISCONNECTED
+        }
+    }
+
+    /** Pre-authentication limits on inbound connections: overall and per source address. */
+    private val pendingInboundByHost = ConcurrentHashMap<String, AtomicInteger>()
+    private val pendingInboundTotal = AtomicInteger(0)
+
+    /** IPv6 peers are limited per /64 (one host can own billions of addresses in its prefix); IPv4 per address. */
+    private fun hostKey(client: Socket): String {
+        val address = client.inetAddress ?: return "unknown"
+        return if (address is java.net.Inet6Address) address.address.copyOf(8).joinToString("") { "%02x".format(it) }
+        else address.hostAddress ?: "unknown"
+    }
+
+    private fun admitInbound(client: Socket): String? {
+        val host = hostKey(client)
+        val perHost = pendingInboundByHost.computeIfAbsent(host) { AtomicInteger(0) }
+        if (pendingInboundTotal.get() >= MAX_PENDING_INBOUND || perHost.get() >= MAX_PENDING_INBOUND_PER_HOST) {
+            Log.w(TAG, "Too many pending inbound connections; refusing one")
+            return null
+        }
+        pendingInboundTotal.incrementAndGet()
+        perHost.incrementAndGet()
+        return host
+    }
+
+    private fun releaseInbound(link: Link) {
+        val host = link.inboundHost ?: return
+        if (!link.inboundReleased.compareAndSet(false, true)) return
+        pendingInboundTotal.decrementAndGet()
+        pendingInboundByHost[host]?.let { if (it.decrementAndGet() <= 0) pendingInboundByHost.remove(host, it) }
+    }
+
+    // ---- Listening ------------------------------------------------------------------------------------------------
 
     /** Listens for incoming connections (e.g. a previously-paired Mac reconnecting) and
      *  advertises this device over NSD so a Mac running discovery can find it. Accepts and
@@ -234,68 +415,43 @@ class TransportManager(
                 } catch (e: IOException) {
                     if (server.isClosed) break else continue
                 }
-                if (!admitInbound(client)) {
+                val host = admitInbound(client)
+                if (host == null) {
                     runCatching { client.close() }
                     continue
                 }
-                launchConnectionLoop(client, role = NoiseRole.RESPONDER, remoteStaticPublicKey = null)
+                acceptInbound(client, host)
             }
         }
     }
 
-    /** While a pairing QR is on screen, its token. An untrusted peer is only ever offered to
-     *  the user while this is armed and the peer presents it (see [armPairing]). */
-    @Volatile private var armedPairingToken: String? = null
-    @Volatile private var armedPairingExpiresAt = 0L
-    private val untrustedPromptActive = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    fun armPairing(token: String) {
-        armedPairingToken = token
-        armedPairingExpiresAt = System.currentTimeMillis() + PAIRING_ARM_MS
+    private fun acceptInbound(client: Socket, host: String) {
+        val link = Link(nextConn.getAndIncrement().toULong(), client, dialTarget = null, inboundHost = host)
+        links[link.conn] = link
+        try {
+            engineLock.withLock {
+                bridge.syncTrustFromStore()
+                carryOut(bridge.accepted(link.conn))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not accept a connection: ${e.message}")
+            closeLink(link.conn, notifyEngine = false)
+            return
+        }
+        recomputeConnectionState()
+        link.startWriter()
+        link.startReader()
     }
 
-    fun disarmPairing() = clearArmedPairing()
+    /** While a pairing QR is on screen, its token. An untrusted peer is only ever offered to
+     *  the user while this is armed and the peer presents it; the engine enforces single use and expiry. */
+    fun armPairing(token: String) = engineLock.withLock { bridge.armPairing(token) }
+
+    fun disarmPairing() = engineLock.withLock { bridge.disarmPairing() }
 
     /** The code both devices derive for this pairing; see [PairingCode]. */
     fun pairingCodeFor(remoteStaticKey: ByteArray): String =
-        PairingCode.make(identityKeyStore.x25519KeyPair.publicKey, remoteStaticKey)
-
-    private fun clearArmedPairing() {
-        armedPairingToken = null
-        armedPairingExpiresAt = 0L
-    }
-
-    private fun pairingAllows(presented: String?): Boolean =
-        System.currentTimeMillis() < armedPairingExpiresAt && PairingCode.tokenMatches(armedPairingToken, presented)
-
-    /** Pre-authentication limits on inbound connections: overall and per source address. */
-    private val pendingInboundByHost = ConcurrentHashMap<String, AtomicInteger>()
-    private val pendingInboundTotal = AtomicInteger(0)
-
-    /** IPv6 peers are limited per /64 (one host can own billions of addresses in its prefix); IPv4 per address. */
-    private fun hostKey(client: Socket): String {
-        val address = client.inetAddress ?: return "unknown"
-        return if (address is java.net.Inet6Address) address.address.copyOf(8).joinToString("") { "%02x".format(it) }
-        else address.hostAddress ?: "unknown"
-    }
-
-    private fun admitInbound(client: Socket): Boolean {
-        val host = hostKey(client)
-        val perHost = pendingInboundByHost.computeIfAbsent(host) { AtomicInteger(0) }
-        if (pendingInboundTotal.get() >= MAX_PENDING_INBOUND || perHost.get() >= MAX_PENDING_INBOUND_PER_HOST) {
-            Log.w(TAG, "Too many pending inbound connections; refusing one")
-            return false
-        }
-        pendingInboundTotal.incrementAndGet()
-        perHost.incrementAndGet()
-        return true
-    }
-
-    private fun releaseInbound(client: Socket) {
-        val host = hostKey(client)
-        pendingInboundTotal.decrementAndGet()
-        pendingInboundByHost[host]?.let { if (it.decrementAndGet() <= 0) pendingInboundByHost.remove(host, it) }
-    }
+        uniffi.gossip_ffi.pairingCode(identityKeyStore.x25519KeyPair.publicKey, remoteStaticKey)
 
     private suspend fun bindServerSocket(port: Int): ServerSocket? {
         repeat(LISTEN_BIND_ATTEMPTS) { attempt ->
@@ -328,21 +484,21 @@ class TransportManager(
      *  manually-configured [TrustedDevice.fallbackHost] — only Mac↔Android worked
      *  automatically, since Mac continuously browses Bonjour. This makes on-LAN
      *  rediscovery symmetric for Android↔Android too. [DiscoveryEvent.Lost] needs no
-     *  handling here: a dead connection is detected independently by
-     *  [heartbeatLoop]/a closed socket, not by NSD losing the peer's advertisement. */
+     *  handling here: a dead connection is detected independently by the engine's
+     *  heartbeat/a closed socket, not by NSD losing the peer's advertisement. */
     private fun handleDiscoveryEvent(event: DiscoveryEvent) {
         if (event !is DiscoveryEvent.Found) return
         val peer = event.peer
         val deviceId = peer.deviceId ?: return
         val host = peer.host ?: return
-        if (!trustedDevicesStore.isTrusted(deviceId)) return
-        if (peers.containsKey(deviceId) || dialingDeviceIds.contains(deviceId)) return
         val trusted = trustedDevicesStore.getDevice(deviceId) ?: return
         // Anyone on the LAN can advertise a trusted device's id; only dial an advertisement whose key fingerprint
         // matches the key we pinned, so a squatter can't tie up the per-device dial slot.
         if (!fingerprintMatches(peer.publicKeyFingerprint, trusted.publicKey)) return
         connect(host, port = peer.port, remoteStaticPublicKey = trusted.publicKey, deviceId = deviceId)
     }
+
+    // ---- Dialing --------------------------------------------------------------------------------------------------
 
     /**
      * Initiates an outbound connection to a peer at [host]:[port] using
@@ -351,578 +507,120 @@ class TransportManager(
      * peer's already-known device UUID (from the QR payload or trusted-device row); used
      * to skip redundant dials when already connected/connecting to this exact peer,
      * without blocking dials to any *other* trusted device.
+     *
+     * The app's trust table is handed to the engine first, so a provisional row the pairing flow has just added is
+     * dialable.
      */
     fun connect(host: String, port: Int, remoteStaticPublicKey: ByteArray, deviceId: String, pairingToken: String? = null) {
-        if (peers.containsKey(deviceId) || !dialingDeviceIds.add(deviceId)) return
+        if (!connecting.add(deviceId)) return
+        val engineWillDial = runCatching { engineLock.withLock { bridge.syncTrustFromStore(); bridge.shouldDial(deviceId) } }.getOrDefault(false)
+        if (!engineWillDial) {
+            connecting.remove(deviceId)
+            return
+        }
         recomputeConnectionState()
         scope.launch {
-            val client = try {
-                // The (host, port) convenience constructor has no connect timeout of its
-                // own — on some networks/hosts the platform default can be very long
-                // (tens of seconds to minutes) for a genuinely unreachable address, during
-                // which `dialingDeviceIds` blocks any retry to this same peer. An explicit
-                // bounded timeout here is what actually makes that guard self-heal.
+            val socket = try {
+                // The (host, port) convenience constructor has no connect timeout of its own — on some networks the
+                // platform default can be very long for a genuinely unreachable address, during which `connecting`
+                // would block any retry to this same peer. An explicit bounded timeout is what makes that guard self-heal.
                 Socket().apply { connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS) }
             } catch (e: IOException) {
                 Log.w(TAG, "Connect to $host:$port failed", e)
-                dialingDeviceIds.remove(deviceId)
+                connecting.remove(deviceId)
                 recomputeConnectionState()
                 return@launch
             }
-            launchConnectionLoop(client, role = NoiseRole.INITIATOR, remoteStaticPublicKey = remoteStaticPublicKey, dialTargetDeviceId = deviceId, pairingToken = pairingToken)
+            val link = Link(nextConn.getAndIncrement().toULong(), socket, dialTarget = deviceId, inboundHost = null)
+            links[link.conn] = link
+            try {
+                engineLock.withLock { carryOut(bridge.dial(link.conn, deviceId, remoteStaticPublicKey, pairingToken)) }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start the handshake with $deviceId: ${e.message}")
+                closeLink(link.conn, notifyEngine = false)
+                return@launch
+            }
+            connecting.remove(deviceId)
+            recomputeConnectionState()
+            link.startWriter()
+            link.startReader()
         }
     }
 
-    /** Encrypts and frames [envelope], resolving which currently-connected peer(s) to send
-     *  it to from `envelope.broadcast`/`recipientId` — broadcast goes to every connected
-     *  peer, a `recipientId` we're directly connected to goes there, and a `recipientId` we
-     *  aren't directly connected to floods to every peer so it can find a multi-hop path
-     *  (see [forwardTargets] and `docs/wire-protocol.md`'s "Multi-hop relay" section — this
-     *  *is* that mechanism's entry point for a freshly-originated, not-yet-relayed
-     *  envelope). Records the envelope's own `id` as seen so a self-addressed loop (e.g. a
-     *  broadcast that somehow finds its way back around the mesh) is dropped rather than
-     *  re-delivered back to whoever just sent it. */
+    // ---- Sending --------------------------------------------------------------------------------------------------
+
+    /** Signs (if locally originated), records and sends [unsigned] toward everyone it addresses: a broadcast goes to
+     *  every connected peer, a `recipientId` we're directly connected to goes there, and one we aren't is flooded to
+     *  every peer so it can find a multi-hop path. A message for a feature turned off on this device is silently
+     *  skipped. Throws when there is nobody to send it to. */
     suspend fun send(unsigned: Envelope) = withContext(Dispatchers.IO) {
         if (!isMessageAllowed(unsigned.type)) return@withContext
-        val envelope = signedForOrigination(unsigned)
-        recordSeen(envelope.id)
-        val targets = forwardTargets(envelope, arrivedFrom = null)
-        if (targets.isEmpty()) throw IllegalStateException("Not connected")
-        var lastError: Throwable? = null
-        for (target in targets) {
-            try {
-                sendTo(envelope, target)
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-        lastError?.let { throw it }
+        sendThroughEngine { bridge.send(unsigned) }
     }
 
-    /** Signs a locally-originated envelope with this device's key (relays forward the
-     *  original signature untouched). */
-    private fun signedForOrigination(envelope: Envelope): Envelope =
-        if (envelope.sig == null && envelope.senderId == identityKeyStore.deviceId) {
-            EnvelopeSigning.sign(envelope, identityKeyStore.ed25519PrivateKey)
-        } else envelope
-
-    /** Whether [envelope] really was produced by its claimed `senderId`. A sender we hold
-     *  no signing key for can't be verified, so its messages are dropped. */
-    private fun isAuthentic(envelope: Envelope): Boolean {
-        val key = if (envelope.senderId == identityKeyStore.deviceId) {
-            identityKeyStore.ed25519PublicKey
-        } else {
-            trustedDevicesStore.getDevice(envelope.senderId)?.signingPublicKey
-        } ?: return false
-        return EnvelopeSigning.verify(envelope, key)
-    }
-
-    /** Encrypts + writes [envelope] to one specific peer. Both the encrypt and the write
-     *  must happen inside [PeerConnection.sendMutex] — see its doc for why. */
-    private suspend fun sendTo(unsigned: Envelope, peer: PeerConnection) {
-        val envelope = signedForOrigination(unsigned) // heartbeats etc. go straight here
-        peer.sendMutex.withLock {
-            val ciphertext = peer.noiseSession.encryptTransportMessage(envelope.encode())
-            writeFrame(peer.output, ciphertext)
-        }
-    }
-
-    /** Originates a `hasRawFollowup` envelope + its raw binary frame — the counterpart
-     *  to [send] for a locally-originated (not relayed) send carrying a large binary
-     *  payload (e.g. clipboard image sync). Resolves targets from
-     *  `envelope.broadcast`/`recipientId` exactly like [send]; devices with no direct
-     *  connection to any of those targets receive it via each target's own relay (see
-     *  [handleReceivedEnvelope]), not directly from here. */
+    /** Originates a `hasRawFollowup` envelope + its raw binary frame (e.g. clipboard image sync); the engine binds the
+     *  raw frame's hash into the signed payload. Peers with no direct connection to the target receive it via the
+     *  relays, which forward the pair atomically. */
     suspend fun send(unsigned: Envelope, rawFollowup: ByteArray) = withContext(Dispatchers.IO) {
         if (!isMessageAllowed(unsigned.type)) return@withContext
-        // The raw frame isn't covered by the envelope signature, so its hash rides in the signed payload.
-        val envelope = signedForOrigination(bindingRawFrame(rawFollowup, unsigned))
-        recordSeen(envelope.id)
-        val targets = forwardTargets(envelope, arrivedFrom = null)
-        if (targets.isEmpty()) throw IllegalStateException("Not connected")
-        var lastError: Throwable? = null
-        for (target in targets) {
-            try {
-                sendWithRawFollowup(envelope, rawFollowup, target)
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-        lastError?.let { throw it }
+        sendThroughEngine { bridge.send(unsigned, rawFollowup) }
     }
 
-    /** Encrypts + writes [envelope] to one specific peer, immediately followed by a
-     *  second raw (non-envelope) Noise-encrypted frame carrying [rawData] — the "large
-     *  binary payload" convention in `docs/wire-protocol.md`. Both frames are written
-     *  atomically inside [PeerConnection.sendMutex] so nothing else (e.g. a concurrent
-     *  DND update) can interleave a third frame between them, which would break that
-     *  peer's "the very next frame is the raw payload" expectation — this holds at
-     *  every hop, which is what makes relaying a raw-followup envelope safe (see
-     *  [handleReceivedEnvelope]). */
-    private suspend fun sendWithRawFollowup(unsigned: Envelope, rawData: ByteArray, peer: PeerConnection) {
-        val envelope = signedForOrigination(unsigned)
-        peer.sendMutex.withLock {
-            val ciphertext = peer.noiseSession.encryptTransportMessage(envelope.encode())
-            writeFrame(peer.output, ciphertext)
-            val rawCiphertext = peer.noiseSession.encryptTransportMessage(rawData)
-            writeFrame(peer.output, rawCiphertext)
+    private fun sendThroughEngine(body: () -> List<CoreBridge.BridgeAction>) {
+        try {
+            runEngine(body)
+        } catch (e: CoreBridge.BridgeException) {
+            throw if (e.kind == CoreBridge.BridgeException.Kind.NOT_CONNECTED) IllegalStateException("Not connected") else e
         }
+    }
+
+    /** Sends this device's roster to [peer], or broadcasts it to the whole mesh when [peer] is `null`. */
+    fun sendRoster(peer: String?) {
+        scope.launch {
+            runCatching { sendThroughEngine { bridge.send(bridge.rosterUpdate(peer)) } }
+                .onFailure { Log.w(TAG, "Failed to send roster: ${it.message}") }
+        }
+    }
+
+    /** The user removed a device: the engine drops its trust and connection and broadcasts `trust.revoke`. */
+    fun revokeDevice(deviceId: String) {
+        runCatching { runEngine { bridge.revokeDevice(deviceId) } }.onFailure { Log.w(TAG, "Revoke failed: ${it.message}") }
+    }
+
+    /** Tells the engine which features are turned off on this device (keys as in `desktop/core` `features.rs`). */
+    fun setDisabledFeatures(keys: List<String>) {
+        currentDisabledFeatures = keys
+        runCatching { engineLock.withLock { bridge.setDisabledFeatures(keys) } }
     }
 
     /** Device ID of whichever peer most recently finished connecting, if it's still
      *  connected. A "primary peer" convenience — see [_lastConnectedDeviceId]'s doc. */
-    fun currentRemoteDeviceId(): String? = _lastConnectedDeviceId.value?.takeIf { peers.containsKey(it) }
+    fun currentRemoteDeviceId(): String? = _lastConnectedDeviceId.value?.takeIf { linkByDevice.containsKey(it) }
 
     /** Tears down every currently-connected peer. */
     fun disconnect() {
-        for (peer in peers.values.toList()) {
-            teardown(peer)
-        }
+        for (deviceId in linkByDevice.keys.toList()) disconnect(deviceId)
         recomputeConnectionState()
     }
 
     /** Tears down the live connection to one specific peer, if any (e.g. after
      *  `trust.revoke`) — leaves every other peer untouched. */
     fun disconnect(deviceId: String) {
-        peers[deviceId]?.let { teardown(it) }
+        runCatching { runEngine { bridge.disconnect(deviceId) } }
         recomputeConnectionState()
     }
 
     fun shutdown() {
         disconnect()
         stopListening()
+        for (conn in links.keys.toList()) closeLink(conn, notifyEngine = false)
+        events.close()
+        trustChanged.close()
         scope.cancel()
     }
 
-    private fun launchConnectionLoop(
-        client: Socket,
-        role: NoiseRole,
-        remoteStaticPublicKey: ByteArray?,
-        dialTargetDeviceId: String? = null,
-        pairingToken: String? = null
-    ) {
-        inFlightHandshakes.incrementAndGet()
-        recomputeConnectionState()
-        var handshakeSettled = false
-        fun settleDialing() {
-            if (handshakeSettled) return
-            handshakeSettled = true
-            dialTargetDeviceId?.let { dialingDeviceIds.remove(it) }
-            if (role == NoiseRole.RESPONDER) releaseInbound(client)
-            inFlightHandshakes.decrementAndGet()
-        }
-
-        scope.launch {
-            var peer: PeerConnection? = null
-            try {
-                // Bounds the blocking handshake reads below to HANDSHAKE_TIMEOUT_MS: a
-                // peer that accepts the TCP connection but never completes Noise (app
-                // killed mid-handshake, aggressive Doze, etc.) would otherwise block this
-                // coroutine — and hold `dialingDeviceIds`/`inFlightHandshakes` — forever,
-                // observed directly as this device looking permanently "stuck" reconnecting
-                // (the fallback-dial loop's own guard sees a dial as still in progress and
-                // never retries). Cleared back to infinite once the handshake completes —
-                // steady-state idle periods between messages are expected and covered by
-                // `heartbeatLoop`'s own liveness check instead, not a socket-level timeout.
-                client.soTimeout = HANDSHAKE_TIMEOUT_MS.toInt()
-                val input = DataInputStream(client.getInputStream())
-                val out = DataOutputStream(client.getOutputStream())
-
-                val session = NoiseSession(role, identityKeyStore.x25519KeyPair, remoteStaticPublicKey)
-                val peerInfo = if (role == NoiseRole.INITIATOR) {
-                    performInitiatorHandshake(session, out, input, pairingToken)
-                } else {
-                    performResponderHandshake(session, out, input)
-                }
-                client.soTimeout = 0
-                val remoteId = peerInfo.deviceId
-                // A responder keeps its pending-inbound slot until the peer proves possession of its key (below).
-                if (role == NoiseRole.INITIATOR) settleDialing()
-                recomputeConnectionState()
-
-                // Only the RESPONDER role is trust-gated here. The initiator role only
-                // ever dials a deviceId the caller already vetted (an existing trusted
-                // row, or a freshly-scanned QR's public key the user just consented to by
-                // scanning it) — that caller (PairingViewModel) adds it to
-                // TrustedDevicesStore itself once connected, same as before mesh support.
-                // The responder role, by contrast, accepts inbound from *anyone* who can
-                // complete a Noise handshake — this is the gate that makes "show a QR to
-                // pair" safe, mirroring Mac's `onUntrustedHandshake` (previously Android
-                // had no equivalent at all, since nothing untrusted ever dialed in before
-                // mesh support and QR-display existed).
-                // The claimed deviceId arrives in plaintext; only the Noise static key is
-                // authenticated, so for an already-trusted device it must be the paired key.
-                trustedDevicesStore.getDevice(remoteId)?.let { stored ->
-                    val presented = session.remoteStaticKey
-                    if (presented == null || !MessageDigest.isEqual(stored.publicKey, presented)) {
-                        Log.w(TAG, "Handshake for $remoteId presented a different key than the one it was paired with; closing")
-                        runCatching { client.close() }
-                        return@launch
-                    }
-                }
-                if (trustedDevicesStore.isTrusted(remoteId)) {
-                    // The signing key arrived inside the authenticated handshake, so it is the
-                    // one to trust for this device (replaces a missing or gossiped value).
-                    trustedDevicesStore.setSigningPublicKey(remoteId, peerInfo.signingPublicKey)
-                }
-                if (role == NoiseRole.RESPONDER && !trustedDevicesStore.isTrusted(remoteId)) {
-                    // An unknown device is only offered to the user while a pairing QR is
-                    // showing, it must present that QR's token, and only one prompt may be
-                    // open at a time.
-                    if (!pairingAllows(peerInfo.pairingToken) || !untrustedPromptActive.compareAndSet(false, true)) {
-                        Log.w(TAG, "Refused an untrusted handshake outside an active pairing")
-                        runCatching { client.close() }
-                        return@launch
-                    }
-                    clearArmedPairing() // single use
-                    val remotePublicKey = session.remoteStaticKey
-                    if (remotePublicKey == null) {
-                        Log.w(TAG, "Handshake with $remoteId completed without a resolved remote static key")
-                        runCatching { client.close() }
-                        return@launch
-                    }
-                    val confirmed = try {
-                        onUntrustedHandshake?.invoke(peerInfo, remotePublicKey) ?: false
-                    } finally {
-                        untrustedPromptActive.set(false)
-                    }
-                    if (!confirmed) {
-                        Log.i(TAG, "Untrusted handshake with $remoteId not confirmed; closing")
-                        runCatching { client.close() }
-                        return@launch
-                    }
-                    trustedDevicesStore.addDevice(
-                        TrustedDevice(
-                            deviceId = peerInfo.deviceId,
-                            publicKey = remotePublicKey,
-                            deviceName = peerInfo.deviceName,
-                            deviceType = peerInfo.deviceType,
-                            addedAt = System.currentTimeMillis(),
-                            signingPublicKey = peerInfo.signingPublicKey
-                        )
-                    )
-                    onNewDevicePaired?.invoke(peerInfo)
-                }
-
-                // Noise message 1 can be replayed by anyone who recorded it, so a responder only lets this connection
-                // replace a live one once the peer's first transport frame decrypts (which needs its ephemeral key).
-                var firstPlaintext: ByteArray? = null
-                if (role == NoiseRole.RESPONDER) {
-                    client.soTimeout = HANDSHAKE_TIMEOUT_MS.toInt()
-                    firstPlaintext = session.decryptTransportMessage(readFrame(input, MAX_FRAME_BYTES))
-                    client.soTimeout = 0
-                    settleDialing()
-                }
-
-                val newPeer = PeerConnection(remoteId, client, out, session)
-                peer = newPeer
-                peers[remoteId]?.let { stale -> teardown(stale) }
-                peers[remoteId] = newPeer
-                _lastConnectedDeviceId.value = remoteId
-                recomputeConnectionState()
-                Log.i(TAG, "Connected ($role) to device $remoteId")
-
-                sendPresence(MessageType.PRESENCE_ONLINE, remoteId)
-                val heartbeatJob = scope.launch { heartbeatLoop(newPeer) }
-
-                try {
-                    val rateLimiter = InboundRateLimiter()
-                    suspend fun handlePlaintext(plaintext: ByteArray) {
-                        newPeer.lastReceivedAt = System.currentTimeMillis()
-                        // A raw (non-envelope) frame armed while handling the metadata
-                        // envelope that announced it (`hasRawFollowup = true`) — see
-                        // `handleReceivedEnvelope` and `docs/wire-protocol.md`'s "Large
-                        // binary payloads" section. Must be checked before attempting
-                        // `Envelope.decode`, since a raw frame isn't JSON at all.
-                        val rawHandler = pendingRawFrameHandlers.remove(remoteId)
-                        if (rawHandler != null) {
-                            runCatching { rawHandler(plaintext) }.onFailure { Log.w(TAG, "Raw frame handler failed: ${it.message}") }
-                            return
-                        }
-                        // One undecodable message must not take the whole connection (and everything relayed over it) down.
-                        val envelope = try { Envelope.decode(plaintext) } catch (e: Exception) {
-                            Log.w(TAG, "Dropped an undecodable envelope: ${e.message}")
-                            return
-                        }
-                        handleReceivedEnvelope(envelope, arrivedFrom = remoteId)
-                    }
-                    firstPlaintext?.let { handlePlaintext(it) }
-                    while (true) {
-                        val frame = readFrame(input)
-                        if (!rateLimiter.allow()) throw IOException("$remoteId is sending too fast")
-                        handlePlaintext(session.decryptTransportMessage(frame))
-                    }
-                } finally {
-                    heartbeatJob.cancel()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Connection loop ended: ${e.message}")
-            } finally {
-                settleDialing()
-                runCatching { client.close() }
-                val currentPeer = peer
-                if (currentPeer != null && peers[currentPeer.deviceId] === currentPeer) {
-                    peers.remove(currentPeer.deviceId)
-                }
-                recomputeConnectionState()
-            }
-        }
-    }
-
-    /** Detects a *silently* dropped connection to one specific peer — the case a clean TCP
-     *  close doesn't cover. The receive loop's `readFrame` blocks on the socket and throws
-     *  promptly when the peer sends a FIN/RST, but Wi-Fi dropping out, doze/NAT killing the
-     *  path, or the peer sleeping without a clean disconnect can leave the socket sitting
-     *  open from this side's perspective with nothing ever arriving to unblock that read
-     *  for *this peer* — nothing would ever trigger reconnection to just that one. Sends a
-     *  targeted `presence.heartbeat` to this peer periodically (proving outbound liveness)
-     *  and checks this peer's own `lastReceivedAt` (proving inbound liveness, from *any*
-     *  received frame, not just heartbeat replies); if either fails, force-closes only this
-     *  peer's socket, which unblocks its own receive loop with an `IOException` and lets
-     *  its existing cleanup path run normally. */
-    private suspend fun heartbeatLoop(peer: PeerConnection) {
-        while (true) {
-            delay(HEARTBEAT_INTERVAL_MS)
-            val sendResult = runCatching { sendTo(presenceEnvelope(MessageType.PRESENCE_HEARTBEAT, peer.deviceId), peer) }
-            val stale = System.currentTimeMillis() - peer.lastReceivedAt > HEARTBEAT_TIMEOUT_MS
-            if (sendResult.isFailure || stale) {
-                Log.w(TAG, "Heartbeat failed or peer ${peer.deviceId} went stale (sendFailed=${sendResult.isFailure}, stale=$stale); closing connection")
-                runCatching { peer.socket.close() }
-                return
-            }
-        }
-    }
-
-    /** The core mesh routing decision, run on every successfully decoded inbound envelope:
-     *  deliver locally if it's addressed to us (directly or via broadcast), and/or forward
-     *  it on toward wherever else it needs to go. See `docs/wire-protocol.md`'s "Multi-hop
-     *  relay" section for the canonical algorithm both platforms implement.
-     *
-     *  Forwarding is never a raw-ciphertext relay: each hop's Noise session is pairwise, so
-     *  a frame decrypted under the sender's session here is re-encrypted from scratch under
-     *  each forward target's own session by [sendTo].
-     *
-     *  A `hasRawFollowup` envelope is handled differently: delivery and forwarding are both
-     *  *deferred* until the raw frame that follows this envelope actually arrives (armed via
-     *  [pendingRawFrameHandlers]), so that a relayed hop always forwards the metadata
-     *  envelope and its raw frame atomically as a pair — never the metadata alone, which
-     *  would desync a downstream hop's own "next frame is raw" expectation if some other
-     *  message interleaved in between. */
-    private suspend fun handleReceivedEnvelope(received: Envelope, arrivedFrom: String) {
-        // `ttl` is the one field a relay can change, so a peer can't be trusted to keep it within the mesh's budget.
-        val envelope = if (received.ttl > Envelope.DEFAULT_TTL) received.copy(ttl = Envelope.DEFAULT_TTL) else received
-        // Verified before anything else so a forged copy can neither be acted on, relayed,
-        // nor poison the seen-id cache ahead of the genuine message. A raw follow-up that is
-        // physically coming next on this connection is still drained, just discarded.
-        if (!isWellFormed(envelope)) {
-            Log.w(TAG, "Dropped an envelope with an oversized identifier or an implausible timestamp")
-            if (envelope.hasRawFollowup) pendingRawFrameHandlers[arrivedFrom] = {}
-            return
-        }
-        if (!isAuthentic(envelope)) {
-            Log.w(TAG, "Dropped ${envelope.type} with an invalid or unverifiable signature")
-            if (envelope.hasRawFollowup) pendingRawFrameHandlers[arrivedFrom] = {}
-            return
-        }
-        // Any message from a device — even one relayed through another — proves it is reachable.
-        if (envelope.senderId != identityKeyStore.deviceId) {
-            val first = lastHeard.put(envelope.senderId, System.currentTimeMillis()) == null
-            if (first || envelope.senderId !in _meshReachableDeviceIds.value) refreshMeshReachable()
-        }
-        if (!recordSeen(envelope.id)) {
-            // Already processed/forwarded this one — but if it carries a raw follow-up,
-            // that frame is still physically coming next on this connection and must be
-            // drained, just discarded rather than acted on.
-            if (envelope.hasRawFollowup) {
-                pendingRawFrameHandlers[arrivedFrom] = {}
-            }
-            return
-        }
-
-        val isForMe = envelope.recipientId == identityKeyStore.deviceId || envelope.broadcast
-        val targets = if (envelope.ttl > 0) forwardTargets(envelope, arrivedFrom) else emptyList()
-
-        if (envelope.hasRawFollowup) {
-            pendingRawFrameHandlers[arrivedFrom] = handler@{ data ->
-                // The raw frame is outside the signature; the signed payload carries its hash.
-                if (!rawFrameMatches(data, envelope)) {
-                    Log.w(TAG, "Dropped a raw frame that doesn't match its signed hash")
-                    return@handler
-                }
-                if (isForMe) {
-                    _incoming.emit(envelope)
-                    messageRouter.dispatch(envelope)
-                    onRawFrameReceived?.invoke(envelope, data)
-                }
-                if (targets.isEmpty()) return@handler
-                val forwarded = envelope.copy(ttl = envelope.ttl - 1)
-                for (target in targets) {
-                    runCatching { sendWithRawFollowup(forwarded, data, target) }
-                }
-            }
-            return
-        }
-
-        if (isForMe) {
-            _incoming.emit(envelope)
-            messageRouter.dispatch(envelope)
-        }
-        if (targets.isEmpty()) return
-        val forwarded = envelope.copy(ttl = envelope.ttl - 1)
-        for (target in targets) {
-            runCatching { sendTo(forwarded, target) }
-        }
-    }
-
-    /** Cheap structural checks run before anything is cached, verified or relayed: identifiers are tiny (so the
-     *  seen-id cache can't be used to pin memory) and `ts` is recent (so old signed messages can't be replayed). */
-    private fun isWellFormed(e: Envelope, now: Long = System.currentTimeMillis()): Boolean =
-        e.id.length <= 64 && e.type.length <= 64 && e.senderId.length <= 64 &&
-            (e.recipientId?.length ?: 0) <= 64 && kotlin.math.abs(now - e.ts) <= MAX_CLOCK_SKEW_MS
-
-    /** Resolves which currently-connected peers an envelope should be sent/forwarded to.
-     *  [arrivedFrom] is the peer this envelope was just relayed from (excluded from
-     *  re-forwarding back to); pass `null` for a locally-originated send. */
-    private fun forwardTargets(envelope: Envelope, arrivedFrom: String?): List<PeerConnection> {
-        if (envelope.broadcast) {
-            return peers.values.filter { it.deviceId != arrivedFrom }
-        }
-        val recipientId = envelope.recipientId
-        if (recipientId == null || recipientId == identityKeyStore.deviceId) {
-            return emptyList()
-        }
-        peers[recipientId]?.let { return listOf(it) }
-        // `ttl: 0` envelopes (key material) are direct-only: never flood them to bystanders.
-        if (envelope.ttl <= 0) return emptyList()
-        // Not directly connected to the recipient — flood so it can find a multi-hop
-        // path through whatever else we're connected to.
-        return peers.values.filter { it.deviceId != arrivedFrom }
-    }
-
-    /** Inserts [id] into the recently-seen cache. Returns `true` if this is the first time
-     *  we've seen it (caller should process/deliver it), `false` if it's a duplicate
-     *  (caller should drop it). Bounded to [DEDUPE_CACHE_LIMIT] entries, oldest evicted
-     *  first — generous relative to a small mesh's expected chat volume (clipboard/DND/
-     *  media/roster-gossip), not a full time-windowed LRU since that precision isn't
-     *  needed here. */
-    private fun recordSeen(id: String): Boolean = synchronized(dedupeLock) {
-        if (!recentEnvelopeIdSet.add(id)) return@synchronized false
-        recentEnvelopeIds.addLast(id)
-        if (recentEnvelopeIds.size > DEDUPE_CACHE_LIMIT) {
-            val evicted = recentEnvelopeIds.removeFirst()
-            recentEnvelopeIdSet.remove(evicted)
-        }
-        true
-    }
-
-    private fun teardown(peer: PeerConnection) {
-        runCatching { peer.socket.close() }
-        if (peers[peer.deviceId] === peer) {
-            peers.remove(peer.deviceId)
-        }
-    }
-
-    private fun recomputeConnectionState() {
-        val ids = peers.keys.toSet()
-        _connectedDeviceIds.value = ids
-        refreshMeshReachable()
-        _connectionState.value = when {
-            ids.isNotEmpty() -> ConnectionState.CONNECTED
-            inFlightHandshakes.get() > 0 -> ConnectionState.HANDSHAKING
-            serverSocket?.isClosed == false || dialingDeviceIds.isNotEmpty() -> ConnectionState.DISCOVERING
-            else -> ConnectionState.DISCONNECTED
-        }
-    }
-
-    private fun localHandshakeIdentity(pairingToken: String?) = HandshakeIdentity(
-        deviceId = identityKeyStore.deviceId,
-        deviceName = deviceName,
-        deviceType = deviceType.wireValue,
-        signingPublicKey = Base64.encodeToString(identityKeyStore.ed25519PublicKey, Base64.NO_WRAP),
-        pairingToken = pairingToken
-    )
-
-    private fun HandshakeIdentity.toPeerInfo() = HandshakePeerInfo(
-        deviceId = deviceId,
-        deviceName = deviceName.take(80),
-        deviceType = DeviceType.fromWire(deviceType),
-        signingPublicKey = Base64.decode(signingPublicKey, Base64.NO_WRAP),
-        pairingToken = pairingToken
-    )
-
-    private fun performInitiatorHandshake(
-        session: NoiseSession,
-        out: DataOutputStream,
-        input: DataInputStream,
-        pairingToken: String?
-    ): HandshakePeerInfo {
-        val message1 = session.writeMessage1(localHandshakeIdentity(pairingToken).encode())
-        val helloEnvelope = Envelope(
-            type = MessageType.HANDSHAKE_HELLO,
-            senderId = identityKeyStore.deviceId,
-            payload = HandshakePayload(noise = Base64.encodeToString(message1, Base64.NO_WRAP)).toJsonObject()
-        )
-        writeFrame(out, helloEnvelope.encode())
-
-        val ackBytes = readFrame(input, MAX_HANDSHAKE_FRAME_BYTES)
-        val ackEnvelope = Envelope.decode(ackBytes)
-        require(ackEnvelope.type == MessageType.HANDSHAKE_ACK) { "Expected handshake.ack, got ${ackEnvelope.type}" }
-        val ackPayload = HandshakePayload.fromJsonObject(ackEnvelope.payload)
-        val message2 = Base64.decode(ackPayload.noise, Base64.NO_WRAP)
-        // Identity comes from the authenticated Noise payload, not the plaintext envelope.
-        val claimed = HandshakeIdentity.decode(session.readMessage2(message2))
-        require(claimed.deviceId == ackEnvelope.senderId) { "handshake identity mismatch" }
-        return claimed.toPeerInfo()
-    }
-
-    private fun performResponderHandshake(session: NoiseSession, out: DataOutputStream, input: DataInputStream): HandshakePeerInfo {
-        val helloBytes = readFrame(input, MAX_HANDSHAKE_FRAME_BYTES)
-        val helloEnvelope = Envelope.decode(helloBytes)
-        require(helloEnvelope.type == MessageType.HANDSHAKE_HELLO) { "Expected handshake.hello, got ${helloEnvelope.type}" }
-        val helloPayload = HandshakePayload.fromJsonObject(helloEnvelope.payload)
-        val message1 = Base64.decode(helloPayload.noise, Base64.NO_WRAP)
-        val claimed = HandshakeIdentity.decode(session.readMessage1(message1).payload)
-        require(claimed.deviceId == helloEnvelope.senderId) { "handshake identity mismatch" }
-
-        val message2 = session.writeMessage2(localHandshakeIdentity(null).encode())
-        val ackEnvelope = Envelope(
-            type = MessageType.HANDSHAKE_ACK,
-            senderId = identityKeyStore.deviceId,
-            recipientId = helloEnvelope.senderId,
-            payload = HandshakePayload(noise = Base64.encodeToString(message2, Base64.NO_WRAP)).toJsonObject()
-        )
-        writeFrame(out, ackEnvelope.encode())
-        return claimed.toPeerInfo()
-    }
-
-    private suspend fun sendPresence(type: String, recipientId: String) {
-        runCatching { send(presenceEnvelope(type, recipientId)) }
-    }
-
-    private fun presenceEnvelope(type: String, recipientId: String) = Envelope(
-        type = type,
-        senderId = identityKeyStore.deviceId,
-        recipientId = recipientId,
-        payload = JsonObject(emptyMap())
-    )
-
     companion object {
         const val DEFAULT_PORT = 7913
-        /** Envelopes older/newer than this are rejected; generous so ordinary clock drift never matters. */
-        const val MAX_CLOCK_SKEW_MS = 15 * 60 * 1000L
-        const val RAW_HASH_FIELD = "rawSha256"
-
-        fun rawFrameHash(data: ByteArray): String =
-            java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(data))
-
-        /** [envelope] with the SHA-256 of [raw] added to its payload (before signing). */
-        internal fun bindingRawFrame(raw: ByteArray, envelope: Envelope): Envelope =
-            if (envelope.sig != null) envelope
-            else envelope.copy(payload = JsonObject(envelope.payload + (RAW_HASH_FIELD to JsonPrimitive(rawFrameHash(raw)))))
-
-        /** Whether [data] is the raw frame the signed [envelope] committed to. */
-        internal fun rawFrameMatches(data: ByteArray, envelope: Envelope): Boolean =
-            envelope.payload[RAW_HASH_FIELD]?.jsonPrimitive?.contentOrNull == rawFrameHash(data)
 
         /** The two advertisement formats in use: the Mac's (base64 of the first 8 digest bytes) and this app's
          *  (first 16 characters of the unpadded base64 of the whole SHA-256 digest). */
@@ -933,42 +631,16 @@ class TransportManager(
             val androidStyle = java.util.Base64.getEncoder().withoutPadding().encodeToString(digest).take(16)
             return advertised == macStyle || advertised == androidStyle
         }
-        private const val MAX_FRAME_BYTES = 16 * 1024 * 1024
-        /** Hello/ack envelopes are a few hundred bytes; anything larger before auth is hostile. */
-        internal const val MAX_HANDSHAKE_FRAME_BYTES = 16 * 1024
-        private const val PAIRING_ARM_MS = 5 * 60_000L
+
         private const val MAX_PENDING_INBOUND = 32
         private const val MAX_PENDING_INBOUND_PER_HOST = 4
         private const val LISTEN_BIND_ATTEMPTS = 5
         private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
-        private const val HEARTBEAT_INTERVAL_MS = 20_000L
-        private const val HEARTBEAT_TIMEOUT_MS = 3 * HEARTBEAT_INTERVAL_MS
         private const val CONNECT_TIMEOUT_MS = 10_000
-        private const val HANDSHAKE_TIMEOUT_MS = 15_000L
-        /** Large enough that flushing it with unique ids (to re-deliver old broadcasts) takes real effort. */
-        private const val DEDUPE_CACHE_LIMIT = 4096
+        private const val TICK_INTERVAL_MS = 1_000L
+        private const val READ_BUFFER_BYTES = 64 * 1024
 
-        private fun writeFrame(out: DataOutputStream, payload: ByteArray) {
-            out.writeInt(payload.size)
-            out.write(payload)
-            out.flush()
-        }
-
-        internal fun readFrame(input: DataInputStream, maxBytes: Int = MAX_FRAME_BYTES): ByteArray {
-            val length = input.readInt()
-            require(length in 0..maxBytes) { "Invalid frame length $length" }
-            // Grow as bytes actually arrive rather than trusting the declared length up front,
-            // so a peer that declares a large frame and sends nothing costs us nothing.
-            val out = java.io.ByteArrayOutputStream(minOf(length, 8192))
-            val chunk = ByteArray(8192)
-            var remaining = length
-            while (remaining > 0) {
-                val n = input.read(chunk, 0, minOf(chunk.size, remaining))
-                if (n < 0) throw java.io.EOFException()
-                out.write(chunk, 0, n)
-                remaining -= n
-            }
-            return out.toByteArray()
-        }
+        /** A peer that stops reading is dropped once this much is waiting for it (a frame may be up to 16 MiB). */
+        private const val MAX_QUEUED_WRITE_BYTES = 64L * 1024 * 1024
     }
 }
