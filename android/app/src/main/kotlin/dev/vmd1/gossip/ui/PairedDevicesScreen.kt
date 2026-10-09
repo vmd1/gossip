@@ -122,6 +122,7 @@ fun PairedDevicesScreen(
     hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
     directDeviceIds: Set<String> = emptySet(),
     meshDeviceIds: Set<String> = emptySet(),
+    relayedDeviceIds: Set<String> = emptySet(),
     batteryStates: Map<String, BatteryState> = emptyMap(),
     ringingPeers: Set<String> = emptySet(),
     onToggleRing: (deviceId: String) -> Unit = {}
@@ -141,23 +142,35 @@ fun PairedDevicesScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                        // Green = connected directly, blue = reachable over the mesh, grey = not connected.
-                        val connectivity = DeviceConnectivity.classify(device.deviceId, directDeviceIds, meshDeviceIds)
+                        // Green = connected directly, teal = connected through the relay, blue = reachable over the mesh,
+                        // grey = not connected.
+                        val connectivity = DeviceConnectivity.classify(device.deviceId, directDeviceIds, meshDeviceIds, relayedDeviceIds)
                         Icon(
                             imageVector = device.deviceType.icon,
                             contentDescription = device.deviceType.wireValue + when (connectivity) {
                                 Connectivity.DIRECT -> ", connected"
+                                Connectivity.RELAYED -> ", connected through the relay (screen mirroring and Universal Control need the same network)"
                                 Connectivity.MESH -> ", connected through another device"
                                 Connectivity.NONE -> ", not connected"
                             },
                             tint = when (connectivity) {
                                 Connectivity.DIRECT -> androidx.compose.ui.graphics.Color(0xFF34C759)
+                                Connectivity.RELAYED -> androidx.compose.ui.graphics.Color(0xFF30B0C7)
                                 Connectivity.MESH -> androidx.compose.ui.graphics.Color(0xFF0A84FF)
                                 Connectivity.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
                             },
                             modifier = Modifier.padding(end = 8.dp)
                         )
-                        Text(device.deviceName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                        Column {
+                            Text(device.deviceName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            if (connectivity == Connectivity.RELAYED) {
+                                Text(
+                                    "Through the relay. Screen mirroring and Universal Control need the same network.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                     // Grouped in their own Row (not two more top-level children of the
                     // outer SpaceBetween Row) — real layout bug, confirmed live: with

@@ -58,6 +58,24 @@ class CoreBridge(
 
         /** A reconciliation resend is due: [peer] for the on-connect send to one peer, `null` for the periodic broadcast. */
         class ReconcileDue(val task: String, val peer: String?) : BridgeAction()
+
+        /** Open a WebSocket to the relay at [url], then call [relaySocketOpened] (or [relaySocketClosed] if it fails). */
+        class RelayConnect(val url: String) : BridgeAction()
+        class RelaySendText(val text: String) : BridgeAction()
+        class RelaySendBinary(val bytes: ByteArray) : BridgeAction()
+
+        /** Close the relay socket. The engine already considers it gone: do not report its close back. */
+        object RelayClose : BridgeAction()
+        class RelayJoined(val members: UInt) : BridgeAction()
+        object RelayDown : BridgeAction()
+
+        /** A hint for the UI (`upgrade_required`, `denied`, `disabled`, `join_failed`, ...); the engine backs off itself. */
+        class RelayError(val code: String) : BridgeAction()
+
+        /** The mesh topic changed. The secret must be persisted in secure storage and never logged or interpolated into a
+         *  message ([TransportManager] only hands it to [RelayTopicStore]); deliberately not a data class, so it has no
+         *  `toString` that prints it. */
+        class TopicChanged(val secret: ByteArray, val epoch: ULong) : BridgeAction()
     }
 
     class BridgeException(message: String, val kind: Kind) : Exception(message) {
@@ -91,6 +109,34 @@ class CoreBridge(
     fun tick(): List<BridgeAction> = convert(core.tick())
 
     fun shouldDial(deviceId: String): Boolean = core.shouldDial(deviceId)
+
+    // ---- Relay ------------------------------------------------------------------------------------------------
+
+    /** Turns the relay on or off. [origin] is `wss://host` (exactly what the relay is configured with: it is signed into
+     *  every join). Returns [BridgeAction.RelayConnect] when enabling with a topic. */
+    fun relayConfigure(enabled: Boolean, origin: String): List<BridgeAction> = convert(core.relayConfigure(enabled, origin))
+
+    fun relaySocketOpened(): List<BridgeAction> = convert(core.relaySocketOpened())
+
+    fun relaySocketClosed(): List<BridgeAction> = convert(core.relaySocketClosed())
+
+    fun relayTextReceived(text: String): List<BridgeAction> = convert(core.relayTextReceived(text))
+
+    fun relayBinaryReceived(bytes: ByteArray): List<BridgeAction> = convert(core.relayBinaryReceived(bytes))
+
+    /** "disabled", "no_topic", "disconnected", "connecting" or "joined". */
+    fun relayStatus(): String = core.relayStatus()
+
+    fun isRelayed(deviceId: String): Boolean = core.isRelayed(deviceId)
+
+    fun setLanGraceMs(ms: Long) = core.setLanGraceMs(ms)
+
+    /** Loads the persisted mesh topic at startup, before the first [tick]. */
+    fun setTopic(secret: ByteArray, epoch: Long): List<BridgeAction> = call { core.setTopic(secret, epoch.toULong()) }
+
+    fun isConnected(deviceId: String): Boolean = core.isConnected(deviceId)
+
+    fun connectedPeers(): List<String> = core.connectedPeers()
 
     // ---- Pairing and trust ------------------------------------------------------------------------------------
 
@@ -151,6 +197,14 @@ class CoreBridge(
             is CoreAction.TrustChanged -> BridgeAction.TrustChanged(action.snapshotJson)
             is CoreAction.DeviceRevoked -> BridgeAction.DeviceRevoked(action.deviceId)
             is CoreAction.ReconcileDue -> BridgeAction.ReconcileDue(action.task, action.peer)
+            is CoreAction.RelayConnect -> BridgeAction.RelayConnect(action.url)
+            is CoreAction.RelaySendText -> BridgeAction.RelaySendText(action.text)
+            is CoreAction.RelaySendBinary -> BridgeAction.RelaySendBinary(action.bytes)
+            is CoreAction.RelayClose -> BridgeAction.RelayClose
+            is CoreAction.RelayJoined -> BridgeAction.RelayJoined(action.members)
+            is CoreAction.RelayDown -> BridgeAction.RelayDown
+            is CoreAction.RelayError -> BridgeAction.RelayError(action.code)
+            is CoreAction.TopicChanged -> BridgeAction.TopicChanged(action.secret, action.epoch)
         }
     }
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only (src/debug is not part of the release variant). Release builds keep the platform default for apps
+     targeting API 28+: no cleartext at all, so a release build can only ever open a wss:// relay socket.
+     This allows plain ws:// to the local relay used in development and by the emulator end-to-end test; the app's own
+     RelayEndpointPolicy additionally only accepts these hosts for ws://. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

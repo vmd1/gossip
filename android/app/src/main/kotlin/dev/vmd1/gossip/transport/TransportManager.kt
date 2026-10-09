@@ -76,7 +76,9 @@ class TransportManager(
     /** Per-device feature toggles: sends for a feature turned off on this device are silently skipped. */
     private val isMessageAllowed: (type: String) -> Boolean = { true },
     /** Keys of the features turned off on this device, for the engine's own gate (see [setDisabledFeatures]). */
-    initialDisabledFeatures: List<String> = emptyList()
+    initialDisabledFeatures: List<String> = emptyList(),
+    /** Where the mesh topic (secret + epoch) the engine reports is persisted; `null` keeps it in memory only (tests). */
+    private val relayTopicStore: RelayTopicStore? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -105,6 +107,40 @@ class TransportManager(
     private val _connectedDeviceIds = MutableStateFlow<Set<String>>(emptySet())
     val connectedDeviceIds: StateFlow<Set<String>> = _connectedDeviceIds.asStateFlow()
 
+    /** Devices whose only live link goes through the relay: connected (messages flow), but features that need the same
+     *  network (screen mirroring, Universal Control) are refused for them. Disjoint from [connectedDeviceIds]. */
+    private val _relayedDeviceIds = MutableStateFlow<Set<String>>(emptySet())
+    val relayedDeviceIds: StateFlow<Set<String>> = _relayedDeviceIds.asStateFlow()
+
+    /** Every peer with a live link of either kind ([connectedDeviceIds] plus [relayedDeviceIds]): what per-peer initial
+     *  syncs and resyncs should follow, since they must reach a relayed peer too. */
+    private val _peerDeviceIds = MutableStateFlow<Set<String>>(emptySet())
+    val peerDeviceIds: StateFlow<Set<String>> = _peerDeviceIds.asStateFlow()
+
+    /** The relay client's state, for Settings: "disabled", "no_topic", "disconnected", "connecting" or "joined". Also
+     *  "disabled" while the relay is on in Settings but parked because every trusted device has a same-network link. */
+    private val _relayStatus = MutableStateFlow("disabled")
+    val relayStatus: StateFlow<String> = _relayStatus.asStateFlow()
+
+    /** True while the relay is switched on but parked (all trusted devices are on this network), to tell that apart from off. */
+    private val _relayIdle = MutableStateFlow(false)
+    val relayIdle: StateFlow<Boolean> = _relayIdle.asStateFlow()
+
+    /** The last hint the relay gave for why it is refusing us (`upgrade_required`, `denied`, ...), cleared on join. */
+    private val _relayErrorCode = MutableStateFlow<String?>(null)
+    val relayErrorCode: StateFlow<String?> = _relayErrorCode.asStateFlow()
+
+    enum class ConnectionPath { DIRECT, RELAYED, NONE }
+
+    /** How this device currently reaches [deviceId]. Direct wins over relayed. */
+    fun connectionPath(deviceId: String): ConnectionPath = when {
+        deviceId in _connectedDeviceIds.value -> ConnectionPath.DIRECT
+        deviceId in _relayedDeviceIds.value -> ConnectionPath.RELAYED
+        else -> ConnectionPath.NONE
+    }
+
+    fun isRelayed(deviceId: String): Boolean = connectionPath(deviceId) == ConnectionPath.RELAYED
+
     /** When each device (other than us) was last heard from, by any message — directly or relayed. */
     private val lastHeard = ConcurrentHashMap<String, Long>()
     private val _meshReachableDeviceIds = MutableStateFlow<Set<String>>(emptySet())
@@ -115,7 +151,7 @@ class TransportManager(
 
     private fun refreshMeshReachable() {
         _meshReachableDeviceIds.value = DeviceConnectivity.meshReachable(
-            lastHeard = lastHeard, directIds = _connectedDeviceIds.value,
+            lastHeard = lastHeard, directIds = _peerDeviceIds.value,
             selfId = identityKeyStore.deviceId, now = System.currentTimeMillis()
         )
     }
@@ -149,7 +185,7 @@ class TransportManager(
     // ---- The engine ---------------------------------------------------------------------------------------------
 
     /** Created on first use, so merely constructing a [TransportManager] (some tests do) loads no native code. */
-    private val bridge: CoreBridge by lazy {
+    private val bridgeDelegate = lazy {
         CoreBridge(
             deviceId = identityKeyStore.deviceId,
             noiseSecret = identityKeyStore.x25519KeyPair.privateKey,
@@ -158,8 +194,17 @@ class TransportManager(
             deviceType = deviceType,
             trustedDevices = trustedDevicesStore,
             disabledFeatures = currentDisabledFeatures
-        )
+        ).also { created ->
+            // Before the first tick, so the relay can join as soon as it is enabled.
+            relayTopicStore?.load()?.let { topic ->
+                startupActions = runCatching { created.setTopic(topic.secret, topic.epoch) }.getOrDefault(emptyList())
+            }
+        }
     }
+    private val bridge: CoreBridge get() = bridgeDelegate.value
+
+    /** Actions produced while loading the persisted topic, carried out with the first tick. */
+    @Volatile private var startupActions: List<CoreBridge.BridgeAction> = emptyList()
     @Volatile private var currentDisabledFeatures: List<String> = initialDisabledFeatures
 
     /** Guards the engine and the ordering of everything it produces. Never held across a blocking socket operation. */
@@ -179,7 +224,10 @@ class TransportManager(
     private val trustChanged = Channel<Unit>(Channel.CONFLATED)
 
     init {
-        trustedDevicesStore.addChangeListener { trustChanged.trySend(Unit) }
+        trustedDevicesStore.addChangeListener {
+            trustedIdsCache = null
+            trustChanged.trySend(Unit)
+        }
         scope.launch {
             for (ignored in trustChanged) {
                 runCatching { engineLock.withLock { bridge.syncTrustFromStore() } }
@@ -190,7 +238,15 @@ class TransportManager(
         scope.launch {
             while (isActive) {
                 delay(TICK_INTERVAL_MS)
-                runCatching { runEngine { bridge.tick() } }.onFailure { Log.w(TAG, "Engine tick failed: ${it.message}") }
+                runCatching {
+                    engineLock.withLock {
+                        val startup = startupActions
+                        startupActions = emptyList()
+                        carryOut(startup + bridge.tick())
+                        evaluateRelayNeed()
+                        publishRelayStatus()
+                    }
+                }.onFailure { Log.w(TAG, "Engine tick failed: ${it.message}") }
             }
         }
     }
@@ -204,18 +260,40 @@ class TransportManager(
     private fun carryOut(actions: List<CoreBridge.BridgeAction>) {
         for (action in actions) {
             when (action) {
+                // Bytes go out in the order the engine produced them: Noise nonces are implicit counters.
+                is CoreBridge.BridgeAction.Send -> links[action.conn]?.enqueue(action.bytes)
+                is CoreBridge.BridgeAction.RelaySendText -> relayConnection?.sendText(action.text)
+                is CoreBridge.BridgeAction.RelaySendBinary -> relayConnection?.sendBinary(action.bytes)
+                is CoreBridge.BridgeAction.RelayConnect -> openRelayConnection(action.url)
+                is CoreBridge.BridgeAction.RelayClose -> closeRelayConnection()
+                is CoreBridge.BridgeAction.RelayJoined -> _relayErrorCode.value = null
+                is CoreBridge.BridgeAction.RelayDown -> Unit // the status follows relay_status, published after this batch
+                is CoreBridge.BridgeAction.RelayError -> {
+                    Log.w(TAG, "Relay refused: ${action.code}")
+                    _relayErrorCode.value = action.code
+                }
+                is CoreBridge.BridgeAction.TopicChanged -> {
+                    if (relayTopicStore?.save(action.secret, action.epoch.toLong()) == false) Log.w(TAG, "Could not persist the relay topic")
+                }
                 is CoreBridge.BridgeAction.Close -> closeLink(action.conn, notifyEngine = false)
                 is CoreBridge.BridgeAction.PeerConnected -> {
-                    links[action.conn]?.let { link ->
+                    Log.d(TAG, "Peer ${action.peer.deviceId} connected over ${if (action.conn >= VIRTUAL_CONN_BASE) "the relay" else "a direct link"}")
+                    val link = links[action.conn]
+                    if (link != null) {
                         link.deviceId = action.peer.deviceId
                         linkByDevice[action.peer.deviceId] = action.conn
                         releaseInbound(link)
+                        relayedPeers.remove(action.peer.deviceId)
+                    } else if (action.conn >= VIRTUAL_CONN_BASE) {
+                        relayedPeers.add(action.peer.deviceId)
                     }
                     recomputeConnectionState()
                     events.trySend(action)
                 }
                 is CoreBridge.BridgeAction.PeerDisconnected -> {
+                    Log.d(TAG, "Peer ${action.deviceId} disconnected")
                     linkByDevice[action.deviceId]?.let { conn -> if (links[conn] == null) linkByDevice.remove(action.deviceId, conn) }
+                    relayedPeers.remove(action.deviceId)
                     recomputeConnectionState()
                     events.trySend(action)
                 }
@@ -322,6 +400,9 @@ class TransportManager(
     }
 
     private val links = ConcurrentHashMap<ULong, Link>()
+
+    /** Peers whose live link is a virtual relay connection (no socket of ours). Changed only under [engineLock]. */
+    private val relayedPeers: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val linkByDevice = ConcurrentHashMap<String, ULong>()
 
     /** Devices with an outbound socket still connecting (before the engine's own dial guard applies). */
@@ -333,6 +414,7 @@ class TransportManager(
     /** Removes a socket. [notifyEngine] is false when the engine itself asked for the close (it has already forgotten it). */
     private fun closeLink(conn: ULong, notifyEngine: Boolean) {
         val link = links.remove(conn) ?: return
+        Log.d(TAG, "Link $conn closed (engine asked: ${!notifyEngine}, ${if (link.dialTarget != null) "outbound" else "inbound"}, device ${link.deviceId})")
         link.close()
         releaseInbound(link)
         link.dialTarget?.let { connecting.remove(it) }
@@ -346,10 +428,13 @@ class TransportManager(
 
     private fun recomputeConnectionState() {
         val ids = linkByDevice.keys.toSet()
+        val relayed = relayedPeers - ids
         _connectedDeviceIds.value = ids
+        _relayedDeviceIds.value = relayed
+        _peerDeviceIds.value = ids + relayed
         refreshMeshReachable()
         _connectionState.value = when {
-            ids.isNotEmpty() -> ConnectionState.CONNECTED
+            ids.isNotEmpty() || relayed.isNotEmpty() -> ConnectionState.CONNECTED
             links.values.any { it.deviceId == null } -> ConnectionState.HANDSHAKING
             serverSocket?.isClosed == false || connecting.isNotEmpty() -> ConnectionState.DISCOVERING
             else -> ConnectionState.DISCONNECTED
@@ -399,9 +484,10 @@ class TransportManager(
      *  for a moment even though nothing is genuinely still using it — an uncaught
      *  `BindException` there previously crashed the whole app on a race that clears
      *  itself within milliseconds. */
-    fun listen(port: Int = DEFAULT_PORT) {
+    fun listen(port: Int = DEFAULT_PORT, discover: Boolean = true) {
         stopListening()
-        discoveryJob = scope.launch {
+        // [discover] = false is for tests that must control exactly who dials whom (no automatic LAN dialing).
+        if (discover) discoveryJob = scope.launch {
             discovery.discover().collect { event -> handleDiscoveryEvent(event) }
         }
         scope.launch {
@@ -547,6 +633,126 @@ class TransportManager(
         }
     }
 
+    // ---- Relay ------------------------------------------------------------------------------------------------
+
+    private var relayConnection: RelayConnection? = null
+    private var relayGeneration = 0
+
+    /** What Settings asks for: the relay on, with a usable origin. Under [engineLock]. */
+    private var relayWanted = false
+    private var relayOrigin: String? = null
+
+    /** Whether the engine's relay is currently configured on (it is parked while every trusted device is on this network). */
+    private var engineRelayOn = false
+    private var lastNotAllDirectAt = 0L
+    private var lastPublishedStatus = ""
+
+    /** Ids of the non-provisional trusted devices, recomputed after the trust table changes (reading it decrypts every row). */
+    @Volatile private var trustedIdsCache: Set<String>? = null
+
+    /**
+     * Turns the relay on or off as the user asked in Settings. [origin] is the normalized `wss://host[:port]`
+     * ([RelayEndpointPolicy]); enabling without one is the same as disabling. While on, the socket is only held when some
+     * trusted device has no same-network link (see [evaluateRelayNeed]).
+     */
+    fun setRelayEnabled(enabled: Boolean, origin: String?) {
+        engineLock.withLock {
+            val wanted = enabled && origin != null
+            if (!wanted && !bridgeDelegate.isInitialized()) {
+                relayWanted = false
+                relayOrigin = null
+                return
+            }
+            relayWanted = wanted
+            relayOrigin = origin
+            lastNotAllDirectAt = System.currentTimeMillis() // a fresh switch-on gets the full idle grace period
+            runCatching {
+                evaluateRelayNeed(force = true)
+                publishRelayStatus()
+            }.onFailure { Log.w(TAG, "Could not configure the relay: ${it.message}") }
+        }
+    }
+
+    /** Test hook: how long a trusted peer must have had no live link before it is dialed through the relay. */
+    fun setLanGraceMs(ms: Long) {
+        engineLock.withLock { bridge.setLanGraceMs(ms) }
+    }
+
+    /**
+     * Holds the relay socket only while it is needed, which is what keeps the battery cost of an always-on service down:
+     * the engine's relay is on while the user wants it and at least one trusted device has no same-network link, and is
+     * parked once every trusted device has had one for [RELAY_IDLE_AFTER_MS] (a LAN blip must not tear the socket down).
+     * It switches on again the moment a link is missing. Called under [engineLock].
+     */
+    private fun evaluateRelayNeed(force: Boolean = false) {
+        if (!relayWanted && !engineRelayOn && !force) return
+        val now = System.currentTimeMillis()
+        val trusted = trustedIdsCache ?: trustedDevicesStore.allDevices()
+            .filter { !trustedDevicesStore.isProvisional(it.deviceId) }.map { it.deviceId }.toSet().also { trustedIdsCache = it }
+        val allDirect = trusted.isNotEmpty() && trusted.all { linkByDevice.containsKey(it) }
+        if (!allDirect) lastNotAllDirectAt = now
+        val parked = allDirect && now - lastNotAllDirectAt >= RELAY_IDLE_AFTER_MS
+        val on = relayWanted && !parked
+        _relayIdle.value = relayWanted && parked
+        if (on == engineRelayOn && !force) return
+        engineRelayOn = on
+        carryOut(bridge.relayConfigure(on, if (on) relayOrigin ?: "" else ""))
+    }
+
+    /** Mirrors the engine's relay status into the published state. Called under [engineLock]. */
+    private fun publishRelayStatus() {
+        if (!bridgeDelegate.isInitialized()) return
+        val status = bridge.relayStatus()
+        if (status != lastPublishedStatus) {
+            lastPublishedStatus = status
+            _relayStatus.value = status
+        }
+    }
+
+    private fun openRelayConnection(url: String) {
+        closeRelayConnection()
+        val allowed = RelayEndpointPolicy.validateConnectUrl(url, customUrl = relayOrigin ?: "")
+        if (allowed == null) {
+            // Never connect to an address the policy does not allow; the engine treats this as a failed connect and backs off.
+            Log.w(TAG, "Refusing to connect to a relay address that is not allowed")
+            carryOut(bridge.relaySocketClosed())
+            return
+        }
+        Log.i(TAG, "Connecting to the relay at ${RelayEndpointPolicy.loggable(allowed)}")
+        val generation = ++relayGeneration
+        // Each callback runs on OkHttp's reader thread for this socket (one at a time, in order) and takes the engine lock like the
+        // LAN readers do; a callback from a socket that has since been closed or replaced is ignored.
+        fun onRelayThread(body: () -> List<CoreBridge.BridgeAction>) {
+            runCatching {
+                engineLock.withLock {
+                    if (relayGeneration != generation) return@withLock
+                    carryOut(body())
+                    publishRelayStatus()
+                }
+            }.onFailure { Log.w(TAG, "Relay event failed: ${it.message}") }
+        }
+        relayConnection = RelayConnection(
+            url = allowed,
+            allowInsecureLoopback = RelayEndpointPolicy.allowsInsecureLoopback,
+            onOpen = { onRelayThread { bridge.relaySocketOpened() } },
+            onText = { text -> onRelayThread { bridge.relayTextReceived(text) } },
+            onBinary = { bytes -> onRelayThread { bridge.relayBinaryReceived(bytes) } },
+            onClosed = {
+                onRelayThread {
+                    relayConnection = null
+                    bridge.relaySocketClosed()
+                }
+            }
+        )
+    }
+
+    /** Closes the relay socket without reporting it back (the engine asked for it, or we are shutting down). */
+    private fun closeRelayConnection() {
+        relayGeneration++
+        relayConnection?.close()
+        relayConnection = null
+    }
+
     // ---- Sending --------------------------------------------------------------------------------------------------
 
     /** Signs (if locally originated), records and sends [unsigned] toward everyone it addresses: a broadcast goes to
@@ -595,11 +801,11 @@ class TransportManager(
 
     /** Device ID of whichever peer most recently finished connecting, if it's still
      *  connected. A "primary peer" convenience — see [_lastConnectedDeviceId]'s doc. */
-    fun currentRemoteDeviceId(): String? = _lastConnectedDeviceId.value?.takeIf { linkByDevice.containsKey(it) }
+    fun currentRemoteDeviceId(): String? = _lastConnectedDeviceId.value?.takeIf { it in _peerDeviceIds.value }
 
     /** Tears down every currently-connected peer. */
     fun disconnect() {
-        for (deviceId in linkByDevice.keys.toList()) disconnect(deviceId)
+        for (deviceId in _peerDeviceIds.value.toList()) disconnect(deviceId)
         recomputeConnectionState()
     }
 
@@ -612,6 +818,10 @@ class TransportManager(
 
     fun shutdown() {
         disconnect()
+        engineLock.withLock {
+            if (bridgeDelegate.isInitialized()) runCatching { carryOut(bridge.relayConfigure(false, "")) }
+            closeRelayConnection()
+        }
         stopListening()
         for (conn in links.keys.toList()) closeLink(conn, notifyEngine = false)
         events.close()
@@ -638,6 +848,12 @@ class TransportManager(
         private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val TICK_INTERVAL_MS = 1_000L
+
+        /** The engine's virtual connection ids for peers reached through the relay start here (`desktop/README.md`). */
+        private val VIRTUAL_CONN_BASE: ULong = 1uL shl 63
+
+        /** How long every trusted device must have had a same-network link before the relay socket is parked. */
+        private const val RELAY_IDLE_AFTER_MS = 30_000L
         private const val READ_BUFFER_BYTES = 64 * 1024
 
         /** A peer that stops reading is dropped once this much is waiting for it (a frame may be up to 16 MiB). */

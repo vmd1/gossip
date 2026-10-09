@@ -78,7 +78,7 @@ class LockOnLeaveManager(
             .launchIn(scope)
 
         if (localDeviceType == DeviceType.ANDROID_PHONE) {
-            transportManager.connectedDeviceIds
+            transportManager.peerDeviceIds
                 .onEach { handleConnectedDeviceIdsChanged(it) }
                 .launchIn(scope)
             scope.launch { runPeriodicResync() }
@@ -100,7 +100,7 @@ class LockOnLeaveManager(
     private suspend fun runPeriodicResync() {
         while (true) {
             delay(RESYNC_INTERVAL_MS)
-            for (deviceId in transportManager.connectedDeviceIds.value) {
+            for (deviceId in transportManager.peerDeviceIds.value) {
                 resyncConfig(deviceId)
             }
         }

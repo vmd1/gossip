@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- The hooks below are guarded by android.permission.DUMP: adb's shell user holds it, ordinary apps cannot. Debug builds
          are signed with the project key, so they must never be callable by other apps on the device. -->
-    <application>
+    <application android:networkSecurityConfig="@xml/network_security_config">
         <!-- Debug-only: logs every pointer / key event to logcat (tag GossipProbe) so the Universal Control
              end-to-end script can assert what the virtual mouse and keyboard actually delivered. -->
         <activity

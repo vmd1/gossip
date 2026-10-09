@@ -149,4 +149,40 @@ teal in the menu bar and refuses screen mirroring and Universal Control ("needs 
 
 `mac/scripts/e2e-relay.sh` starts the local relay (`POW_BITS=8`, a free port) and runs `RelayE2ETests`: two in-process
 Mac `TransportManager`s with the LAN off exchange a 1 MiB message and a 2 MiB raw frame through it and toggle the relay
-off and on. The Mac-to-Android relay test is deferred until Android has a relay client.
+off and on. The Mac-to-Android relay test is `mac/scripts/e2e-relay-emulator.sh` (see "Relay (Android)").
+
+## Relay (Android)
+
+The Android app reaches paired devices that are not on the same network through the same relay. It is off by default;
+**Settings → Relay** has the toggle "Relay (connect when not on the same network)", an optional custom address (same
+validation as on the Mac; the keyboard's Done key or "Save address" commits it), a status line and the privacy note. As on
+the Mac, the shipped default is the placeholder `wss://relay.gossip.invalid` (TODO in
+`android/.../transport/RelayEndpointPolicy.kt`): until it is replaced, the toggle reports "No relay host configured" and no
+socket is opened unless a custom address is set.
+
+- `transport/RelayConnection.kt` is the OkHttp WebSocket adapter (30 s ping interval, no redirects, one writer thread so
+  bytes leave in the order the engine produced them). OkHttp refuses a single outgoing message above 16 MiB; the relay's
+  largest frame is 16 MiB plus a 16 byte header, so an exactly-maximal frame resets the relay link (it reconnects) rather
+  than being sent. Real traffic is far below that (raw frames are capped at a few MiB by the features).
+- `transport/RelayEndpointPolicy.kt`: release builds only open `wss://` to the default host list or the user's own custom
+  host. Debug builds also allow `ws://` to `localhost`, `127.0.0.1` and `10.0.2.2` (the emulator's host), which needs the
+  debug-only network security config in `app/src/debug/res/xml/network_security_config.xml`; the release variant keeps the
+  platform default of no cleartext at all, and `RelayConnection` also drops cleartext from its connection specs there.
+- The mesh topic (secret and epoch) is stored in an `EncryptedSharedPreferences` file (`connect_relay_topic`, Android
+  Keystore master key), loaded with `set_topic` before the first engine tick, and never logged.
+- The socket is only held while it is needed: it is open while the relay is on in Settings and at least one trusted device
+  has no same-network link, and is parked (`relay_configure(false)`) once every trusted device has had a direct link for
+  30 s. It reconnects as soon as a link is missing. Settings shows "On, waiting" while parked.
+- A device reached only through the relay shows in teal on the home screen with a "needs the same network" note; screen
+  mirroring and Universal Control are refused for it by the engine (it never sees `screen.*`/`control.*` from a relayed link).
+
+`mac/scripts/e2e-relay-emulator.sh` is the cross-device test: the Mac test host and the emulator (AVD `a16`, booted
+headless if none is running) talk to each other only through a local relay that the Mac test starts, kills and restarts.
+Both sides use `ws://127.0.0.1:<port>` (the Mac directly, the emulator through `adb reverse`) because the origin string is
+signed into every join. It pairs over the LAN-style path, checks the topic is created and persisted on both, turns the relay
+on, takes the LAN away on both sides, and then verifies: both reach each other through the relay and report the link as
+relayed, a 1 MiB message and 2 MiB raw frames both ways, `screen.*`/`control.*` refused both ways, the LAN reappearing
+replaces the relay link with no prompt and no disconnect on either side, Android parking its relay socket while everything is
+on the LAN, and reconnection after the relay is killed and restarted. The Android half is
+`android/app/src/androidTest/.../e2e/RelayE2eTest.kt`. JVM unit tests (`RelayEndpointPolicyTest`, `RelayBridgeTest`,
+`RelaySettingsTest`) cover the policy, the bridge mapping, settings and the topic store.

@@ -170,6 +170,10 @@ dependencies {
     // The generated Kotlin bindings for the Rust protocol engine call into libgossip_ffi.so through JNA.
     implementation("net.java.dev.jna:jna:5.17.0@aar")
 
+    // The relay WebSocket (transport/RelayConnection.kt). Pinned; 4.x is the line that supports minSdk 29 with a plain JVM
+    // artifact. okio comes in transitively.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // Security / crypto
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.google.crypto.tink:tink-android:1.15.0")

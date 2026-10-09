@@ -104,8 +104,15 @@ class SyncForegroundService : Service() {
             messageRouter = messageRouter,
             deviceType = deviceType,
             isMessageAllowed = featureSettings::isMessageAllowed,
-            initialDisabledFeatures = featureSettings.disabled.value.map(::coreFeatureKey)
+            initialDisabledFeatures = featureSettings.disabled.value.map(::coreFeatureKey),
+            relayTopicStore = dev.vmd1.gossip.transport.RelayTopicStore.getInstance(applicationContext)
         )
+        // The relay is opt-in (Settings > Relay): push the user's choice to the engine now and on every change. With the
+        // placeholder default address and no valid custom one there is no origin, so no socket is ever attempted.
+        val relaySettings = dev.vmd1.gossip.transport.RelaySettings.getInstance(applicationContext)
+        kotlinx.coroutines.flow.combine(relaySettings.enabled, relaySettings.customUrl) { _, _ -> relaySettings.configuration() }
+            .onEach { transportManager.setRelayEnabled(it.enabled, it.origin) }
+            .launchIn(serviceScope)
         // The engine applies the same per-feature gate on delivery, so it needs to hear about every change.
         featureSettings.disabled
             .onEach { transportManager.setDisabledFeatures(it.map(::coreFeatureKey)) }
@@ -430,7 +437,7 @@ class SyncForegroundService : Service() {
         // state flips to CONNECTED: a second peer connecting while the first is still up
         // causes no flip, and would otherwise wait for the 60s resync loops. The sends are
         // broadcasts and idempotent, so an already-connected peer just gets a harmless repeat.
-        transportManager.connectedDeviceIds
+        transportManager.peerDeviceIds
             .newlyConnectedPeers()
             .onEach {
                 // Two devices that were apart can each have a different real DND

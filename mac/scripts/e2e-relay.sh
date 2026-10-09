@@ -8,8 +8,7 @@
 # Needs: Node 18+, a Rust toolchain (the Mac app builds the engine), Xcode and XcodeGen. Nothing touches the real Gossip
 # data on this Mac: the test host uses throwaway identities, trust stores and topic storage.
 #
-# DEFERRED: the Mac-to-Android half. Android has no relay support yet; once it does, extend this script the way
-# e2e-emulator.sh drives the emulator (a TransportE2eTest variant that joins this relay), and point the Mac test at it.
+# The Mac-to-Android half (a real emulator, only the relay between them) is mac/scripts/e2e-relay-emulator.sh.
 set -uo pipefail
 export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH"
 HERE="$(cd "$(dirname "$0")" && pwd)"
