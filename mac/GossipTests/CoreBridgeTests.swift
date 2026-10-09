@@ -251,4 +251,47 @@ final class CoreBridgeTests: XCTestCase {
         XCTAssertFalse(store.importCoreSnapshot(#"{"devices":[{"device_id":1}]}"#))
         XCTAssertTrue(store.allDevices().isEmpty)
     }
+
+    // MARK: - Relay
+
+    func testRelayWithoutATopicStaysIdleAndWithOneRequestsAConnection() throws {
+        let wire = Wire()
+        let mac = try Peer("mac", directory: directory), phone = try Peer("phone", directory: directory)
+        XCTAssertEqual(mac.bridge.relayStatus(), "disabled")
+        XCTAssertTrue(mac.bridge.relayConfigure(enabled: true, origin: "wss://relay.example.test").isEmpty, "no topic yet: nothing to connect to")
+        XCTAssertEqual(mac.bridge.relayStatus(), "no_topic")
+
+        // The first connection between two trusted devices creates the topic and reports it for persisting.
+        try pair(wire, shower: mac, scanner: phone)
+        var secret: Data?
+        var epoch: UInt64?
+        for event in mac.events + phone.events { if case .topicChanged(let s, let e) = event { secret = s; epoch = e } }
+        XCTAssertEqual(secret?.count, 32)
+        XCTAssertEqual(epoch, 1)
+
+        // A restart loads it back, and enabling the relay then asks the shell to open the socket.
+        let restarted = try Peer("mac", directory: directory)
+        _ = try restarted.bridge.setTopic(secret: try XCTUnwrap(secret), epoch: try XCTUnwrap(epoch))
+        let actions = restarted.bridge.relayConfigure(enabled: true, origin: "wss://relay.example.test")
+        XCTAssertTrue(actions.contains { if case .relayConnect(let url) = $0 { return url == "wss://relay.example.test/connect" } else { return false } })
+        XCTAssertEqual(restarted.bridge.relayStatus(), "connecting")
+        XCTAssertFalse(restarted.bridge.isRelayed(deviceId: phone.deviceId))
+
+        // Garbage from the relay is ignored; a socket that dies is reported and the engine backs off.
+        _ = restarted.bridge.relaySocketOpened()
+        _ = restarted.bridge.relayTextReceived("not json")
+        _ = restarted.bridge.relayBinaryReceived(Data([1, 2, 3]))
+        _ = restarted.bridge.relaySocketClosed()
+        XCTAssertEqual(restarted.bridge.relayStatus(), "disconnected")
+
+        let off = restarted.bridge.relayConfigure(enabled: false, origin: "")
+        XCTAssertNotEqual(restarted.bridge.relayStatus(), "joined")
+        _ = off
+        XCTAssertEqual(restarted.bridge.relayStatus(), "disabled")
+    }
+
+    func testSetTopicRejectsAWrongSizeSecret() throws {
+        let mac = try Peer("mac", directory: directory)
+        XCTAssertThrowsError(try mac.bridge.setTopic(secret: Data(repeating: 1, count: 5), epoch: 1))
+    }
 }

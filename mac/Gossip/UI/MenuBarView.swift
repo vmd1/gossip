@@ -64,7 +64,8 @@ struct MenuBarView: View {
                         HStack(spacing: 8) {
                             // Green = connected directly, blue = reachable over the mesh, grey = not connected.
                             let connectivity = DeviceConnectivity.classify(
-                                device.deviceId, directIds: transportManager.connectedDeviceIds, meshIds: transportManager.meshReachableDeviceIds
+                                device.deviceId, directIds: transportManager.connectedDeviceIds, meshIds: transportManager.meshReachableDeviceIds,
+                                relayedIds: transportManager.relayedDeviceIds
                             )
                             Image(systemName: device.deviceType.symbolName)
                                 .foregroundStyle(Self.color(for: connectivity))
@@ -94,6 +95,7 @@ struct MenuBarView: View {
                     } else {
                         let window = SettingsWindow(
                             featureSettings: featureSettings,
+                            transportManager: transportManager,
                             pairingViewModel: pairingViewModel,
                             notificationMirrorManager: notificationMirrorManager
                         )
@@ -215,6 +217,11 @@ struct MenuBarView: View {
     private func mirrorButton(for device: TrustedDevice) -> some View {
         let isThisDevice = screenMirrorController.mirroringDeviceId == device.deviceId
         switch (screenMirrorController.state, isThisDevice) {
+        case (.idle, _) where transportManager.isRelayed(device.deviceId):
+            Button {} label: { Image(systemName: "rectangle.on.rectangle") }
+                .buttonStyle(.borderless)
+                .disabled(true)
+                .help("Screen mirroring needs \(device.deviceName) to be on the same network")
         case (.idle, _):
             Button { startMirroring(for: device) } label: { Image(systemName: "rectangle.on.rectangle") }
                 .buttonStyle(.borderless)
@@ -289,6 +296,7 @@ struct MenuBarView: View {
     static func color(for connectivity: Connectivity) -> Color {
         switch connectivity {
         case .direct: return .green
+        case .relayed: return .teal
         case .mesh: return .blue
         case .none: return .secondary
         }
@@ -297,6 +305,7 @@ struct MenuBarView: View {
     static func description(of connectivity: Connectivity) -> String {
         switch connectivity {
         case .direct: return "Connected"
+        case .relayed: return "Connected through the relay (screen mirroring and Universal Control need the same network)"
         case .mesh: return "Connected through another device"
         case .none: return "Not connected"
         }

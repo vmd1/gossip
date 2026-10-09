@@ -114,7 +114,7 @@ struct ControlLayoutView: View {
     private func device(_ id: String) -> TrustedDevice? { trustedDevices.devices.first { $0.deviceId == id } }
 
     private func connectivity(_ id: String) -> Connectivity {
-        DeviceConnectivity.classify(id, directIds: transport.connectedDeviceIds, meshIds: transport.meshReachableDeviceIds)
+        DeviceConnectivity.classify(id, directIds: transport.connectedDeviceIds, meshIds: transport.meshReachableDeviceIds, relayedIds: transport.relayedDeviceIds)
     }
 
     private func deviceCard(_ d: TrustedDevice, rect: CGRect, transform t: Transform) -> some View {

@@ -32,6 +32,19 @@ final class CoreBridge {
         case deviceRevoked(deviceId: String)
         /// A reconciliation resend is due: `peer` for the on-connect send to one peer, `nil` for the periodic broadcast.
         case reconcileDue(task: String, peer: String?)
+        /// Open a WebSocket to the relay at `url`, then call `relaySocketOpened` (or `relaySocketClosed` if it fails).
+        case relayConnect(url: String)
+        case relaySendText(String)
+        case relaySendBinary(Data)
+        /// Close the relay socket. The engine already considers it gone: do not report its close back.
+        case relayClose
+        case relayJoined(members: UInt32)
+        case relayDown
+        /// A hint for the UI (`upgrade_required`, `denied`, `disabled`, `join_failed`, ...); the engine backs off itself.
+        case relayError(code: String)
+        /// The mesh topic changed. The secret must be persisted in secure storage and never logged or interpolated
+        /// into a message (`TransportManager` only hands it to `RelayTopicStore`).
+        case topicChanged(secret: Data, epoch: UInt64)
     }
 
     enum BridgeError: Error, Equatable {
@@ -41,6 +54,9 @@ final class CoreBridge {
     }
 
     private let core: GossipCoreKit.GossipCore
+
+    /// Connection ids at or above this are the engine's virtual ids for peers reached through the relay.
+    static let virtualConnBase: UInt64 = 1 << 63
 
     /// - Parameter disabledFeatures: raw values of the features turned off on this device (`FeatureSettings`).
     init(identity: IdentityKeyStore, deviceName: String, trustedDevices: TrustedDevicesStore, disabledFeatures: [String]) throws {
@@ -83,6 +99,26 @@ final class CoreBridge {
     }
 
     func shouldDial(deviceId: String) -> Bool { core.shouldDial(deviceId: deviceId) }
+
+    // MARK: - Relay
+
+    /// Turns the relay on or off. `origin` is `wss://host` (exactly what the relay is configured with: it is signed into
+    /// every join). Returns `relayConnect` when enabling with a topic.
+    func relayConfigure(enabled: Bool, origin: String) -> [BridgeAction] {
+        convert(core.relayConfigure(enabled: enabled, origin: origin))
+    }
+    func relaySocketOpened() -> [BridgeAction] { convert(core.relaySocketOpened()) }
+    func relaySocketClosed() -> [BridgeAction] { convert(core.relaySocketClosed()) }
+    func relayTextReceived(_ text: String) -> [BridgeAction] { convert(core.relayTextReceived(text: text)) }
+    func relayBinaryReceived(_ bytes: Data) -> [BridgeAction] { convert(core.relayBinaryReceived(bytes: bytes)) }
+    /// "disabled", "no_topic", "disconnected", "connecting" or "joined".
+    func relayStatus() -> String { core.relayStatus() }
+    func isRelayed(deviceId: String) -> Bool { core.isRelayed(deviceId: deviceId) }
+    func setLanGraceMs(_ ms: Int64) { core.setLanGraceMs(ms: ms) }
+    /// Loads the persisted mesh topic at startup, before the first `tick`.
+    func setTopic(secret: Data, epoch: UInt64) throws -> [BridgeAction] {
+        try map { try core.setTopic(secret: secret, epoch: epoch) }
+    }
     func isConnected(deviceId: String) -> Bool { core.isConnected(deviceId: deviceId) }
     func connectedPeers() -> [String] { core.connectedPeers() }
 
@@ -154,6 +190,14 @@ final class CoreBridge {
             case .trustChanged(let json): return .trustChanged(snapshotJSON: json)
             case .deviceRevoked(let deviceId): return .deviceRevoked(deviceId: deviceId)
             case .reconcileDue(let task, let peer): return .reconcileDue(task: task, peer: peer)
+            case .relayConnect(let url): return .relayConnect(url: url)
+            case .relaySendText(let text): return .relaySendText(text)
+            case .relaySendBinary(let bytes): return .relaySendBinary(bytes)
+            case .relayClose: return .relayClose
+            case .relayJoined(let members): return .relayJoined(members: members)
+            case .relayDown: return .relayDown
+            case .relayError(let code): return .relayError(code: code)
+            case .topicChanged(let secret, let epoch): return .topicChanged(secret: secret, epoch: epoch)
             }
         }
     }

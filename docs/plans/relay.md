@@ -1,6 +1,6 @@
 # Plan: public relay (off-LAN connectivity)
 
-Status: relay server and core client implemented (2026-10-09); shell adapters (Mac `URLSessionWebSocketTask`, Android OkHttp, Settings, rollout) pending. Originally a proposal. Implements the roadmap's "Off-LAN connectivity" item. Sequenced after the Rust core has been adopted on Mac and Android (see [`desktop-clients.md`](desktop-clients.md), Phases 1 and 2). Replaces the earlier idea of a pairwise byte-bridging relay and the tailcat signaling mailbox as the first off-LAN transport.
+Status: relay server and core client implemented (2026-10-09); Mac shell adapter done (`URLSessionWebSocketTask`, Settings toggle, `mac/scripts/e2e-relay.sh`); Android OkHttp adapter, hosted relay host choice, rollout pending. Originally a proposal. Implements the roadmap's "Off-LAN connectivity" item. Sequenced after the Rust core has been adopted on Mac and Android (see [`desktop-clients.md`](desktop-clients.md), Phases 1 and 2). Replaces the earlier idea of a pairwise byte-bridging relay and the tailcat signaling mailbox as the first off-LAN transport.
 
 ## Decisions
 

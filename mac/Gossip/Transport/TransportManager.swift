@@ -37,7 +37,32 @@ final class TransportManager: ObservableObject {
     /// multi-peer signal — `connectionState` is kept as a single-value
     /// aggregate (mirroring pre-mesh behavior) for source compatibility with
     /// existing `.sink`s that just want to know "connected to anything or not".
+    ///
+    /// "Directly" means over a LAN socket of our own: devices reached only through the relay are in `relayedDeviceIds`
+    /// instead, so everything that needs a same-network path (screen mirroring, Universal Control) keeps gating on this
+    /// set and never starts for a relayed device.
     @Published private(set) var connectedDeviceIds: Set<String> = []
+
+    /// Devices whose only live link goes through the relay. They are connected (messages flow), but features that need
+    /// the same network refuse them. Main thread.
+    @Published private(set) var relayedDeviceIds: Set<String> = []
+
+    /// The relay client's state, for Settings: "disabled", "no_topic", "disconnected", "connecting" or "joined".
+    @Published private(set) var relayStatus: String = "disabled"
+
+    /// The last hint the relay gave for why it is refusing us (`upgrade_required`, `denied`, ...), cleared on join.
+    @Published private(set) var relayErrorCode: String?
+
+    enum ConnectionPath: Equatable { case direct, relayed, none }
+
+    /// How this Mac currently reaches `deviceId` (main thread). Direct wins over relayed.
+    func connectionPath(for deviceId: String) -> ConnectionPath {
+        if connectedDeviceIds.contains(deviceId) { return .direct }
+        if relayedDeviceIds.contains(deviceId) { return .relayed }
+        return .none
+    }
+
+    func isRelayed(_ deviceId: String) -> Bool { connectionPath(for: deviceId) == .relayed }
 
     /// Devices we have no direct connection to but heard from recently via the mesh
     /// (`DeviceConnectivity.meshTTL`). Main thread. Re-evaluated every 15s and on connection changes.
@@ -52,7 +77,7 @@ final class TransportManager: ObservableObject {
 
     private func refreshMeshReachable() {
         let reachable = DeviceConnectivity.meshReachable(
-            lastHeard: lastHeard, directIds: connectedDeviceIds, selfId: identity.deviceId, now: Date()
+            lastHeard: lastHeard, directIds: connectedDeviceIds.union(relayedDeviceIds), selfId: identity.deviceId, now: Date()
         )
         if reachable != meshReachableDeviceIds { meshReachableDeviceIds = reachable }
     }
@@ -113,8 +138,15 @@ final class TransportManager: ObservableObject {
     private var featureSettingsObserver: AnyCancellable?
 
     private let discovery = LocalDiscovery()
-    private let identity = IdentityKeyStore.shared
+    private let identity: IdentityKeyStore
     private let trustedDevices: TrustedDevicesStore
+    private let relaySettings: RelaySettings
+    private let topicStore: RelayTopicStore
+    private var relaySettingsObserver: AnyCancellable?
+    /// Actions produced while loading the persisted topic, executed with the first tick.
+    private var startupActions: [CoreBridge.BridgeAction] = []
+    private var relayConnection: RelayConnection?
+    private var relayGeneration = 0
 
     /// The Rust engine, behind its bridge. Created on first use (not in `init`) because building it reads this device's
     /// identity from the Keychain; many tests construct a `TransportManager` only to use its router, and constructing
@@ -128,6 +160,10 @@ final class TransportManager: ObservableObject {
                 identity: identity, deviceName: Host.current().localizedName ?? "Mac",
                 trustedDevices: trustedDevices, disabledFeatures: Self.disabledFeatureKeys(featureSettings)
             )
+            // Before the first tick, so the relay can join as soon as it is enabled.
+            if let topic = topicStore.load() {
+                startupActions += (try? created.setTopic(secret: topic.secret, epoch: topic.epoch)) ?? []
+            }
         } catch {
             // The identity keys are fixed-size and the snapshot is produced by us; a failure here is a programming
             // error, not something the user can recover from.
@@ -167,10 +203,47 @@ final class TransportManager: ObservableObject {
     private let queue = DispatchQueue(label: "dev.vmd1.gossip.transportmanager")
     private static let queueKey = DispatchSpecificKey<Void>()
 
-    init(trustedDevices: TrustedDevicesStore = .shared) {
+    init(trustedDevices: TrustedDevicesStore = .shared, identity: IdentityKeyStore = .shared,
+         relaySettings: RelaySettings = .shared, topicStore: RelayTopicStore = .shared) {
         self.trustedDevices = trustedDevices
+        self.identity = identity
+        self.relaySettings = relaySettings
+        self.topicStore = topicStore
         queue.setSpecific(key: Self.queueKey, value: ())
         observeFeatureSettings()
+        observeRelaySettings()
+    }
+
+    private func observeRelaySettings() {
+        relaySettingsObserver = Publishers.Merge(
+            relaySettings.$enabled.map { _ in () }, relaySettings.$customURL.map { _ in () }
+        )
+        .dropFirst(2)
+        // `@Published` emits before the value is stored; read it after the current main-thread turn.
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in self?.applyRelaySettings() }
+    }
+
+    /// Pushes the user's relay preferences to the engine. With the placeholder default address and no valid custom one
+    /// there is no origin, so the relay stays off and no socket is attempted.
+    func applyRelaySettings() {
+        let configuration = relaySettings.configuration
+        setRelayEnabled(configuration.enabled, origin: configuration.origin)
+    }
+
+    /// Turns the relay on or off. `origin` is the normalized `wss://host[:port]` (`RelayEndpointPolicy`); enabling
+    /// without one is the same as disabling.
+    func setRelayEnabled(_ enabled: Bool, origin: String?) {
+        queue.async { [weak self] in
+            guard let self, self.engine != nil || enabled else { return }
+            self.process(self.bridge.relayConfigure(enabled: enabled && origin != nil, origin: origin ?? ""))
+            self.publishRelayStatus()
+        }
+    }
+
+    /// Test hook: how long a trusted peer must have had no live link before it is dialed through the relay.
+    func setLanGraceMs(_ ms: Int64) {
+        queue.async { [weak self] in self?.bridge.setLanGraceMs(ms) }
     }
 
     private static func disabledFeatureKeys(_ settings: FeatureSettings) -> [String] {
@@ -222,10 +295,19 @@ final class TransportManager: ObservableObject {
     /// peers. Automatically dials every discovered peer that is already
     /// trusted and not already connected/connecting.
     /// Safe to call repeatedly — only the first call has any effect.
-    func start(deviceName: String = Host.current().localizedName ?? "Mac") {
+    ///
+    /// - Parameter lan: `false` skips Bonjour and the TCP listener (the engine clock and the relay still run); only the
+    ///   relay end-to-end test uses it.
+    func start(deviceName: String = Host.current().localizedName ?? "Mac", lan: Bool = true) {
         guard !hasStarted else { return }
         hasStarted = true
         onQueue { recomputeConnectionState() }
+        if lan { startLAN(deviceName: deviceName) }
+        startEngineClock()
+        applyRelaySettings()
+    }
+
+    private func startLAN(deviceName: String) {
 
         discovery.onIncomingConnection = { [weak self] connection in
             self?.queue.async { self?.accept(connection: connection) }
@@ -272,13 +354,20 @@ final class TransportManager: ObservableObject {
             self?.discovery.redeliverPeers()
         }
 
-        // The engine's clock: heartbeats, stale and stuck-handshake cleanup, pairing expiry, reconciliation.
+    }
+
+    /// The engine's clock: heartbeats, stale and stuck-handshake cleanup, pairing expiry, reconciliation, and the relay's
+    /// reconnect backoff.
+    private func startEngineClock() {
         engineTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            self.process(self.bridge.tick())
+            let startup = self.startupActions
+            self.startupActions = []
+            self.process(startup + self.bridge.tick())
+            self.publishRelayStatus()
         }
         timer.resume()
         engineTimer = timer
@@ -293,6 +382,8 @@ final class TransportManager: ObservableObject {
         discovery.stopAdvertising()
         discovery.stopBrowsing()
         onQueue {
+            if engine != nil { process(bridge.relayConfigure(enabled: false, origin: "")) }
+            closeRelayConnection()
             for conn in Array(links.keys) {
                 dropLink(conn, notifyEngine: true)
             }
@@ -533,16 +624,39 @@ final class TransportManager: ObservableObject {
         // Noise nonces are implicit counters, so bytes must reach the socket in the order the engine encrypted them.
         // Handlers run below may call back into the engine (and encrypt more frames), so every write from this batch
         // goes out first.
-        for case .send(let conn, let bytes) in actions {
-            guard let link = links[conn] else { continue }
-            link.connection.send(content: bytes, completion: .contentProcessed { error in
-                if let error { gossipError("Gossip: send failed: \(error)") }
-            })
+        for action in actions {
+            switch action {
+            case .send(let conn, let bytes):
+                guard let link = links[conn] else { continue }
+                link.connection.send(content: bytes, completion: .contentProcessed { error in
+                    if let error { gossipError("Gossip: send failed: \(error)") }
+                })
+            case .relaySendText(let text): relayConnection?.sendText(text)
+            case .relaySendBinary(let bytes): relayConnection?.sendBinary(bytes)
+            default: break
+            }
         }
         for action in actions {
             switch action {
-            case .send:
+            case .send, .relaySendText, .relaySendBinary:
                 break
+
+            case .relayConnect(let url): openRelayConnection(url: url)
+
+            case .relayClose: closeRelayConnection()
+
+            case .relayJoined:
+                DispatchQueue.main.async { [weak self] in self?.relayErrorCode = nil }
+
+            case .relayDown:
+                break // the status line follows `relay_status`, published after this batch
+
+            case .relayError(let code):
+                gossipError("Gossip: relay refused: \(code)")
+                DispatchQueue.main.async { [weak self] in self?.relayErrorCode = code }
+
+            case .topicChanged(let secret, let epoch):
+                if !topicStore.save(secret: secret, epoch: epoch) { gossipError("Gossip: could not persist the relay topic") }
 
             case .close(let conn):
                 dropLink(conn, notifyEngine: false)
@@ -600,6 +714,59 @@ final class TransportManager: ObservableObject {
                 if task == "trust.roster_update" { sendRoster(to: peer) }
             }
         }
+        publishRelayStatus()
+    }
+
+    // MARK: - Relay socket
+
+    private func openRelayConnection(url urlString: String) {
+        closeRelayConnection()
+        guard let url = RelayEndpointPolicy.validateConnectURL(urlString, customURL: relaySettings.customURL) else {
+            // Never connect to an address the policy does not allow; the engine treats this as a failed connect and backs off.
+            gossipError("Gossip: refusing to connect to a relay address that is not allowed")
+            process(bridge.relaySocketClosed())
+            return
+        }
+        relayGeneration += 1
+        let generation = relayGeneration
+        relayConnection = RelayConnection(
+            url: url, queue: queue,
+            onOpen: { [weak self] in
+                guard let self, self.relayGeneration == generation else { return }
+                self.process(self.bridge.relaySocketOpened())
+            },
+            onText: { [weak self] text in
+                guard let self, self.relayGeneration == generation else { return }
+                self.process(self.bridge.relayTextReceived(text))
+            },
+            onBinary: { [weak self] data in
+                guard let self, self.relayGeneration == generation else { return }
+                self.process(self.bridge.relayBinaryReceived(data))
+            },
+            onClosed: { [weak self] in
+                guard let self, self.relayGeneration == generation else { return }
+                self.relayConnection = nil
+                self.process(self.bridge.relaySocketClosed())
+            }
+        )
+    }
+
+    /// Closes the relay socket without reporting it back (the engine asked for it, or we are shutting down).
+    private func closeRelayConnection() {
+        relayGeneration += 1
+        relayConnection?.close()
+        relayConnection = nil
+    }
+
+    private var lastPublishedRelayStatus = "disabled"
+
+    /// Mirrors the engine's relay status and which devices are relayed into the published state. Must be called on `queue`.
+    private func publishRelayStatus() {
+        guard let engine else { return }
+        let status = engine.relayStatus()
+        guard status != lastPublishedRelayStatus else { return }
+        lastPublishedRelayStatus = status
+        DispatchQueue.main.async { [weak self] in self?.relayStatus = status }
     }
 
     /// Removes a socket. `notifyEngine` is false when the engine itself asked for the close (it has already forgotten it).
@@ -615,10 +782,13 @@ final class TransportManager: ObservableObject {
 
     private func recomputeConnectionState(preferring preferredDeviceId: String? = nil) {
         let ids = Set(linkByDevice.keys)
+        // Peers the engine reports as connected that have no socket of ours are reached through the relay.
+        let relayed = Set(engine?.connectedPeers().filter { !ids.contains($0) && engine?.isRelayed(deviceId: $0) == true } ?? [])
+        let reachable = ids.union(relayed)
         let newState: ConnectionState
-        if let preferredDeviceId, ids.contains(preferredDeviceId) {
+        if let preferredDeviceId, reachable.contains(preferredDeviceId) {
             newState = .connected(deviceId: preferredDeviceId)
-        } else if let any = ids.first {
+        } else if let any = ids.first ?? relayed.first {
             newState = .connected(deviceId: any)
         } else if !links.isEmpty {
             newState = .handshaking
@@ -630,6 +800,7 @@ final class TransportManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.connectedDeviceIds = ids
+            self.relayedDeviceIds = relayed
             self.connectionState = newState
             self.refreshMeshReachable()
         }

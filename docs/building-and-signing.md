@@ -129,3 +129,24 @@ android/scripts/signing.sh adopt     # copies ~/.android/debug.keystore into ~/.
 `mac/scripts/e2e-emulator.sh [avd]` runs the Mac transport against the Android app on an emulator (headless if none is
 booted): QR pairing, nested-Unicode and 1 MiB payloads, 3 MiB raw frames both ways, feature gating, a 70 s heartbeat
 soak, reconnect without a prompt, and revocation. It never touches a real phone or the Mac app's Keychain data.
+
+## Relay (Mac)
+
+The Mac app can reach paired devices that are not on the same network through the relay (`relay/`,
+[plan](plans/relay.md)). It is off by default; **Settings… → Relay** has:
+
+- the toggle "Relay (connect when not on the same network)"
+- an optional custom relay address (`wss://host`, validated: `wss://` only, no credentials, path or query; Return commits it)
+- a status line from the engine (`Off`, `No relay host configured`, `Connecting…`, `Connected to the relay`, ...)
+- a note that the relay sees metadata (addresses, timing, volume), never content (everything is end-to-end encrypted)
+
+Until the operator picks a host, `RelayEndpointPolicy.defaultOrigin` is the placeholder `wss://relay.gossip.invalid`
+(TODO in `mac/Gossip/Transport/RelayEndpointPolicy.swift`): with it the toggle reports "No relay host configured" and no
+socket is opened unless a custom address is set. Release builds only connect with `wss://` to the default host list or
+the user's own custom host; Debug builds also allow `ws://` to `localhost`/`127.0.0.1`. The topic secret is stored in the
+login Keychain (account `relay-topic`; a throwaway file under XCTest). A device reached only through the relay shows in
+teal in the menu bar and refuses screen mirroring and Universal Control ("needs the same network").
+
+`mac/scripts/e2e-relay.sh` starts the local relay (`POW_BITS=8`, a free port) and runs `RelayE2ETests`: two in-process
+Mac `TransportManager`s with the LAN off exchange a 1 MiB message and a 2 MiB raw frame through it and toggle the relay
+off and on. The Mac-to-Android relay test is deferred until Android has a relay client.
