@@ -127,7 +127,6 @@ struct RelaySettingsSection: View {
         case .insecureScheme: return "The address must start with wss:// (an encrypted connection)."
         case .credentialsNotAllowed: return "Do not put a user name or password in the address."
         case .unexpectedComponents: return "Use just the host, like wss://relay.example.com (no path or query)."
-        case .hostNotAllowed: return "That host is not allowed."
         }
     }
 }

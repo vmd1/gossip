@@ -6,8 +6,8 @@ import java.net.URISyntaxException
 
 /**
  * Which relay addresses this app is willing to open a socket to. The Rust engine accepts any `ws(s)://` origin (it is
- * shell policy, see `desktop/README.md`); this is where the shell enforces `wss://` only plus a host allowlist in
- * release builds. Debug builds additionally allow plain `ws://` to localhost, 127.0.0.1 and 10.0.2.2 (the emulator's
+ * shell policy, see `desktop/README.md`); this is where the shell enforces `wss://` only in release
+ * builds, whichever host the user or the directory names. Debug builds additionally allow plain `ws://` to localhost, 127.0.0.1 and 10.0.2.2 (the emulator's
  * alias for its host), for local development and the relay end-to-end test. Mirrors the Mac's `RelayEndpointPolicy`.
  *
  * Pure Kotlin (`java.net.URI`), so the JVM unit tests cover it.
@@ -15,15 +15,6 @@ import java.net.URISyntaxException
 object RelayEndpointPolicy {
     /** The hosted relay. Also the fallback whenever there is no custom address and no directory answer. */
     const val DEFAULT_ORIGIN = "wss://gossip.vmd1.dev"
-
-    /**
-     * Hosts the app may connect to without the user typing them in: this domain and its subdomains. This is the same rule
-     * the core applies to a relay named by the directory (`ALLOWED_RELAY_DOMAIN_SUFFIX`), so a directory can never send the
-     * app anywhere else. The user's own custom address is a separate, explicit override.
-     */
-    const val ALLOWED_DOMAIN_SUFFIX = "vmd1.dev"
-
-    fun isAllowedHost(host: String): Boolean = host == ALLOWED_DOMAIN_SUFFIX || host.endsWith(".$ALLOWED_DOMAIN_SUFFIX")
 
     /**
      * THE ONE PLACE to set the relay directory's HTTPS URL: an endpoint returning JSON with a `relayServer` key that names
@@ -37,7 +28,7 @@ object RelayEndpointPolicy {
     /** True only in debug builds. */
     val allowsInsecureLoopback: Boolean get() = BuildConfig.DEBUG
 
-    enum class Failure { MALFORMED, INSECURE_SCHEME, CREDENTIALS_NOT_ALLOWED, UNEXPECTED_COMPONENTS, HOST_NOT_ALLOWED }
+    enum class Failure { MALFORMED, INSECURE_SCHEME, CREDENTIALS_NOT_ALLOWED, UNEXPECTED_COMPONENTS }
 
     sealed class Result {
         data class Ok(val origin: String) : Result()
@@ -100,12 +91,10 @@ object RelayEndpointPolicy {
 
     /**
      * Final check on the URL the engine asked to open (`RelayConnect`), right before the socket is created: `wss://` only,
-     * to an allowlisted host (the vmd1.dev domain rule, or the host of the user's custom address). In a debug build `ws://`
-     * is also allowed to loopback. Returns the URL to open, or `null`.
+     * to whatever host was configured. In a debug build `ws://` is also allowed to loopback. Returns the URL to open, or `null`.
      */
     fun validateConnectUrl(
         urlString: String,
-        customUrl: String,
         allowInsecureLoopback: Boolean = this.allowsInsecureLoopback
     ): String? {
         val uri = try { URI(urlString) } catch (e: URISyntaxException) { return null }
@@ -113,14 +102,7 @@ object RelayEndpointPolicy {
         val host = uri.host?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
         if (uri.rawUserInfo != null || uri.rawFragment != null) return null
         if (scheme == "ws") return if (allowInsecureLoopback && isLoopback(host)) urlString else null
-        if (scheme != "wss") return null
-        if (isAllowedHost(host)) return urlString
-        val custom = customUrl.trim()
-        if (custom.isNotEmpty()) {
-            val origin = (normalizeOrigin(custom, allowInsecureLoopback = false) as? Result.Ok)?.origin
-            if (origin != null && hostOf(origin) == host) return urlString
-        }
-        return null
+        return if (scheme == "wss") urlString else null
     }
 
     /** A line safe to log: the host only, never the path, query or any token. */

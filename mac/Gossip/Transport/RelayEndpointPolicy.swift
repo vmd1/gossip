@@ -1,21 +1,12 @@
 import Foundation
 
 /// Which relay addresses this app is willing to open a socket to. The Rust engine accepts any `ws(s)://` origin (it is
-/// shell policy, see `desktop/README.md`); this is where the shell enforces `wss://` only plus a host allowlist in
-/// release builds. Debug builds additionally allow plain `ws://` to the loopback addresses, for local development and
+/// shell policy, see `desktop/README.md`); this is where the shell enforces `wss://` only in release
+/// builds, whichever host the user or the directory names. Debug builds additionally allow plain `ws://` to the loopback addresses, for local development and
 /// the relay end-to-end test.
 enum RelayEndpointPolicy {
     /// The hosted relay. Also the fallback whenever there is no custom address and no directory answer.
     static let defaultOrigin = "wss://gossip.vmd1.dev"
-
-    /// Hosts the app may connect to without the user typing them in: this domain and its subdomains. This is the same
-    /// rule the core applies to a relay named by the directory (`ALLOWED_RELAY_DOMAIN_SUFFIX`), so a directory can
-    /// never send the app anywhere else. The user's own custom address is a separate, explicit override.
-    static let allowedDomainSuffix = "vmd1.dev"
-
-    static func isAllowedHost(_ host: String) -> Bool {
-        host == allowedDomainSuffix || host.hasSuffix("." + allowedDomainSuffix)
-    }
 
     /// THE ONE PLACE to set the relay directory's HTTPS URL: an endpoint returning JSON with a `relayServer` key that
     /// names the current relay. While it is this placeholder the app does not poll at all (that is not an error): it
@@ -35,7 +26,6 @@ enum RelayEndpointPolicy {
         case insecureScheme
         case credentialsNotAllowed
         case unexpectedComponents
-        case hostNotAllowed
     }
 
     static func isLoopback(_ host: String) -> Bool {
@@ -62,7 +52,7 @@ enum RelayEndpointPolicy {
     }
 
     enum Source: Equatable {
-        /// The user's own address; bypasses the domain rule.
+        /// The user's own address.
         case custom
         /// A directory answer fetched in this run, on its last attempt.
         case directory
@@ -92,21 +82,15 @@ enum RelayEndpointPolicy {
     }
 
     /// Final check on the URL the engine asked to open (`RelayConnect`), right before the socket is created: `wss://`
-    /// only, to an allowlisted host (the vmd1.dev domain rule, or the host of the user's own custom address). In a Debug build
-    /// `ws://` is also allowed to loopback.
-    static func validateConnectURL(_ urlString: String, customURL: String,
+    /// only, to whatever host was configured. In a Debug build `ws://` is also allowed to loopback.
+    static func validateConnectURL(_ urlString: String,
                                    allowInsecureLoopback: Bool = RelayEndpointPolicy.allowsInsecureLoopback) -> URL? {
         guard let parts = URLComponents(string: urlString), let scheme = parts.scheme?.lowercased(),
               let host = parts.host?.lowercased(), !host.isEmpty,
               parts.user == nil, parts.password == nil, parts.fragment == nil,
               let url = parts.url else { return nil }
         if scheme == "ws" { return allowInsecureLoopback && isLoopback(host) ? url : nil }
-        guard scheme == "wss" else { return nil }
-        if isAllowedHost(host) { return url }
-        let custom = customURL.trimmingCharacters(in: .whitespaces)
-        if !custom.isEmpty, case .success(let origin) = normalizeOrigin(custom, allowInsecureLoopback: false),
-           let customHost = URLComponents(string: origin)?.host, customHost == host { return url }
-        return nil
+        return scheme == "wss" ? url : nil
     }
 
     /// A line safe to log: the host only, never the path, query or any token.

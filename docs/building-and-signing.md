@@ -147,9 +147,9 @@ JSON endpoint whose URL is one constant, `RelayEndpointPolicy.directoryEndpoint`
 (`mac/Gossip/Transport/RelayEndpointPolicy.swift`), currently `https://api.vmd1.dev/v1/config/gossip`:
 **set it to the real URL before release**; while it is the placeholder the app does not poll and just uses the default.
 `RelayDirectoryService` polls only while the relay is on (on launch, every 6 h, with backoff on failure and once more when
-the relay socket cannot connect), validates the answer in the Rust core (the host must be `vmd1.dev` or a subdomain) and
+the relay socket cannot connect), parses the answer in the Rust core (any `wss://`/`ws://` host it names is used) and
 keeps the last good raw answer in `~/Library/Application Support/Connect/relay-directory.json`, which it keeps using when
-the directory is unreachable. Release builds only connect with `wss://` to `vmd1.dev` hosts or the user's own custom host;
+the directory is unreachable. Release builds only connect with `wss://`, to whichever host the user or the directory names;
 Debug builds also allow `ws://` to `localhost`/`127.0.0.1`. The topic secret is stored in the
 login Keychain (account `relay-topic`; a throwaway file under XCTest). A device reached only through the relay shows in
 teal in the menu bar and refuses screen mirroring and Universal Control ("needs the same network").
@@ -175,8 +175,8 @@ foreground service asks it whether a poll is due, so polling never wakes the dev
   bytes leave in the order the engine produced them). OkHttp refuses a single outgoing message above 16 MiB; the relay's
   largest frame is 16 MiB plus a 16 byte header, so an exactly-maximal frame resets the relay link (it reconnects) rather
   than being sent. Real traffic is far below that (raw frames are capped at a few MiB by the features).
-- `transport/RelayEndpointPolicy.kt`: release builds only open `wss://` to `vmd1.dev` hosts or the user's own custom
-  host. Debug builds also allow `ws://` to `localhost`, `127.0.0.1` and `10.0.2.2` (the emulator's host), which needs the
+- `transport/RelayEndpointPolicy.kt`: release builds only open `wss://`, to whichever host the user or the directory
+  names. Debug builds also allow `ws://` to `localhost`, `127.0.0.1` and `10.0.2.2` (the emulator's host), which needs the
   debug-only network security config in `app/src/debug/res/xml/network_security_config.xml`; the release variant keeps the
   platform default of no cleartext at all, and `RelayConnection` also drops cleartext from its connection specs there.
 - The mesh topic (secret and epoch) is stored in an `EncryptedSharedPreferences` file (`connect_relay_topic`, Android

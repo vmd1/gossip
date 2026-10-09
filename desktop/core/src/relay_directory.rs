@@ -3,18 +3,15 @@
 //! shell fetches it (HTTPS only, no redirects to other hosts, short timeout, small body cap, nothing identifying sent)
 //! and stores the raw blob it accepted.
 //!
-//! # Threat reasoning
+//! # Trust
 //!
-//! A directory the apps trust blindly would let whoever controls (or compromises) that HTTPS endpoint point every
-//! device at a relay of their choosing. A relay cannot read or forge traffic (Noise end to end, keys pinned at
-//! pairing) but it does see metadata, so the blob is constrained: it can only name a host that is [`ALLOWED_RELAY_DOMAIN_SUFFIX`]
-//! itself or a subdomain of it. A compromised directory therefore cannot move devices to an unrelated host. The user's
-//! explicit custom relay URL is a separate setting that the shells honour first and that bypasses this check; it is
-//! never taken from the directory.
+//! The directory is trusted to name the relay: whatever `wss://`/`ws://` host it gives is used. A relay cannot read
+//! or forge traffic (Noise end to end, keys pinned at pairing); a rogue one would see metadata only. The user's
+//! explicit custom relay URL is a separate setting that the shells honour first.
 //!
 //! The origin returned in [`RelayDirectory::relay_server`] is the exact string handed to `relay_configure`, and the
 //! engine signs it into every join. It must therefore equal the `RELAY_ORIGIN` the relay itself is configured with
-//! (`wss://host[:port]`, lowercase, no path, no trailing slash).
+//! (`wss://host[:port]`, no trailing slash).
 //!
 //! Unknown fields in the blob are ignored, so the operator can add keys without breaking old clients.
 
@@ -22,8 +19,6 @@ use serde_json::Value;
 
 use crate::env::Env;
 
-/// The relay host must be this domain or a subdomain of it.
-pub const ALLOWED_RELAY_DOMAIN_SUFFIX: &str = "vmd1.dev";
 /// Largest blob accepted by [`parse_directory`].
 pub const MAX_DIRECTORY_BYTES: usize = 16 * 1024;
 
@@ -40,7 +35,7 @@ pub const CONNECT_FAILURE_POLL_GAP_MS: i64 = 10 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayDirectory {
-    /// `wss://host[:port]` (or `ws://` loopback when insecure local is allowed): ready for `relay_configure`.
+    /// `wss://host[:port]` (or `ws://`): ready for `relay_configure`.
     pub relay_server: String,
 }
 
@@ -56,16 +51,12 @@ pub enum DirectoryError {
     MissingRelayServer,
     #[error("relayServer is not a string")]
     WrongType,
-    #[error("relayServer is not acceptable: {0}")]
-    Invalid(&'static str),
+    #[error("relayServer is not a ws:// or wss:// URL with a host")]
+    Invalid,
 }
 
-/// Parses and validates a directory blob. `allow_insecure_local` additionally accepts `ws://` to loopback and
-/// `10.0.2.2` (the Android emulator's host alias) for development and tests; shells pass it only in debug builds.
-pub fn parse_directory(
-    json: &str,
-    allow_insecure_local: bool,
-) -> Result<RelayDirectory, DirectoryError> {
+/// Parses a directory blob into the relay origin (`wss://host[:port]`, trailing `/` stripped).
+pub fn parse_directory(json: &str) -> Result<RelayDirectory, DirectoryError> {
     if json.len() > MAX_DIRECTORY_BYTES {
         return Err(DirectoryError::TooLarge);
     }
@@ -79,142 +70,21 @@ pub fn parse_directory(
     let Value::String(server) = server else {
         return Err(DirectoryError::WrongType);
     };
-    validate_relay_server(server, allow_insecure_local)
-        .map(|relay_server| RelayDirectory { relay_server })
+    normalize_relay_server(server).map(|relay_server| RelayDirectory { relay_server })
 }
 
-fn invalid(why: &'static str) -> DirectoryError {
-    DirectoryError::Invalid(why)
-}
-
-fn is_insecure_local_host(host: &str) -> bool {
-    matches!(host, "localhost" | "127.0.0.1" | "10.0.2.2" | "[::1]")
-}
-
-fn validate_relay_server(text: &str, allow_insecure_local: bool) -> Result<String, DirectoryError> {
-    // Strict ASCII: no whitespace, control characters or unicode (so no lookalikes and no IDN).
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(invalid("not plain ASCII without spaces"));
+fn normalize_relay_server(text: &str) -> Result<String, DirectoryError> {
+    let text = text.trim();
+    let rest = text
+        .strip_prefix("wss://")
+        .or_else(|| text.strip_prefix("ws://"))
+        .ok_or(DirectoryError::Invalid)?;
+    let origin = text.strip_suffix('/').unwrap_or(text);
+    let authority = rest.strip_suffix('/').unwrap_or(rest);
+    if authority.is_empty() || authority.starts_with([':', '/']) {
+        return Err(DirectoryError::Invalid);
     }
-    let (scheme, rest) = if let Some(rest) = text.strip_prefix("wss://") {
-        ("wss", rest)
-    } else if let Some(rest) = text.strip_prefix("ws://") {
-        ("ws", rest)
-    } else {
-        return Err(invalid("must start with wss://"));
-    };
-    if rest.contains(['?', '#', '\\']) {
-        return Err(invalid("query, fragment or backslash"));
-    }
-    let authority = match rest.split_once('/') {
-        Some((authority, "")) => authority,
-        Some(_) => return Err(invalid("path not allowed")),
-        None => rest,
-    };
-    if authority.contains('@') {
-        return Err(invalid("userinfo not allowed"));
-    }
-    let (host, port) = split_host_port(authority)?;
-
-    if scheme == "ws" {
-        if !(allow_insecure_local && is_insecure_local_host(host)) {
-            return Err(invalid("ws:// only to local hosts in development builds"));
-        }
-        return Ok(format!("ws://{authority}"));
-    }
-    validate_domain_host(host)?;
-    let _ = port;
-    Ok(format!("wss://{authority}"))
-}
-
-/// Splits `host[:port]`, validating the port. IPv6 literals are only possible as `[::1]` (insecure local) and are
-/// returned with their brackets.
-fn split_host_port(authority: &str) -> Result<(&str, Option<u16>), DirectoryError> {
-    if authority.is_empty() {
-        return Err(invalid("empty host"));
-    }
-    let (host, port_text) = if authority.starts_with('[') {
-        let end = authority
-            .find(']')
-            .ok_or_else(|| invalid("bad IPv6 literal"))?;
-        let host = &authority[..=end];
-        match &authority[end + 1..] {
-            "" => (host, None),
-            tail => (
-                host,
-                Some(tail.strip_prefix(':').ok_or_else(|| invalid("bad port"))?),
-            ),
-        }
-    } else {
-        match authority.split_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (authority, None),
-        }
-    };
-    let port = match port_text {
-        None => None,
-        Some(p) => {
-            if p.is_empty()
-                || p.len() > 5
-                || !p.bytes().all(|b| b.is_ascii_digit())
-                || p.starts_with('0')
-            {
-                return Err(invalid("bad port"));
-            }
-            let n: u32 = p.parse().map_err(|_| invalid("bad port"))?;
-            if !(1..=65535).contains(&n) {
-                return Err(invalid("bad port"));
-            }
-            Some(n as u16)
-        }
-    };
-    Ok((host, port))
-}
-
-fn validate_domain_host(host: &str) -> Result<(), DirectoryError> {
-    if host.is_empty() || host.len() > 253 {
-        return Err(invalid("bad host length"));
-    }
-    if host.starts_with('[') {
-        return Err(invalid("IP literals not allowed"));
-    }
-    if host.bytes().any(|b| b.is_ascii_uppercase()) {
-        return Err(invalid("host must be lowercase"));
-    }
-    let labels: Vec<&str> = host.split('.').collect();
-    for label in &labels {
-        let ok = !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-        if !ok {
-            return Err(invalid(
-                "malformed host label (empty, trailing dot, or bad character)",
-            ));
-        }
-        if label.starts_with("xn--") {
-            return Err(invalid("punycode hosts not allowed"));
-        }
-    }
-    // An all-numeric last label is an IPv4 literal (or an attempt at one).
-    if labels
-        .last()
-        .is_some_and(|l| l.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return Err(invalid("IP literals not allowed"));
-    }
-    let suffix = ALLOWED_RELAY_DOMAIN_SUFFIX;
-    let under = host == suffix
-        || (host.len() > suffix.len() + 1
-            && host.ends_with(suffix)
-            && host.as_bytes()[host.len() - suffix.len() - 1] == b'.');
-    if !under {
-        return Err(invalid("host is outside the allowed relay domain"));
-    }
-    Ok(())
+    Ok(origin.to_owned())
 }
 
 /// What the shell should do after a fetch attempt.
@@ -334,165 +204,60 @@ mod tests {
     }
 
     fn ok(server: &str) -> String {
-        parse_directory(&blob(server), false).unwrap().relay_server
-    }
-
-    fn bad(server: &str) {
-        assert!(
-            parse_directory(&blob(server), false).is_err(),
-            "{server:?} should be refused"
-        );
+        parse_directory(&blob(server)).unwrap().relay_server
     }
 
     #[test]
-    fn accepts_the_allowed_domain_and_subdomains() {
+    fn uses_whatever_host_is_named_and_strips_trailing_slash() {
         assert_eq!(ok("wss://gossip.vmd1.dev"), "wss://gossip.vmd1.dev");
-        assert_eq!(ok("wss://vmd1.dev"), "wss://vmd1.dev");
-        assert_eq!(ok("wss://eu.relay.vmd1.dev/"), "wss://eu.relay.vmd1.dev");
+        assert_eq!(ok("wss://relay.example.org/"), "wss://relay.example.org");
         assert_eq!(
-            ok("wss://gossip.vmd1.dev:8443"),
-            "wss://gossip.vmd1.dev:8443"
+            ok("wss://relay.example.org:8443"),
+            "wss://relay.example.org:8443"
         );
-        assert_eq!(
-            ok("wss://gossip.vmd1.dev:8443/"),
-            "wss://gossip.vmd1.dev:8443"
-        );
+        assert_eq!(ok("ws://127.0.0.1:8099"), "ws://127.0.0.1:8099");
+    }
+
+    #[test]
+    fn rejects_non_websocket_urls_and_missing_hosts() {
+        for server in [
+            "https://x.example",
+            "x.example",
+            "wss://",
+            "wss:///",
+            "wss://:443",
+            "",
+        ] {
+            assert_eq!(
+                parse_directory(&blob(server)),
+                Err(DirectoryError::Invalid),
+                "{server:?}"
+            );
+        }
     }
 
     #[test]
     fn ignores_unknown_fields() {
         let json = r#"{"relayServer":"wss://gossip.vmd1.dev","future":{"a":[1,2]},"note":"x"}"#;
         assert_eq!(
-            parse_directory(json, false).unwrap().relay_server,
+            parse_directory(json).unwrap().relay_server,
             "wss://gossip.vmd1.dev"
         );
     }
 
     #[test]
-    fn refuses_adversarial_hosts() {
-        for server in [
-            "wss://gossip.vmd1.dev.evil.com",
-            "wss://evilvmd1.dev",
-            "wss://evil-vmd1.dev",
-            "wss://vmd1.dev@evil.com",
-            "wss://gossip.vmd1.dev@evil.com",
-            "wss://evil.com@gossip.vmd1.dev",
-            "wss://user:pw@gossip.vmd1.dev",
-            "wss://evil.com/gossip.vmd1.dev",
-            "wss://evil.com#.vmd1.dev",
-            "wss://evil.com?x=.vmd1.dev",
-            "wss://evil.com\\@gossip.vmd1.dev",
-            "wss://vmd1.dev.",
-            "wss://gossip.vmd1.dev.",
-            "wss://.vmd1.dev",
-            "wss://a..vmd1.dev",
-            "wss://GOSSIP.VMD1.DEV",
-            "wss://Gossip.vmd1.dev",
-            "wss://gossip.vmd1.dev:0",
-            "wss://gossip.vmd1.dev:65536",
-            "wss://gossip.vmd1.dev:08443",
-            "wss://gossip.vmd1.dev:",
-            "wss://gossip.vmd1.dev:abc",
-            "wss://gossip.vmd1.dev:443:444",
-            "wss://xn--gossip-9ya.vmd1.dev",
-            "wss://xn--vmd1-dev-0xa.com",
-            "wss://gossip.vmd1.dev/connect",
-            "wss://gossip.vmd1.dev/x",
-            "wss://gossip.vmd1.dev//",
-            "wss://gossip.vmd1.dev?x=1",
-            "wss://gossip.vmd1.dev#frag",
-            "wss://gossip.vmd1.dev ",
-            " wss://gossip.vmd1.dev",
-            "wss://gossip.vmd1.dev\n",
-            "wss://gossip.vmd1.dev\u{0}",
-            "wss://127.0.0.1",
-            "wss://1.2.3.4",
-            "wss://vmd1.dev.1",
-            "wss://[::1]",
-            "wss://[2001:db8::1]",
-            "wss://localhost",
-            "wss://",
-            "wss:///",
-            "wss://-a.vmd1.dev",
-            "wss://a-.vmd1.dev",
-            "wss://gossip_x.vmd1.dev",
-            "https://gossip.vmd1.dev",
-            "http://gossip.vmd1.dev",
-            "gossip.vmd1.dev",
-            "WSS://gossip.vmd1.dev",
-            "",
-        ] {
-            bad(server);
-        }
-    }
-
-    #[test]
-    fn refuses_unicode_lookalikes_and_idn() {
-        for server in [
-            "wss://gossip.vmd1.d\u{0435}v", // Cyrillic e
-            "wss://gossip.vm\u{0501}1.dev", // Cyrillic d
-            "wss://gossip.vmd\u{0661}.dev", // Arabic-indic digit
-            "wss://gossip.vmd1\u{FF0E}dev", // fullwidth full stop
-            "wss://gossip\u{2024}vmd1.dev", // one dot leader
-            "wss://b\u{00FC}cher.vmd1.dev",
-            "wss://gossip.vmd1.dev\u{200B}",
-            "wss://gossip.\u{FF56}md1.dev", // fullwidth v
-        ] {
-            bad(server);
-        }
-    }
-
-    #[test]
-    fn ws_downgrade_is_only_for_local_development() {
-        for server in [
-            "ws://gossip.vmd1.dev",
-            "ws://evil.com",
-            "ws://127.0.0.1.evil.com",
-            "ws://10.0.2.3",
-        ] {
-            assert!(parse_directory(&blob(server), false).is_err());
-            assert!(parse_directory(&blob(server), true).is_err(), "{server}");
-        }
-        for server in [
-            "ws://127.0.0.1:8099",
-            "ws://localhost:8099",
-            "ws://10.0.2.2:8099",
-            "ws://[::1]:8099",
-        ] {
-            assert!(parse_directory(&blob(server), false).is_err(), "{server}");
-            assert_eq!(
-                parse_directory(&blob(server), true).unwrap().relay_server,
-                server
-            );
-        }
-        // Even with insecure local allowed, wss:// still has to be under the allowed domain.
-        assert!(parse_directory(&blob("wss://127.0.0.1"), true).is_err());
-        assert!(parse_directory(&blob("wss://evil.com"), true).is_err());
-        assert!(parse_directory(&blob("ws://127.0.0.1@evil.com"), true).is_err());
-    }
-
-    #[test]
     fn rejects_bad_documents() {
-        assert_eq!(parse_directory("", false), Err(DirectoryError::NotJson));
+        assert_eq!(parse_directory(""), Err(DirectoryError::NotJson));
+        assert_eq!(parse_directory("not json"), Err(DirectoryError::NotJson));
+        assert_eq!(parse_directory("[]"), Err(DirectoryError::NotObject));
+        assert_eq!(parse_directory("\"x\""), Err(DirectoryError::NotObject));
+        assert_eq!(parse_directory("null"), Err(DirectoryError::NotObject));
         assert_eq!(
-            parse_directory("not json", false),
-            Err(DirectoryError::NotJson)
-        );
-        assert_eq!(parse_directory("[]", false), Err(DirectoryError::NotObject));
-        assert_eq!(
-            parse_directory("\"x\"", false),
-            Err(DirectoryError::NotObject)
-        );
-        assert_eq!(
-            parse_directory("null", false),
-            Err(DirectoryError::NotObject)
-        );
-        assert_eq!(
-            parse_directory("{}", false),
+            parse_directory("{}"),
             Err(DirectoryError::MissingRelayServer)
         );
         assert_eq!(
-            parse_directory(r#"{"relayserver":"wss://gossip.vmd1.dev"}"#, false),
+            parse_directory(r#"{"relayserver":"wss://gossip.vmd1.dev"}"#),
             Err(DirectoryError::MissingRelayServer)
         );
         for wrong in [
@@ -504,7 +269,7 @@ mod tests {
             r#"["wss://gossip.vmd1.dev"]"#,
         ] {
             assert_eq!(
-                parse_directory(&format!(r#"{{"relayServer":{wrong}}}"#), false),
+                parse_directory(&format!(r#"{{"relayServer":{wrong}}}"#)),
                 Err(DirectoryError::WrongType),
                 "{wrong}"
             );
@@ -516,20 +281,14 @@ mod tests {
         let filler = "a".repeat(MAX_DIRECTORY_BYTES);
         let json = format!(r#"{{"relayServer":"wss://gossip.vmd1.dev","pad":"{filler}"}}"#);
         assert!(json.len() > MAX_DIRECTORY_BYTES);
-        assert_eq!(parse_directory(&json, false), Err(DirectoryError::TooLarge));
+        assert_eq!(parse_directory(&json), Err(DirectoryError::TooLarge));
         // Right at the limit is fine.
         let head = r#"{"relayServer":"wss://gossip.vmd1.dev","pad":""#;
         let tail = r#""}"#;
         let pad = "a".repeat(MAX_DIRECTORY_BYTES - head.len() - tail.len());
         let json = format!("{head}{pad}{tail}");
         assert_eq!(json.len(), MAX_DIRECTORY_BYTES);
-        assert!(parse_directory(&json, false).is_ok());
-    }
-
-    #[test]
-    fn duplicate_keys_use_the_last_value_and_are_still_validated() {
-        let json = r#"{"relayServer":"wss://gossip.vmd1.dev","relayServer":"wss://evil.com"}"#;
-        assert!(parse_directory(json, false).is_err());
+        assert!(parse_directory(&json).is_ok());
     }
 
     fn dir(server: &str) -> RelayDirectory {
@@ -544,7 +303,7 @@ mod tests {
         for err in [
             DirectoryError::TooLarge,
             DirectoryError::NotJson,
-            DirectoryError::Invalid("x"),
+            DirectoryError::Invalid,
         ] {
             assert_eq!(
                 merge(Some(cached.clone()), Err(err)),

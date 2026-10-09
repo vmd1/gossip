@@ -25,12 +25,6 @@ class RelayEndpointPolicyTest {
     }
 
     @Test
-    fun allowedHostsAreTheVmd1DevDomain() {
-        for (host in listOf("vmd1.dev", "gossip.vmd1.dev", "a.b.vmd1.dev")) assertTrue(host, RelayEndpointPolicy.isAllowedHost(host))
-        for (host in listOf("evilvmd1.dev", "vmd1.dev.evil.com", "gossip.vmd1.dev.evil.com", "vmd1.devx", "dev", "")) assertFalse(host, RelayEndpointPolicy.isAllowedHost(host))
-    }
-
-    @Test
     fun theDirectoryEndpointIsTheRealApiUrl() {
         assertFalse(RelayEndpointPolicy.isDirectoryPlaceholder())
         assertEquals("https://api.vmd1.dev/v1/config/gossip", RelayEndpointPolicy.DIRECTORY_ENDPOINT)
@@ -69,28 +63,20 @@ class RelayEndpointPolicyTest {
     }
 
     @Test
-    fun connectUrlsMustBeWssToTheConfiguredHost() {
-        val custom = "wss://my.relay.test"
-        assertEquals("wss://my.relay.test/connect", RelayEndpointPolicy.validateConnectUrl("wss://my.relay.test/connect", custom, false))
-        assertNull("another host", RelayEndpointPolicy.validateConnectUrl("wss://evil.test/connect", custom, false))
-        assertNull("not allowlisted without a custom address", RelayEndpointPolicy.validateConnectUrl("wss://my.relay.test/connect", "", false))
-        assertEquals("the default relay needs no custom address", "wss://gossip.vmd1.dev/connect", RelayEndpointPolicy.validateConnectUrl("wss://gossip.vmd1.dev/connect", "", false))
-        assertEquals("wss://eu.vmd1.dev/connect", RelayEndpointPolicy.validateConnectUrl("wss://eu.vmd1.dev/connect", "", false))
-        assertNull(RelayEndpointPolicy.validateConnectUrl("wss://gossip.vmd1.dev.evil.com/connect", "", false))
-        assertNull(RelayEndpointPolicy.validateConnectUrl("wss://evilvmd1.dev/connect", "", false))
-        assertNull("credentials", RelayEndpointPolicy.validateConnectUrl("wss://u:p@my.relay.test/connect", custom, false))
-        assertNull("other schemes", RelayEndpointPolicy.validateConnectUrl("https://my.relay.test/connect", custom, false))
-        assertNull("garbage", RelayEndpointPolicy.validateConnectUrl("::::", custom, false))
+    fun connectUrlsMustBeWssToAnyHost() {
+        assertEquals("wss://my.relay.test/connect", RelayEndpointPolicy.validateConnectUrl("wss://my.relay.test/connect", false))
+        assertEquals("wss://other.example/connect", RelayEndpointPolicy.validateConnectUrl("wss://other.example/connect", false))
+        assertNull("credentials", RelayEndpointPolicy.validateConnectUrl("wss://u:p@my.relay.test/connect", false))
+        assertNull("other schemes", RelayEndpointPolicy.validateConnectUrl("https://my.relay.test/connect", false))
+        assertNull("garbage", RelayEndpointPolicy.validateConnectUrl("::::", false))
     }
 
     @Test
     fun cleartextConnectUrlsAreLoopbackOnlyAndDebugOnly() {
-        assertEquals("ws://127.0.0.1:8099/connect", RelayEndpointPolicy.validateConnectUrl("ws://127.0.0.1:8099/connect", "", true))
-        assertEquals("ws://10.0.2.2:8099/connect", RelayEndpointPolicy.validateConnectUrl("ws://10.0.2.2:8099/connect", "", true))
-        assertNull("release builds never allow ws://", RelayEndpointPolicy.validateConnectUrl("ws://127.0.0.1:8099/connect", "", false))
-        assertNull("not loopback", RelayEndpointPolicy.validateConnectUrl("ws://example.com/connect", "", true))
-        // Even a custom wss address does not unlock cleartext to its host.
-        assertNull(RelayEndpointPolicy.validateConnectUrl("ws://my.relay.test/connect", "wss://my.relay.test", true))
+        assertEquals("ws://127.0.0.1:8099/connect", RelayEndpointPolicy.validateConnectUrl("ws://127.0.0.1:8099/connect", true))
+        assertEquals("ws://10.0.2.2:8099/connect", RelayEndpointPolicy.validateConnectUrl("ws://10.0.2.2:8099/connect", true))
+        assertNull("release builds never allow ws://", RelayEndpointPolicy.validateConnectUrl("ws://127.0.0.1:8099/connect", false))
+        assertNull("not loopback", RelayEndpointPolicy.validateConnectUrl("ws://example.com/connect", true))
     }
 
     @Test

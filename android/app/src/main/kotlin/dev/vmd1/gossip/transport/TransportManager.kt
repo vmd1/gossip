@@ -715,7 +715,7 @@ class TransportManager(
 
     private fun openRelayConnection(url: String) {
         closeRelayConnection()
-        val allowed = RelayEndpointPolicy.validateConnectUrl(url, customUrl = relayOrigin ?: "")
+        val allowed = RelayEndpointPolicy.validateConnectUrl(url)
         if (allowed == null) {
             // Never connect to an address the policy does not allow; the engine treats this as a failed connect and backs off.
             Log.w(TAG, "Refusing to connect to a relay address that is not allowed")

@@ -18,7 +18,7 @@ time. See [`docs/plans/desktop-clients.md`](../docs/plans/desktop-clients.md) an
 | `mesh`, `limits` | De-duplication, deliver-vs-forward, hop budgets; rate limiter, pending-frame queue, "already handled" caches |
 | `trust`, `reconcile` | Roster merge and tombstones; on-connect and periodic resend scheduling |
 | `engine` | The whole-device state machine: connections, handshakes, pairing, promotion, relaying, heartbeats, relay links and the mesh topic |
-| `relay_directory` | The relay directory: `parse_directory` (validates the `relayServer` JSON blob: `wss://`, host `vmd1.dev` or a subdomain, size and shape limits), `merge` (a failed or invalid fetch never replaces a valid cache) and the polling schedule |
+| `relay_directory` | The relay directory: `parse_directory` (reads the `relayServer` JSON blob: a `wss://`/`ws://` URL with a host, 16 KiB cap), `merge` (a failed or invalid fetch never replaces a valid cache) and the polling schedule |
 | `relay`, `topic` | The relay client (pure functions pinned by `schema/conformance/relay-vectors.json`, and the sans-IO `RelayClient` join/backoff state machine); the `mesh.topic` secret and epoch |
 | `features` | Pure feature logic: DND merge, battery alerts, ring, clipboard policy and loop guard, media, notification reply guard, hotspot state, lock-on-leave, the Instant Hotspot GATT protocol, per-feature toggles |
 | `control` | Universal Control: frame codec, layout geometry, pointer router |
@@ -35,7 +35,7 @@ through it. The shell only owns one WebSocket:
 
 | Shell calls | Meaning |
 |---|---|
-| `relay_configure(enabled, origin)` | Turn the relay on/off. `origin` is `wss://host` (`ws://` only for local development; a trailing `/connect` is accepted and stripped). It must equal the relay's `RELAY_ORIGIN` exactly: it is signed into every join. Local setting, never gossiped; enforce `wss://` and a host allowlist in release builds yourself. |
+| `relay_configure(enabled, origin)` | Turn the relay on/off. `origin` is `wss://host` (`ws://` only for local development; a trailing `/connect` is accepted and stripped). It must equal the relay's `RELAY_ORIGIN` exactly: it is signed into every join. Local setting, never gossiped; enforce `wss://` in release builds yourself. |
 | `relay_socket_opened()` | The socket finished opening (after `RelayConnect`). |
 | `relay_socket_closed()` | The socket closed or failed on its own. Do **not** report a close the core asked for (`RelayClose`). Detach the old socket's listener when you close it, so a late callback cannot hit the next connection. |
 | `relay_text_received(text)` / `relay_binary_received(bytes)` | WebSocket messages. Let the WebSocket library answer pings itself. |
@@ -63,13 +63,13 @@ The relay address can move without an app release: the operator serves an HTTPS 
 
 | Shell calls (FFI) | Meaning |
 |---|---|
-| `relay_directory_parse(json, allow_insecure_local)` | The validated, normalized origin for `relay_configure`, or `None`. Rules: JSON object of at most 16 KiB, string `relayServer`, `wss://` only (`ws://` only to loopback and `10.0.2.2` when `allow_insecure_local`, which shells pass in debug builds and tests), no userinfo, query, fragment or path, strict lowercase ASCII (no unicode, punycode, trailing dot or IP literals), host equal to `ALLOWED_RELAY_DOMAIN_SUFFIX` (`vmd1.dev`) or under it. Unknown fields are ignored. The origin is signed into every join, so it must equal the relay's `RELAY_ORIGIN`. |
-| `relay_directory_decide(cached_json, fetched_json, allow_insecure_local)` | After a fetch (`fetched_json` is `None` when the request failed): `Adopt` (persist the raw body you fetched, apply `relay_server`, `changed` says whether to reconfigure), `KeepCached` (leave the file alone) or `NoDirectory` (use the default). The cached blob is re-validated, so a corrupt cache file is ignored. |
+| `relay_directory_parse(json)` | The normalized origin for `relay_configure`, or `None`. Rules: JSON object of at most 16 KiB, string `relayServer` that is a `wss://` or `ws://` URL with a host (a trailing `/` is dropped). No host restriction: the directory is trusted to name the relay. Unknown fields are ignored. The origin is signed into every join, so it must equal the relay's `RELAY_ORIGIN`. |
+| `relay_directory_decide(cached_json, fetched_json)` | After a fetch (`fetched_json` is `None` when the request failed): `Adopt` (persist the raw body you fetched, apply `relay_server`, `changed` says whether to reconfigure), `KeepCached` (leave the file alone) or `NoDirectory` (use the default). The cached blob is re-validated, so a corrupt cache file is ignored. |
 | `RelayDirectoryScheduler` | `should_poll(now_ms, last_success_ms, last_attempt_ms, failures)`: on launch, then every 6 h with +-10% jitter, with 1 min doubling to 30 min backoff after failures; `should_poll_after_connect_failure(now_ms, last_attempt_ms)`: at most one extra poll per 10 min when the relay socket cannot connect; `reroll()` after each attempt. |
 
 Shell rules: HTTPS only, no redirect to another host, 10 s timeout, 64 KiB body cap, no cookies, credentials or
 identifiers (a generic `User-Agent` only); poll only while the relay is on; write the raw blob atomically (temp file,
-rename) only after it validated. Resolution order on each device: user custom URL (bypasses the domain rule, never read
+rename) only after it validated. Resolution order on each device: user custom URL (never read
 from the directory), cached/polled `relayServer`, built-in default. See [`docs/plans/relay.md`](../docs/plans/relay.md)
 "Relay directory" for the threat reasoning.
 

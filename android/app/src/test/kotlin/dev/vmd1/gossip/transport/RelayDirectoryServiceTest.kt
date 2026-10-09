@@ -87,7 +87,7 @@ class RelayDirectoryServiceTest {
         svc.tick()
         val good = cacheFile.readText()
         val bad = listOf(
-            blob("wss://gossip.vmd1.dev.evil.com"), blob("wss://evil.com"), blob("ws://127.0.0.1:1"), "not json".toByteArray(),
+            blob("https://evil.com"), blob("evil.com"), blob(""), "not json".toByteArray(),
             "[]".toByteArray(), """{"relayServer":7}""".toByteArray(), byteArrayOf(-1, -2, 0),
             """{"relayServer":"wss://eu.vmd1.dev","pad":"${"a".repeat(20_000)}"}""".toByteArray()
         )
@@ -104,8 +104,8 @@ class RelayDirectoryServiceTest {
     }
 
     @Test
-    fun aMaliciousFirstFetchLeavesNoCacheAndTheDefaultApplies() {
-        val http = FakeHttp().apply { response = blob("wss://evil.example.com") }
+    fun anUnusableFirstFetchLeavesNoCacheAndTheDefaultApplies() {
+        val http = FakeHttp().apply { response = blob("https://evil.example.com") }
         val svc = service(http, Clock())
         svc.tick()
         assertNull(svc.state.value.cachedOrigin)
@@ -183,7 +183,7 @@ class RelayDirectoryServiceTest {
 
     @Test
     fun aCorruptCacheFileIsIgnoredAndRepairedByAGoodFetch() {
-        for (junk in listOf("junk", """{"fetchedAt":1,"raw":"{\"relayServer\":\"wss://evil.com\"}"}""", """{"fetchedAt":1,"raw":"nope"}""", """{"raw":"x"}""")) {
+        for (junk in listOf("junk", """{"fetchedAt":1,"raw":"{\"relayServer\":\"https://evil.com\"}"}""", """{"fetchedAt":1,"raw":"nope"}""", """{"raw":"x"}""")) {
             cacheFile.writeText(junk)
             assertNull(junk, service(FakeHttp(), Clock()).state.value.cachedOrigin)
         }

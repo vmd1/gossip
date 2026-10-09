@@ -173,7 +173,7 @@ class RelayDirectoryService(
             val file = Json.parseToJsonElement(cacheFile.readText()).jsonObject
             val raw = file["raw"]?.jsonPrimitive?.contentOrNull ?: return
             val fetchedAt = file["fetchedAt"]?.jsonPrimitive?.longOrNull ?: return
-            val origin = relayDirectoryParse(raw, allowInsecureLocal) ?: return
+            val origin = relayDirectoryParse(raw) ?: return
             synchronized(lock) { cachedRaw = raw; lastSuccessMs = fetchedAt }
             _state.value = RelayDirectoryState(cachedOrigin = origin, isFresh = false, lastSuccessMs = fetchedAt)
         } catch (e: Exception) {
@@ -240,7 +240,7 @@ class RelayDirectoryService(
             }.getOrNull()
         }
         synchronized(lock) {
-            val decision = relayDirectoryDecide(cachedRaw, raw, allowInsecureLocal)
+            val decision = relayDirectoryDecide(cachedRaw, raw)
             when (decision.action) {
                 DirectoryAction.ADOPT -> {
                     failures = 0u

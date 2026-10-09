@@ -737,7 +737,7 @@ final class TransportManager: ObservableObject {
 
     private func openRelayConnection(url urlString: String) {
         closeRelayConnection()
-        guard let url = RelayEndpointPolicy.validateConnectURL(urlString, customURL: relaySettings.customURL) else {
+        guard let url = RelayEndpointPolicy.validateConnectURL(urlString) else {
             // Never connect to an address the policy does not allow; the engine treats this as a failed connect and backs off.
             gossipError("Gossip: refusing to connect to a relay address that is not allowed")
             process(bridge.relaySocketClosed())

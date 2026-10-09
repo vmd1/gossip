@@ -82,7 +82,6 @@ fun relayFailureMessage(failure: RelayEndpointPolicy.Failure): String = when (fa
     RelayEndpointPolicy.Failure.INSECURE_SCHEME -> "The address must start with wss:// (an encrypted connection)."
     RelayEndpointPolicy.Failure.CREDENTIALS_NOT_ALLOWED -> "Do not put a user name or password in the address."
     RelayEndpointPolicy.Failure.UNEXPECTED_COMPONENTS -> "Use just the host, like wss://relay.example.com (no path or query)."
-    RelayEndpointPolicy.Failure.HOST_NOT_ALLOWED -> "That host is not allowed."
 }
 
 /** Settings > Relay: the opt-in for connecting to paired devices when they are not on the same network. Off by default. */

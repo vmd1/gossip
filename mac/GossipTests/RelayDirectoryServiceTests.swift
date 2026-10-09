@@ -82,7 +82,7 @@ final class RelayDirectoryServiceTests: XCTestCase {
         let good = try Data(contentsOf: cacheURL)
 
         let bad: [Data] = [
-            blob("wss://gossip.vmd1.dev.evil.com"), blob("wss://evil.com"), blob("ws://127.0.0.1:1"), Data("not json".utf8),
+            blob("https://evil.com"), blob("evil.com"), blob(""), Data("not json".utf8),
             Data("[]".utf8), Data(#"{"relayServer":7}"#.utf8), Data([0xff, 0xfe, 0x00]),
             Data(#"{"relayServer":"wss://eu.vmd1.dev","pad":"\#(String(repeating: "a", count: 20_000))"}"#.utf8),
         ]
@@ -98,9 +98,9 @@ final class RelayDirectoryServiceTests: XCTestCase {
         XCTAssertEqual(http.calls, 1 + bad.count)
     }
 
-    func testMaliciousFirstFetchLeavesNoCacheAndTheDefaultApplies() {
+    func testUnusableFirstFetchLeavesNoCacheAndTheDefaultApplies() {
         let http = FakeHTTP(); let clock = Clock()
-        http.response = blob("wss://evil.example.com")
+        http.response = blob("https://evil.example.com")
         let service = makeService(http: http, clock: clock)
         service.setActive(true); settle(service)
         XCTAssertNil(service.cachedOrigin)
@@ -202,7 +202,7 @@ final class RelayDirectoryServiceTests: XCTestCase {
 
     func testCorruptCacheFileIsIgnored() throws {
         try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        for junk in ["junk", #"{"fetchedAt":1,"raw":"{\"relayServer\":\"wss://evil.com\"}"}"#, #"{"fetchedAt":1,"raw":"nope"}"#] {
+        for junk in ["junk", #"{"fetchedAt":1,"raw":"{\"relayServer\":\"https://evil.com\"}"}"#, #"{"fetchedAt":1,"raw":"nope"}"#] {
             try Data(junk.utf8).write(to: cacheURL)
             let service = makeService(http: FakeHTTP(), clock: Clock())
             XCTAssertNil(service.cachedOrigin, junk)

@@ -181,7 +181,7 @@ final class RelayDirectoryService: ObservableObject {
     /// A missing, unreadable or invalid cache file is ignored (never fatal); the next good fetch overwrites it.
     private func loadCache() {
         guard let data = try? Data(contentsOf: cacheURL), let file = try? JSONDecoder().decode(CacheFile.self, from: data),
-              let origin = relayDirectoryParse(json: file.raw, allowInsecureLocal: allowInsecureLocal) else { return }
+              let origin = relayDirectoryParse(json: file.raw) else { return }
         cachedRaw = file.raw
         lastSuccessMs = file.fetchedAt
         cachedOrigin = origin
@@ -262,7 +262,7 @@ final class RelayDirectoryService: ObservableObject {
     private func finishPoll(body: Data?) {
         inFlight = false
         let raw = body.flatMap { String(data: $0, encoding: .utf8) }
-        let decision = relayDirectoryDecide(cachedJson: cachedRaw, fetchedJson: raw, allowInsecureLocal: allowInsecureLocal)
+        let decision = relayDirectoryDecide(cachedJson: cachedRaw, fetchedJson: raw)
         switch decision.action {
         case .adopt:
             failures = 0

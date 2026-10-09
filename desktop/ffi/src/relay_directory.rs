@@ -10,24 +10,16 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The only domain a directory may name: the host must equal it or end with `.` plus it.
-#[uniffi::export]
-pub fn relay_directory_allowed_domain_suffix() -> String {
-    core::ALLOWED_RELAY_DOMAIN_SUFFIX.to_owned()
-}
-
 /// Largest directory blob the shells should read (they cap the body at 64 KiB; the core accepts 16 KiB).
 #[uniffi::export]
 pub fn relay_directory_max_bytes() -> u32 {
     core::MAX_DIRECTORY_BYTES as u32
 }
 
-/// Validates a directory blob and returns the normalized `relayServer` origin, or `None` when it is not acceptable.
+/// Parses a directory blob and returns the normalized `relayServer` origin, or `None` when it is not usable.
 #[uniffi::export]
-pub fn relay_directory_parse(json: String, allow_insecure_local: bool) -> Option<String> {
-    core::parse_directory(&json, allow_insecure_local)
-        .ok()
-        .map(|d| d.relay_server)
+pub fn relay_directory_parse(json: String) -> Option<String> {
+    core::parse_directory(&json).ok().map(|d| d.relay_server)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -58,12 +50,11 @@ pub struct DirectoryDecision {
 pub fn relay_directory_decide(
     cached_json: Option<String>,
     fetched_json: Option<String>,
-    allow_insecure_local: bool,
 ) -> DirectoryDecision {
-    let cached = cached_json.and_then(|j| core::parse_directory(&j, allow_insecure_local).ok());
+    let cached = cached_json.and_then(|j| core::parse_directory(&j).ok());
     let (fetched, rejection) = match fetched_json {
         None => (Err(core::DirectoryError::NotJson), None),
-        Some(j) => match core::parse_directory(&j, allow_insecure_local) {
+        Some(j) => match core::parse_directory(&j) {
             Ok(d) => (Ok(d), None),
             Err(e) => {
                 let why = e.to_string();
