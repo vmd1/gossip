@@ -12,7 +12,7 @@ npm test             # vitest (real in-process ws server + client helper)
 npm run gen-vectors  # regenerate ../schema/conformance/relay-vectors.json
 ```
 
-TLS is terminated in front of this process (Caddy, nginx, a platform LB). Set `RELAY_ORIGIN` to the public `wss://` origin clients use.
+TLS is terminated in front of this process (Caddy, nginx, a platform LB). Set `RELAY_ORIGIN` to the public `wss://` origin clients use. The hosted relay is `wss://gossip.vmd1.dev`; clients learn the current relay from a small HTTPS directory (a JSON blob with a `relayServer` key, constrained to `vmd1.dev` hosts; see [the plan](../docs/plans/relay.md) "Relay directory"). `RELAY_ORIGIN` must equal the directory's `relayServer` string exactly (`wss://host[:port]`, lowercase, no path or trailing slash), because clients sign it into every join. If the relay moves, change the directory and bring the new relay up with its own `RELAY_ORIGIN`.
 
 ## Protocol
 

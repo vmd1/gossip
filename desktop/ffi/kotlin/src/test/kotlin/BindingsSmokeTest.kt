@@ -254,4 +254,30 @@ class BindingsSmokeTest {
         assertTrue(router.state() is PointerState.Remote)
         assertTrue(router.forceReturn(null, true).isNotEmpty())
     }
+
+    @Test
+    fun relayDirectory() {
+        assertEquals("vmd1.dev", relayDirectoryAllowedDomainSuffix())
+        assertEquals("wss://gossip.vmd1.dev", relayDirectoryParse("""{"relayServer":"wss://gossip.vmd1.dev","x":1}""", false))
+        assertNull(relayDirectoryParse("""{"relayServer":"wss://gossip.vmd1.dev.evil.com"}""", false))
+        assertNull(relayDirectoryParse("""{"relayServer":"ws://127.0.0.1:9"}""", false))
+        assertEquals("ws://127.0.0.1:9", relayDirectoryParse("""{"relayServer":"ws://127.0.0.1:9"}""", true))
+        val good = """{"relayServer":"wss://a.vmd1.dev"}"""
+        val adopt = relayDirectoryDecide(null, good, false)
+        assertEquals(DirectoryAction.ADOPT, adopt.action)
+        assertTrue(adopt.changed)
+        assertEquals("wss://a.vmd1.dev", adopt.relayServer)
+        val keep = relayDirectoryDecide(good, """{"relayServer":"wss://evil.com"}""", false)
+        assertEquals(DirectoryAction.KEEP_CACHED, keep.action)
+        assertEquals("wss://a.vmd1.dev", keep.relayServer)
+        assertNotNull(keep.rejection)
+        assertEquals(DirectoryAction.KEEP_CACHED, relayDirectoryDecide(good, null, false).action)
+        assertEquals(DirectoryAction.NO_DIRECTORY, relayDirectoryDecide("junk", null, false).action)
+        val scheduler = RelayDirectoryScheduler.withJitterPermille(0)
+        assertTrue(scheduler.shouldPoll(10, 5, null, 0u))
+        assertFalse(scheduler.shouldPoll(1_000, 10, 10, 0u))
+        assertTrue(scheduler.shouldPoll(10 + 6 * 3_600_000, 10, 10, 0u))
+        assertEquals(240_000L, scheduler.backoffMs(3u))
+        assertFalse(scheduler.shouldPollAfterConnectFailure(100_000, 10))
+    }
 }

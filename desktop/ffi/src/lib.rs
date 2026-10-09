@@ -14,6 +14,7 @@ mod engine;
 mod error;
 mod features;
 mod hotspot_gatt;
+mod relay_directory;
 
 pub use error::GossipError;
 

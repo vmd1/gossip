@@ -29,13 +29,18 @@ final class RelaySettings: ObservableObject {
         customURL = value
     }
 
-    /// What the engine should be configured with: `nil` origin means the relay cannot be used (placeholder default and no
-    /// valid custom address), so no socket is attempted.
-    var configuration: (enabled: Bool, origin: String?) {
-        guard enabled, case .success(let origin)? = RelayEndpointPolicy.resolveOrigin(customURL: customURL) else {
-            return (false, nil)
+    /// What the engine should be configured with. `nil` origin only when the custom address is invalid (a typo must not
+    /// silently send traffic elsewhere). Otherwise: custom address, else the directory's relay, else the built-in default.
+    ///
+    /// `awaitingDirectory` is true on a first run with polling on and nothing cached, until the first poll has finished
+    /// (it is bounded by the 10 s request timeout): the relay is held back rather than connecting to the default when
+    /// the directory is about to say otherwise. A custom address never waits.
+    func configuration(directoryOrigin: String? = nil, directoryIsFresh: Bool = false, awaitingDirectory: Bool = false) -> (enabled: Bool, origin: String?, resolution: RelayEndpointPolicy.Resolution?) {
+        guard case .success(let resolution) = RelayEndpointPolicy.resolve(customURL: customURL, directoryOrigin: directoryOrigin, directoryIsFresh: directoryIsFresh) else {
+            return (false, nil, nil)
         }
-        return (true, origin)
+        if awaitingDirectory && resolution.source == .builtInDefault { return (false, nil, resolution) }
+        return (enabled, resolution.origin, resolution)
     }
 }
 

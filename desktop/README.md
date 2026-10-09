@@ -18,6 +18,7 @@ time. See [`docs/plans/desktop-clients.md`](../docs/plans/desktop-clients.md) an
 | `mesh`, `limits` | De-duplication, deliver-vs-forward, hop budgets; rate limiter, pending-frame queue, "already handled" caches |
 | `trust`, `reconcile` | Roster merge and tombstones; on-connect and periodic resend scheduling |
 | `engine` | The whole-device state machine: connections, handshakes, pairing, promotion, relaying, heartbeats, relay links and the mesh topic |
+| `relay_directory` | The relay directory: `parse_directory` (validates the `relayServer` JSON blob: `wss://`, host `vmd1.dev` or a subdomain, size and shape limits), `merge` (a failed or invalid fetch never replaces a valid cache) and the polling schedule |
 | `relay`, `topic` | The relay client (pure functions pinned by `schema/conformance/relay-vectors.json`, and the sans-IO `RelayClient` join/backoff state machine); the `mesh.topic` secret and epoch |
 | `features` | Pure feature logic: DND merge, battery alerts, ring, clipboard policy and loop guard, media, notification reply guard, hotspot state, lock-on-leave, the Instant Hotspot GATT protocol, per-feature toggles |
 | `control` | Universal Control: frame codec, layout geometry, pointer router |
@@ -53,6 +54,24 @@ first connection between two trusted devices creates and `mesh.topic` distribute
 Policy in the core: a trusted peer is dialed over the relay only after 8 s with no live link (default), only by the side
 with the lower `deviceId`, and only if its signing key is known (its route tag derives from it). `screen.*` and
 `control.*` are refused on relayed links. A revoke moves the mesh to a new topic the revoked device never receives.
+
+### Relay directory
+
+The relay address can move without an app release: the operator serves an HTTPS JSON blob with a `relayServer` key
+(`wss://host[:port]`), and the shells poll it, keep the last good copy and fall back to a built-in default. The core
+(`relay_directory.rs`, sans-IO) owns every decision; the shell does HTTP and a file:
+
+| Shell calls (FFI) | Meaning |
+|---|---|
+| `relay_directory_parse(json, allow_insecure_local)` | The validated, normalized origin for `relay_configure`, or `None`. Rules: JSON object of at most 16 KiB, string `relayServer`, `wss://` only (`ws://` only to loopback and `10.0.2.2` when `allow_insecure_local`, which shells pass in debug builds and tests), no userinfo, query, fragment or path, strict lowercase ASCII (no unicode, punycode, trailing dot or IP literals), host equal to `ALLOWED_RELAY_DOMAIN_SUFFIX` (`vmd1.dev`) or under it. Unknown fields are ignored. The origin is signed into every join, so it must equal the relay's `RELAY_ORIGIN`. |
+| `relay_directory_decide(cached_json, fetched_json, allow_insecure_local)` | After a fetch (`fetched_json` is `None` when the request failed): `Adopt` (persist the raw body you fetched, apply `relay_server`, `changed` says whether to reconfigure), `KeepCached` (leave the file alone) or `NoDirectory` (use the default). The cached blob is re-validated, so a corrupt cache file is ignored. |
+| `RelayDirectoryScheduler` | `should_poll(now_ms, last_success_ms, last_attempt_ms, failures)`: on launch, then every 6 h with +-10% jitter, with 1 min doubling to 30 min backoff after failures; `should_poll_after_connect_failure(now_ms, last_attempt_ms)`: at most one extra poll per 10 min when the relay socket cannot connect; `reroll()` after each attempt. |
+
+Shell rules: HTTPS only, no redirect to another host, 10 s timeout, 64 KiB body cap, no cookies, credentials or
+identifiers (a generic `User-Agent` only); poll only while the relay is on; write the raw blob atomically (temp file,
+rename) only after it validated. Resolution order on each device: user custom URL (bypasses the domain rule, never read
+from the directory), cached/polled `relayServer`, built-in default. See [`docs/plans/relay.md`](../docs/plans/relay.md)
+"Relay directory" for the threat reasoning.
 
 ### Running the live test against a real relay
 

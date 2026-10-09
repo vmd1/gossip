@@ -267,6 +267,26 @@ do {
     check(entered, "pushing against the edge enters the device")
     if case .remote(let id, _) = router.state() { check(id == "tab", "router is on the device") } else { check(false, "router should be remote") }
     check(!router.forceReturn(hint: nil, notifyDevice: true).isEmpty, "force return warps the cursor back")
+
+    // ---- Relay directory.
+    check(relayDirectoryAllowedDomainSuffix() == "vmd1.dev", "directory suffix")
+    check(relayDirectoryParse(json: #"{"relayServer":"wss://gossip.vmd1.dev","x":1}"#, allowInsecureLocal: false) == "wss://gossip.vmd1.dev", "directory accepts the relay domain")
+    check(relayDirectoryParse(json: #"{"relayServer":"wss://gossip.vmd1.dev.evil.com"}"#, allowInsecureLocal: false) == nil, "directory refuses a lookalike host")
+    check(relayDirectoryParse(json: #"{"relayServer":"ws://127.0.0.1:9"}"#, allowInsecureLocal: false) == nil, "ws refused in release")
+    check(relayDirectoryParse(json: #"{"relayServer":"ws://127.0.0.1:9"}"#, allowInsecureLocal: true) == "ws://127.0.0.1:9", "ws loopback allowed in development")
+    let goodBlob = #"{"relayServer":"wss://a.vmd1.dev"}"#
+    let adopt = relayDirectoryDecide(cachedJson: nil, fetchedJson: goodBlob, allowInsecureLocal: false)
+    check(adopt.action == .adopt && adopt.changed && adopt.relayServer == "wss://a.vmd1.dev", "valid fetch is adopted")
+    let keep = relayDirectoryDecide(cachedJson: goodBlob, fetchedJson: #"{"relayServer":"wss://evil.com"}"#, allowInsecureLocal: false)
+    check(keep.action == .keepCached && keep.relayServer == "wss://a.vmd1.dev" && keep.rejection != nil, "invalid fetch keeps the cache")
+    check(relayDirectoryDecide(cachedJson: goodBlob, fetchedJson: nil, allowInsecureLocal: false).action == .keepCached, "failed fetch keeps the cache")
+    check(relayDirectoryDecide(cachedJson: "junk", fetchedJson: nil, allowInsecureLocal: false).action == .noDirectory, "corrupt cache is ignored")
+    let scheduler = RelayDirectoryScheduler.withJitterPermille(jitterPermille: 0)
+    check(scheduler.shouldPoll(nowMs: 10, lastSuccessMs: 5, lastAttemptMs: nil, failures: 0), "polls on launch")
+    check(!scheduler.shouldPoll(nowMs: 1_000, lastSuccessMs: 10, lastAttemptMs: 10, failures: 0), "not again soon")
+    check(scheduler.shouldPoll(nowMs: 10 + 6 * 3_600_000, lastSuccessMs: 10, lastAttemptMs: 10, failures: 0), "polls after six hours")
+    check(scheduler.backoffMs(failures: 3) == 240_000, "backoff doubles")
+    check(!scheduler.shouldPollAfterConnectFailure(nowMs: 100_000, lastAttemptMs: 10), "connect-failure poll is rate limited")
 } catch {
     failures += 1
     print("FAIL: unexpected error \(error)")

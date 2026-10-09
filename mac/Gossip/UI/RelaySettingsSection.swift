@@ -4,7 +4,7 @@ import SwiftUI
 enum RelayStatusText {
     static func line(enabled: Bool, hasOrigin: Bool, status: String, errorCode: String?) -> String {
         guard enabled else { return "Off" }
-        guard hasOrigin else { return "No relay host configured" }
+        guard hasOrigin else { return "The custom relay address is not valid" }
         switch status {
         case "joined": return "Connected to the relay"
         case "connecting": return "Connecting…"
@@ -26,23 +26,44 @@ enum RelayStatusText {
     }
 }
 
+/// Which relay is in use and where that choice came from, for the Settings line.
+enum RelaySourceText {
+    static func label(_ source: RelayEndpointPolicy.Source) -> String {
+        switch source {
+        case .custom: return "custom"
+        case .directory: return "directory"
+        case .cachedOffline: return "cached (offline)"
+        case .builtInDefault: return "default"
+        }
+    }
+
+    static func lastCheck(_ date: Date?, now: Date = Date()) -> String {
+        guard let date else { return "never" }
+        return date.formatted(.relative(presentation: .named, unitsStyle: .wide))
+    }
+}
+
 /// Settings > Relay: the opt-in for connecting to paired devices when they are not on the same network.
 struct RelaySettingsSection: View {
     @ObservedObject var settings: RelaySettings
     @ObservedObject var transport: TransportManager
+    @ObservedObject var directory: RelayDirectoryService
     @State private var customURLText: String
     @State private var validationError: String?
 
     init(settings: RelaySettings, transport: TransportManager) {
         self.settings = settings
         self.transport = transport
+        self.directory = transport.relayDirectory
         _customURLText = State(initialValue: settings.customURL)
     }
 
-    private var hasOrigin: Bool {
-        if case .success? = RelayEndpointPolicy.resolveOrigin(customURL: settings.customURL) { return true }
-        return false
+    private var resolution: RelayEndpointPolicy.Resolution? {
+        if case .success(let value) = RelayEndpointPolicy.resolve(customURL: settings.customURL, directoryOrigin: directory.cachedOrigin, directoryIsFresh: directory.isFresh) { return value }
+        return nil
     }
+
+    private var hasOrigin: Bool { resolution != nil }
 
     var body: some View {
         Section {
@@ -60,6 +81,16 @@ struct RelaySettingsSection: View {
             if let validationError {
                 Text(validationError).font(.caption).foregroundStyle(.red)
             }
+            if let resolution {
+                LabeledContent("Relay server") {
+                    Text("\(resolution.host) (\(RelaySourceText.label(resolution.source)))").foregroundStyle(.secondary)
+                }
+                if !RelayEndpointPolicy.directoryEndpointIsPlaceholder {
+                    LabeledContent("Directory last checked") {
+                        Text(RelaySourceText.lastCheck(directory.lastSuccess)).foregroundStyle(.secondary)
+                    }
+                }
+            }
             LabeledContent("Status") {
                 Text(RelayStatusText.line(enabled: settings.enabled, hasOrigin: hasOrigin, status: transport.relayStatus, errorCode: transport.relayErrorCode))
                     .foregroundStyle(.secondary)
@@ -67,7 +98,7 @@ struct RelaySettingsSection: View {
         } header: {
             Text("Relay")
         } footer: {
-            Text("The relay sees which network addresses connect and when, and how much data flows, but not what you send: everything is end-to-end encrypted between your devices. Screen mirroring and Universal Control only work on the same network. Press Return after typing a custom address.")
+            Text("The relay sees which network addresses connect and when, and how much data flows, but not what you send: everything is end-to-end encrypted between your devices. Screen mirroring and Universal Control only work on the same network. The relay address is looked up from a small directory so it can move without an app update; the last answer is kept and used when the directory is unreachable. A custom address overrides it. Press Return after typing a custom address.")
                 .font(.caption)
         }
         .onDisappear(perform: commitCustomURL)

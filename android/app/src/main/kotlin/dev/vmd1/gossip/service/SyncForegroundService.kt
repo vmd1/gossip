@@ -97,6 +97,7 @@ class SyncForegroundService : Service() {
         )
         controlSessionState.register(messageRouter)
         observeRemoteAccess()
+        val relayDirectory = dev.vmd1.gossip.transport.RelayDirectoryService.getInstance(applicationContext)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
@@ -105,12 +106,16 @@ class SyncForegroundService : Service() {
             deviceType = deviceType,
             isMessageAllowed = featureSettings::isMessageAllowed,
             initialDisabledFeatures = featureSettings.disabled.value.map(::coreFeatureKey),
-            relayTopicStore = dev.vmd1.gossip.transport.RelayTopicStore.getInstance(applicationContext)
+            relayTopicStore = dev.vmd1.gossip.transport.RelayTopicStore.getInstance(applicationContext),
+            relayDirectory = relayDirectory
         )
         // The relay is opt-in (Settings > Relay): push the user's choice to the engine now and on every change. With the
-        // placeholder default address and no valid custom one there is no origin, so no socket is ever attempted.
+        // custom address (if set) wins, then the relay the directory names, then the built-in default.
         val relaySettings = dev.vmd1.gossip.transport.RelaySettings.getInstance(applicationContext)
-        kotlinx.coroutines.flow.combine(relaySettings.enabled, relaySettings.customUrl) { _, _ -> relaySettings.configuration() }
+        kotlinx.coroutines.flow.combine(relaySettings.enabled, relaySettings.customUrl, relayDirectory.state) { _, _, directory ->
+            relayDirectory.wanted = relaySettings.enabled.value // polled only while the relay is on
+            relaySettings.configuration(directory.cachedOrigin, directory.isFresh, directory.awaitingFirstAnswer)
+        }
             .onEach { transportManager.setRelayEnabled(it.enabled, it.origin) }
             .launchIn(serviceScope)
         // The engine applies the same per-feature gate on delivery, so it needs to hear about every change.

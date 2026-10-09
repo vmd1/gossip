@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import dev.vmd1.gossip.transport.RelayDirectoryService
 import dev.vmd1.gossip.transport.RelayEndpointPolicy
 import dev.vmd1.gossip.transport.RelaySettings
 import kotlinx.coroutines.flow.StateFlow
@@ -36,7 +37,7 @@ class RelayUiState(val status: StateFlow<String>, val idle: StateFlow<Boolean>, 
 object RelayStatusText {
     fun line(enabled: Boolean, hasOrigin: Boolean, status: String, idle: Boolean, errorCode: String?): String {
         if (!enabled) return "Off"
-        if (!hasOrigin) return "No relay host configured"
+        if (!hasOrigin) return "The custom relay address is not valid"
         if (idle) return "On, waiting: all your devices are on this network"
         return when (status) {
             "joined" -> "Connected to the relay"
@@ -55,6 +56,27 @@ object RelayStatusText {
     }
 }
 
+/** Where the relay in use came from, for the Settings line. */
+object RelaySourceText {
+    fun label(source: RelayEndpointPolicy.Source): String = when (source) {
+        RelayEndpointPolicy.Source.CUSTOM -> "custom"
+        RelayEndpointPolicy.Source.DIRECTORY -> "directory"
+        RelayEndpointPolicy.Source.CACHED_OFFLINE -> "cached (offline)"
+        RelayEndpointPolicy.Source.DEFAULT -> "default"
+    }
+
+    fun lastCheck(lastSuccessMs: Long?, nowMs: Long = System.currentTimeMillis()): String {
+        if (lastSuccessMs == null) return "never"
+        val minutes = ((nowMs - lastSuccessMs) / 60_000).coerceAtLeast(0)
+        return when {
+            minutes < 1 -> "just now"
+            minutes < 60 -> "$minutes min ago"
+            minutes < 48 * 60 -> "${minutes / 60} h ago"
+            else -> "${minutes / (24 * 60)} days ago"
+        }
+    }
+}
+
 fun relayFailureMessage(failure: RelayEndpointPolicy.Failure): String = when (failure) {
     RelayEndpointPolicy.Failure.MALFORMED -> "That is not a valid address. Use the form wss://relay.example.com"
     RelayEndpointPolicy.Failure.INSECURE_SCHEME -> "The address must start with wss:// (an encrypted connection)."
@@ -68,6 +90,7 @@ fun relayFailureMessage(failure: RelayEndpointPolicy.Failure): String = when (fa
 fun ColumnScope.RelaySettingsContent(settings: RelaySettings, state: RelayUiState?) {
     val enabled by settings.enabled.collectAsState()
     val customUrl by settings.customUrl.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var text by remember { mutableStateOf(customUrl) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -120,10 +143,25 @@ fun ColumnScope.RelaySettingsContent(settings: RelaySettings, state: RelayUiStat
     error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
     if (text.trim() != customUrl) TextButton(onClick = { commit() }) { Text("Save address") }
 
-    val hasOrigin = RelayEndpointPolicy.resolveOrigin(customUrl) is RelayEndpointPolicy.Result.Ok
+    val directoryService = remember(context) { RelayDirectoryService.getInstance(context) }
+    val directory by directoryService.state.collectAsState()
+    val resolution = RelayEndpointPolicy.resolve(customUrl, directory.cachedOrigin, directory.isFresh)
+    val hasOrigin = resolution != null
     val status by (state?.status?.collectAsState() ?: remember { mutableStateOf("disabled") })
     val idle by (state?.idle?.collectAsState() ?: remember { mutableStateOf(false) })
     val errorCode by (state?.errorCode?.collectAsState() ?: remember { mutableStateOf<String?>(null) })
+    if (resolution != null) {
+        Column {
+            Text("Relay server", style = MaterialTheme.typography.labelMedium)
+            Text("${resolution.host} (${RelaySourceText.label(resolution.source)})", style = MaterialTheme.typography.bodyMedium)
+        }
+        if (!RelayEndpointPolicy.isDirectoryPlaceholder()) {
+            Column {
+                Text("Directory last checked", style = MaterialTheme.typography.labelMedium)
+                Text(RelaySourceText.lastCheck(directory.lastSuccessMs), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
     Column {
         Text("Status", style = MaterialTheme.typography.labelMedium)
         Text(RelayStatusText.line(enabled, hasOrigin, status, idle, errorCode), style = MaterialTheme.typography.bodyMedium)
@@ -132,7 +170,8 @@ fun ColumnScope.RelaySettingsContent(settings: RelaySettings, state: RelayUiStat
     Text(
         "The relay sees which network addresses connect and when, and how much data flows, but not what you send: " +
             "everything is end-to-end encrypted between your devices. Screen mirroring and Universal Control only work " +
-            "on the same network.",
+            "on the same network. The relay address is looked up from a small directory so it can move without an app " +
+            "update; the last answer is kept and used when the directory is unreachable. A custom address overrides it.",
         style = MaterialTheme.typography.bodySmall
     )
 }

@@ -78,7 +78,9 @@ class TransportManager(
     /** Keys of the features turned off on this device, for the engine's own gate (see [setDisabledFeatures]). */
     initialDisabledFeatures: List<String> = emptyList(),
     /** Where the mesh topic (secret + epoch) the engine reports is persisted; `null` keeps it in memory only (tests). */
-    private val relayTopicStore: RelayTopicStore? = null
+    private val relayTopicStore: RelayTopicStore? = null,
+    /** Polled from the engine loop below while the relay is on; `null` (tests) means no directory. */
+    private val relayDirectory: RelayDirectoryService? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -245,6 +247,8 @@ class TransportManager(
                         carryOut(startup + bridge.tick())
                         evaluateRelayNeed()
                         publishRelayStatus()
+                        // Reuses this loop (no timer or alarm of its own): a no-op unless a directory poll is due.
+                        relayDirectory?.tick()
                     }
                 }.onFailure { Log.w(TAG, "Engine tick failed: ${it.message}") }
             }
@@ -731,15 +735,18 @@ class TransportManager(
                 }
             }.onFailure { Log.w(TAG, "Relay event failed: ${it.message}") }
         }
+        val everOpened = java.util.concurrent.atomic.AtomicBoolean(false)
         relayConnection = RelayConnection(
             url = allowed,
             allowInsecureLoopback = RelayEndpointPolicy.allowsInsecureLoopback,
-            onOpen = { onRelayThread { bridge.relaySocketOpened() } },
+            onOpen = { everOpened.set(true); onRelayThread { bridge.relaySocketOpened() } },
             onText = { text -> onRelayThread { bridge.relayTextReceived(text) } },
             onBinary = { bytes -> onRelayThread { bridge.relayBinaryReceived(bytes) } },
             onClosed = {
                 onRelayThread {
                     relayConnection = null
+                    // A socket that never opened is a connect failure: the relay may have moved, so ask the directory.
+                    if (!everOpened.get()) relayDirectory?.noteRelayConnectFailure()
                     bridge.relaySocketClosed()
                 }
             }

@@ -30,11 +30,16 @@ class RelaySettings(private val prefs: SharedPreferences) {
         _customUrl.value = value
     }
 
-    /** What the engine should be configured with: a `null` origin means the relay cannot be used (the placeholder default
-     *  and no valid custom address), so no socket is attempted. */
-    fun configuration(): Configuration {
-        val origin = (RelayEndpointPolicy.resolveOrigin(_customUrl.value) as? RelayEndpointPolicy.Result.Ok)?.origin
-        return if (_enabled.value && origin != null) Configuration(true, origin) else Configuration(false, null)
+    /**
+     * What the engine should be configured with: the custom address, else the relay the directory names, else the built-in
+     * default. A `null` origin only when the custom address is invalid (a typo must not silently send traffic elsewhere).
+     * [awaitingDirectory] (first run, polling on, nothing cached, first poll not finished; bounded by the 10 s request
+     * timeout) holds the relay back rather than connecting to the default just before the directory names another relay.
+     */
+    fun configuration(directoryOrigin: String? = null, directoryIsFresh: Boolean = false, awaitingDirectory: Boolean = false): Configuration {
+        val resolution = RelayEndpointPolicy.resolve(_customUrl.value, directoryOrigin, directoryIsFresh) ?: return Configuration(false, null)
+        if (awaitingDirectory && resolution.source == RelayEndpointPolicy.Source.DEFAULT) return Configuration(false, null)
+        return if (_enabled.value) Configuration(true, resolution.origin) else Configuration(false, null)
     }
 
     data class Configuration(val enabled: Boolean, val origin: String?)

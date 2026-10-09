@@ -137,34 +137,46 @@ The Mac app can reach paired devices that are not on the same network through th
 
 - the toggle "Relay (connect when not on the same network)"
 - an optional custom relay address (`wss://host`, validated: `wss://` only, no credentials, path or query; Return commits it)
-- a status line from the engine (`Off`, `No relay host configured`, `Connecting…`, `Connected to the relay`, ...)
+- the relay server in use and where it came from (`custom`, `directory`, `cached (offline)` or `default`) and when the directory was last checked
+- a status line from the engine (`Off`, `Connecting…`, `Connected to the relay`, ...)
 - a note that the relay sees metadata (addresses, timing, volume), never content (everything is end-to-end encrypted)
 
-Until the operator picks a host, `RelayEndpointPolicy.defaultOrigin` is the placeholder `wss://relay.gossip.invalid`
-(TODO in `mac/Gossip/Transport/RelayEndpointPolicy.swift`): with it the toggle reports "No relay host configured" and no
-socket is opened unless a custom address is set. Release builds only connect with `wss://` to the default host list or
-the user's own custom host; Debug builds also allow `ws://` to `localhost`/`127.0.0.1`. The topic secret is stored in the
+The built-in default is `RelayEndpointPolicy.defaultOrigin`, `wss://gossip.vmd1.dev`. The relay actually used is the
+custom address if set, else the `relayServer` named by the relay directory, else that default. The directory is an HTTPS
+JSON endpoint whose URL is one constant, `RelayEndpointPolicy.directoryEndpoint`
+(`mac/Gossip/Transport/RelayEndpointPolicy.swift`), currently the placeholder `https://gossip.vmd1.dev/TODO-directory`:
+**set it to the real URL before release**; while it is the placeholder the app does not poll and just uses the default.
+`RelayDirectoryService` polls only while the relay is on (on launch, every 6 h, with backoff on failure and once more when
+the relay socket cannot connect), validates the answer in the Rust core (the host must be `vmd1.dev` or a subdomain) and
+keeps the last good raw answer in `~/Library/Application Support/Connect/relay-directory.json`, which it keeps using when
+the directory is unreachable. Release builds only connect with `wss://` to `vmd1.dev` hosts or the user's own custom host;
+Debug builds also allow `ws://` to `localhost`/`127.0.0.1`. The topic secret is stored in the
 login Keychain (account `relay-topic`; a throwaway file under XCTest). A device reached only through the relay shows in
 teal in the menu bar and refuses screen mirroring and Universal Control ("needs the same network").
 
-`mac/scripts/e2e-relay.sh` starts the local relay (`POW_BITS=8`, a free port) and runs `RelayE2ETests`: two in-process
-Mac `TransportManager`s with the LAN off exchange a 1 MiB message and a 2 MiB raw frame through it and toggle the relay
+`mac/scripts/e2e-relay.sh` starts the local relay (`POW_BITS=8`, a free port) and a tiny local relay directory (an HTTP server
+serving `{"relayServer": "ws://127.0.0.1:<port>"}`, accepted only in Debug builds), and runs `RelayE2ETests`: two in-process
+Mac `TransportManager`s with the LAN off learn the relay from that directory and exchange a 1 MiB message and a 2 MiB raw frame through it and toggle the relay
 off and on. The Mac-to-Android relay test is `mac/scripts/e2e-relay-emulator.sh` (see "Relay (Android)").
 
 ## Relay (Android)
 
 The Android app reaches paired devices that are not on the same network through the same relay. It is off by default;
 **Settings → Relay** has the toggle "Relay (connect when not on the same network)", an optional custom address (same
-validation as on the Mac; the keyboard's Done key or "Save address" commits it), a status line and the privacy note. As on
-the Mac, the shipped default is the placeholder `wss://relay.gossip.invalid` (TODO in
-`android/.../transport/RelayEndpointPolicy.kt`): until it is replaced, the toggle reports "No relay host configured" and no
-socket is opened unless a custom address is set.
+validation as on the Mac; the keyboard's Done key or "Save address" commits it), the relay server in use with its source
+(`custom`, `directory`, `cached (offline)`, `default`) and the directory's last check, a status line and the privacy note.
+As on the Mac, the default is `wss://gossip.vmd1.dev` and the relay directory URL is one constant,
+`RelayEndpointPolicy.DIRECTORY_ENDPOINT` in `android/.../transport/RelayEndpointPolicy.kt`, currently the placeholder
+`https://gossip.vmd1.dev/TODO-directory`: **set it to the real URL before release**; while it is the placeholder nothing is
+polled. `RelayDirectoryService` (OkHttp) has no timer of its own: the transport's once-a-second engine loop inside the
+foreground service asks it whether a poll is due, so polling never wakes the device. The last good answer is kept in
+`filesDir/relay-directory.json`.
 
 - `transport/RelayConnection.kt` is the OkHttp WebSocket adapter (30 s ping interval, no redirects, one writer thread so
   bytes leave in the order the engine produced them). OkHttp refuses a single outgoing message above 16 MiB; the relay's
   largest frame is 16 MiB plus a 16 byte header, so an exactly-maximal frame resets the relay link (it reconnects) rather
   than being sent. Real traffic is far below that (raw frames are capped at a few MiB by the features).
-- `transport/RelayEndpointPolicy.kt`: release builds only open `wss://` to the default host list or the user's own custom
+- `transport/RelayEndpointPolicy.kt`: release builds only open `wss://` to `vmd1.dev` hosts or the user's own custom
   host. Debug builds also allow `ws://` to `localhost`, `127.0.0.1` and `10.0.2.2` (the emulator's host), which needs the
   debug-only network security config in `app/src/debug/res/xml/network_security_config.xml`; the release variant keeps the
   platform default of no cleartext at all, and `RelayConnection` also drops cleartext from its connection specs there.

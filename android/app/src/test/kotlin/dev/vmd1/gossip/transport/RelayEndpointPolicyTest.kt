@@ -12,10 +12,29 @@ class RelayEndpointPolicyTest {
     private fun origin(text: String, loopback: Boolean = false): Any = RelayEndpointPolicy.normalizeOrigin(text, loopback).let { if (it is Result.Ok) it.origin else (it as Result.Error).failure }
 
     @Test
-    fun theShippedPlaceholderIsNotConfiguredAndResolvesToNothing() {
-        assertFalse(RelayEndpointPolicy.isDefaultConfigured)
-        assertNull("no origin, so no socket is ever attempted", RelayEndpointPolicy.resolveOrigin("", allowInsecureLoopback = false))
-        assertNull(RelayEndpointPolicy.resolveOrigin("   ", allowInsecureLoopback = true))
+    fun resolutionOrderIsCustomThenDirectoryThenDefault() {
+        fun resolve(custom: String, directory: String?, fresh: Boolean = true) = RelayEndpointPolicy.resolve(custom, directory, fresh, allowInsecureLoopback = false)
+        assertEquals(RelayEndpointPolicy.Resolution("wss://gossip.vmd1.dev", RelayEndpointPolicy.Source.DEFAULT), resolve("", null))
+        assertEquals(RelayEndpointPolicy.Source.DEFAULT, resolve("  ", null)?.source)
+        assertEquals(RelayEndpointPolicy.Resolution("wss://eu.vmd1.dev", RelayEndpointPolicy.Source.DIRECTORY), resolve("", "wss://eu.vmd1.dev"))
+        assertEquals(RelayEndpointPolicy.Source.CACHED_OFFLINE, resolve("", "wss://eu.vmd1.dev", fresh = false)?.source)
+        assertEquals(RelayEndpointPolicy.Resolution("wss://my.example.com", RelayEndpointPolicy.Source.CUSTOM), resolve("wss://my.example.com/connect", "wss://eu.vmd1.dev"))
+        assertEquals("an unusable directory answer falls back to the default", RelayEndpointPolicy.Source.DEFAULT, resolve("", "ws://evil.example.com")?.source)
+        assertNull("an invalid custom address is an error, not a silent fallback", resolve("ws://my.example.com", "wss://eu.vmd1.dev"))
+        assertEquals("gossip.vmd1.dev", resolve("", null)?.host)
+    }
+
+    @Test
+    fun allowedHostsAreTheVmd1DevDomain() {
+        for (host in listOf("vmd1.dev", "gossip.vmd1.dev", "a.b.vmd1.dev")) assertTrue(host, RelayEndpointPolicy.isAllowedHost(host))
+        for (host in listOf("evilvmd1.dev", "vmd1.dev.evil.com", "gossip.vmd1.dev.evil.com", "vmd1.devx", "dev", "")) assertFalse(host, RelayEndpointPolicy.isAllowedHost(host))
+    }
+
+    @Test
+    fun theDirectoryEndpointIsAPlaceholderUntilTheOperatorSetsIt() {
+        assertTrue(RelayEndpointPolicy.isDirectoryPlaceholder())
+        assertTrue(RelayEndpointPolicy.DIRECTORY_ENDPOINT.startsWith("https://"))
+        assertFalse(RelayEndpointPolicy.isDirectoryPlaceholder("https://gossip.vmd1.dev/relay.json"))
     }
 
     @Test
@@ -50,18 +69,15 @@ class RelayEndpointPolicyTest {
     }
 
     @Test
-    fun aCustomAddressReplacesTheDefaultAndReportsItsOwnErrors() {
-        assertEquals(Result.Ok("wss://my.relay.test"), RelayEndpointPolicy.resolveOrigin("wss://my.relay.test", allowInsecureLoopback = false))
-        assertEquals(Result.Error(Failure.INSECURE_SCHEME), RelayEndpointPolicy.resolveOrigin("ws://my.relay.test", allowInsecureLoopback = false))
-    }
-
-    @Test
     fun connectUrlsMustBeWssToTheConfiguredHost() {
         val custom = "wss://my.relay.test"
         assertEquals("wss://my.relay.test/connect", RelayEndpointPolicy.validateConnectUrl("wss://my.relay.test/connect", custom, false))
         assertNull("another host", RelayEndpointPolicy.validateConnectUrl("wss://evil.test/connect", custom, false))
         assertNull("not allowlisted without a custom address", RelayEndpointPolicy.validateConnectUrl("wss://my.relay.test/connect", "", false))
-        assertNull("the unconfigured placeholder host is never allowed", RelayEndpointPolicy.validateConnectUrl("wss://relay.gossip.invalid/connect", "", false))
+        assertEquals("the default relay needs no custom address", "wss://gossip.vmd1.dev/connect", RelayEndpointPolicy.validateConnectUrl("wss://gossip.vmd1.dev/connect", "", false))
+        assertEquals("wss://eu.vmd1.dev/connect", RelayEndpointPolicy.validateConnectUrl("wss://eu.vmd1.dev/connect", "", false))
+        assertNull(RelayEndpointPolicy.validateConnectUrl("wss://gossip.vmd1.dev.evil.com/connect", "", false))
+        assertNull(RelayEndpointPolicy.validateConnectUrl("wss://evilvmd1.dev/connect", "", false))
         assertNull("credentials", RelayEndpointPolicy.validateConnectUrl("wss://u:p@my.relay.test/connect", custom, false))
         assertNull("other schemes", RelayEndpointPolicy.validateConnectUrl("https://my.relay.test/connect", custom, false))
         assertNull("garbage", RelayEndpointPolicy.validateConnectUrl("::::", custom, false))

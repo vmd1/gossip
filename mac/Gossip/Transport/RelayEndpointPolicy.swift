@@ -5,19 +5,24 @@ import Foundation
 /// release builds. Debug builds additionally allow plain `ws://` to the loopback addresses, for local development and
 /// the relay end-to-end test.
 enum RelayEndpointPolicy {
-    /// TODO: the operator has not picked the hosted relay's host yet. `.invalid` is a reserved TLD (RFC 2606) that can
-    /// never resolve, so this placeholder cannot connect to anything, and `isDefaultConfigured` is false until it is
-    /// replaced with the real `wss://host` (also add the host to `defaultHosts`).
-    static let defaultOrigin = "wss://relay.gossip.invalid"
+    /// The hosted relay. Also the fallback whenever there is no custom address and no directory answer.
+    static let defaultOrigin = "wss://gossip.vmd1.dev"
 
-    /// Hosts the app may connect to without the user typing them in. Keep in step with `defaultOrigin`.
-    static let defaultHosts: Set<String> = ["relay.gossip.invalid"]
+    /// Hosts the app may connect to without the user typing them in: this domain and its subdomains. This is the same
+    /// rule the core applies to a relay named by the directory (`ALLOWED_RELAY_DOMAIN_SUFFIX`), so a directory can
+    /// never send the app anywhere else. The user's own custom address is a separate, explicit override.
+    static let allowedDomainSuffix = "vmd1.dev"
 
-    static var isDefaultConfigured: Bool {
-        guard case .success(let origin) = normalizeOrigin(defaultOrigin, allowInsecureLoopback: false),
-              let host = URLComponents(string: origin)?.host else { return false }
-        return !host.hasSuffix(".invalid") && defaultHosts.contains(host)
+    static func isAllowedHost(_ host: String) -> Bool {
+        host == allowedDomainSuffix || host.hasSuffix("." + allowedDomainSuffix)
     }
+
+    /// THE ONE PLACE to set the relay directory's HTTPS URL: an endpoint returning JSON with a `relayServer` key that
+    /// names the current relay. While it is this placeholder the app does not poll at all (that is not an error): it
+    /// just uses `defaultOrigin`. See `docs/plans/relay.md` "Relay directory".
+    static let directoryEndpoint = "https://gossip.vmd1.dev/TODO-directory"
+
+    static var directoryEndpointIsPlaceholder: Bool { directoryEndpoint.hasSuffix("/TODO-directory") }
 
     #if DEBUG
     static let allowsInsecureLoopback = true
@@ -56,17 +61,38 @@ enum RelayEndpointPolicy {
         return .success("\(scheme)://\(host)\(parts.port.map { ":\($0)" } ?? "")")
     }
 
-    /// The origin to hand to the engine for these settings, or why there is none. A custom address replaces the default.
-    static func resolveOrigin(customURL: String, allowInsecureLoopback: Bool = RelayEndpointPolicy.allowsInsecureLoopback) -> Result<String, Failure>? {
+    enum Source: Equatable {
+        /// The user's own address; bypasses the domain rule.
+        case custom
+        /// A directory answer fetched in this run, on its last attempt.
+        case directory
+        /// The last good directory answer kept on disk, while the directory is unreachable or not yet refreshed.
+        case cachedOffline
+        case builtInDefault
+    }
+
+    struct Resolution: Equatable {
+        let origin: String
+        let source: Source
+        var host: String { URLComponents(string: origin)?.host ?? origin }
+    }
+
+    /// The relay to use: the user's custom address, else the directory's `relayServer` (cached or freshly polled), else
+    /// the built-in default. An invalid custom address is an error rather than a silent fallback.
+    static func resolve(customURL: String, directoryOrigin: String?, directoryIsFresh: Bool = false,
+                        allowInsecureLoopback: Bool = RelayEndpointPolicy.allowsInsecureLoopback) -> Result<Resolution, Failure> {
         if !customURL.trimmingCharacters(in: .whitespaces).isEmpty {
-            return normalizeOrigin(customURL, allowInsecureLoopback: allowInsecureLoopback)
+            return normalizeOrigin(customURL, allowInsecureLoopback: allowInsecureLoopback).map { Resolution(origin: $0, source: .custom) }
         }
-        guard isDefaultConfigured else { return nil }
-        return normalizeOrigin(defaultOrigin, allowInsecureLoopback: false)
+        if let directoryOrigin, case .success(let origin) = normalizeOrigin(directoryOrigin, allowInsecureLoopback: allowInsecureLoopback) {
+            return .success(Resolution(origin: origin, source: directoryIsFresh ? .directory : .cachedOffline))
+        }
+        guard case .success(let origin) = normalizeOrigin(defaultOrigin, allowInsecureLoopback: false) else { return .failure(.malformed) }
+        return .success(Resolution(origin: origin, source: .builtInDefault))
     }
 
     /// Final check on the URL the engine asked to open (`RelayConnect`), right before the socket is created: `wss://`
-    /// only, to an allowlisted host (the default hosts, or the host of the user's own custom address). In a Debug build
+    /// only, to an allowlisted host (the vmd1.dev domain rule, or the host of the user's own custom address). In a Debug build
     /// `ws://` is also allowed to loopback.
     static func validateConnectURL(_ urlString: String, customURL: String,
                                    allowInsecureLoopback: Bool = RelayEndpointPolicy.allowsInsecureLoopback) -> URL? {
@@ -76,7 +102,7 @@ enum RelayEndpointPolicy {
               let url = parts.url else { return nil }
         if scheme == "ws" { return allowInsecureLoopback && isLoopback(host) ? url : nil }
         guard scheme == "wss" else { return nil }
-        if isDefaultConfigured && defaultHosts.contains(host) { return url }
+        if isAllowedHost(host) { return url }
         let custom = customURL.trimmingCharacters(in: .whitespaces)
         if !custom.isEmpty, case .success(let origin) = normalizeOrigin(custom, allowInsecureLoopback: false),
            let customHost = URLComponents(string: origin)?.host, customHost == host { return url }

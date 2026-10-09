@@ -142,7 +142,9 @@ final class TransportManager: ObservableObject {
     private let trustedDevices: TrustedDevicesStore
     private let relaySettings: RelaySettings
     private let topicStore: RelayTopicStore
+    let relayDirectory: RelayDirectoryService
     private var relaySettingsObserver: AnyCancellable?
+    private var relayDirectoryObserver: AnyCancellable?
     /// Actions produced while loading the persisted topic, executed with the first tick.
     private var startupActions: [CoreBridge.BridgeAction] = []
     private var relayConnection: RelayConnection?
@@ -204,11 +206,13 @@ final class TransportManager: ObservableObject {
     private static let queueKey = DispatchSpecificKey<Void>()
 
     init(trustedDevices: TrustedDevicesStore = .shared, identity: IdentityKeyStore = .shared,
-         relaySettings: RelaySettings = .shared, topicStore: RelayTopicStore = .shared) {
+         relaySettings: RelaySettings = .shared, topicStore: RelayTopicStore = .shared,
+         relayDirectory: RelayDirectoryService = .shared) {
         self.trustedDevices = trustedDevices
         self.identity = identity
         self.relaySettings = relaySettings
         self.topicStore = topicStore
+        self.relayDirectory = relayDirectory
         queue.setSpecific(key: Self.queueKey, value: ())
         observeFeatureSettings()
         observeRelaySettings()
@@ -222,12 +226,23 @@ final class TransportManager: ObservableObject {
         // `@Published` emits before the value is stored; read it after the current main-thread turn.
         .receive(on: DispatchQueue.main)
         .sink { [weak self] in self?.applyRelaySettings() }
+        // A different relay named by the directory reconfigures the relay cleanly (the engine closes the old socket and
+        // reconnects); re-applying an unchanged one is a no-op.
+        relayDirectoryObserver = Publishers.Merge(
+            relayDirectory.$cachedOrigin.map { _ in () }, relayDirectory.$awaitingFirstAnswer.map { _ in () }
+        )
+            .dropFirst(2)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyRelaySettings() }
     }
 
-    /// Pushes the user's relay preferences to the engine. With the placeholder default address and no valid custom one
-    /// there is no origin, so the relay stays off and no socket is attempted.
+    /// Pushes the user's relay preferences to the engine. The relay is the custom address if set, else the one the relay
+    /// directory names, else the built-in default; an invalid custom address leaves the relay off. The directory is
+    /// polled only while the relay is switched on.
     func applyRelaySettings() {
-        let configuration = relaySettings.configuration
+        let configuration = relaySettings.configuration(directoryOrigin: relayDirectory.cachedOrigin, directoryIsFresh: relayDirectory.isFresh,
+                                                          awaitingDirectory: relayDirectory.awaitingFirstAnswer)
+        relayDirectory.setActive(relaySettings.enabled && configuration.resolution != nil)
         setRelayEnabled(configuration.enabled, origin: configuration.origin)
     }
 
@@ -379,6 +394,7 @@ final class TransportManager: ObservableObject {
         redialTimer = nil
         engineTimer?.cancel()
         engineTimer = nil
+        relayDirectory.setActive(false)
         discovery.stopAdvertising()
         discovery.stopBrowsing()
         onQueue {
@@ -729,10 +745,12 @@ final class TransportManager: ObservableObject {
         }
         relayGeneration += 1
         let generation = relayGeneration
+        var everOpened = false
         relayConnection = RelayConnection(
             url: url, queue: queue,
             onOpen: { [weak self] in
                 guard let self, self.relayGeneration == generation else { return }
+                everOpened = true
                 self.process(self.bridge.relaySocketOpened())
             },
             onText: { [weak self] text in
@@ -746,6 +764,8 @@ final class TransportManager: ObservableObject {
             onClosed: { [weak self] in
                 guard let self, self.relayGeneration == generation else { return }
                 self.relayConnection = nil
+                // A socket that never opened is a connect failure: the relay may have moved, so ask the directory.
+                if !everOpened { self.relayDirectory.noteRelayConnectFailure() }
                 self.process(self.bridge.relaySocketClosed())
             }
         )

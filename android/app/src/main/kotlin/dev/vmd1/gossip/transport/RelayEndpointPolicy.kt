@@ -13,22 +13,26 @@ import java.net.URISyntaxException
  * Pure Kotlin (`java.net.URI`), so the JVM unit tests cover it.
  */
 object RelayEndpointPolicy {
+    /** The hosted relay. Also the fallback whenever there is no custom address and no directory answer. */
+    const val DEFAULT_ORIGIN = "wss://gossip.vmd1.dev"
+
     /**
-     * TODO: the operator has not picked the hosted relay's host yet. `.invalid` is a reserved TLD (RFC 2606) that can
-     * never resolve, so this placeholder cannot connect to anything, and [isDefaultConfigured] is false until it is
-     * replaced with the real `wss://host` (also add the host to [DEFAULT_HOSTS]).
+     * Hosts the app may connect to without the user typing them in: this domain and its subdomains. This is the same rule
+     * the core applies to a relay named by the directory (`ALLOWED_RELAY_DOMAIN_SUFFIX`), so a directory can never send the
+     * app anywhere else. The user's own custom address is a separate, explicit override.
      */
-    const val DEFAULT_ORIGIN = "wss://relay.gossip.invalid"
+    const val ALLOWED_DOMAIN_SUFFIX = "vmd1.dev"
 
-    /** Hosts the app may connect to without the user typing them in. Keep in step with [DEFAULT_ORIGIN]. */
-    val DEFAULT_HOSTS: Set<String> = setOf("relay.gossip.invalid")
+    fun isAllowedHost(host: String): Boolean = host == ALLOWED_DOMAIN_SUFFIX || host.endsWith(".$ALLOWED_DOMAIN_SUFFIX")
 
-    val isDefaultConfigured: Boolean
-        get() {
-            val origin = (normalizeOrigin(DEFAULT_ORIGIN, allowInsecureLoopback = false) as? Result.Ok)?.origin ?: return false
-            val host = hostOf(origin) ?: return false
-            return !host.endsWith(".invalid") && host in DEFAULT_HOSTS
-        }
+    /**
+     * THE ONE PLACE to set the relay directory's HTTPS URL: an endpoint returning JSON with a `relayServer` key that names
+     * the current relay. While it is this placeholder the app does not poll at all (that is not an error): it just uses
+     * [DEFAULT_ORIGIN]. See `docs/plans/relay.md` "Relay directory".
+     */
+    const val DIRECTORY_ENDPOINT = "https://gossip.vmd1.dev/TODO-directory"
+
+    fun isDirectoryPlaceholder(endpoint: String = DIRECTORY_ENDPOINT): Boolean = endpoint.endsWith("/TODO-directory")
 
     /** True only in debug builds. */
     val allowsInsecureLoopback: Boolean get() = BuildConfig.DEBUG
@@ -66,19 +70,37 @@ object RelayEndpointPolicy {
         return Result.Ok("$scheme://$host$port")
     }
 
+    enum class Source { CUSTOM, DIRECTORY, CACHED_OFFLINE, DEFAULT }
+
+    data class Resolution(val origin: String, val source: Source) {
+        val host: String get() = hostOf(origin) ?: origin
+    }
+
     /**
-     * The origin to hand to the engine for these settings, or `null` when there is none (the placeholder default and no
-     * custom address). A custom address replaces the default. An invalid custom address yields its [Result.Error].
+     * The relay to use: the user's custom address, else the directory's `relayServer` (cached or freshly polled), else the
+     * built-in default. `null` only for an invalid custom address, which is an error rather than a silent fallback.
      */
-    fun resolveOrigin(customUrl: String, allowInsecureLoopback: Boolean = this.allowsInsecureLoopback): Result? {
-        if (customUrl.isNotBlank()) return normalizeOrigin(customUrl, allowInsecureLoopback)
-        if (!isDefaultConfigured) return null
-        return normalizeOrigin(DEFAULT_ORIGIN, allowInsecureLoopback = false)
+    fun resolve(
+        customUrl: String,
+        directoryOrigin: String? = null,
+        directoryIsFresh: Boolean = false,
+        allowInsecureLoopback: Boolean = this.allowsInsecureLoopback
+    ): Resolution? {
+        if (customUrl.isNotBlank()) {
+            val ok = normalizeOrigin(customUrl, allowInsecureLoopback) as? Result.Ok ?: return null
+            return Resolution(ok.origin, Source.CUSTOM)
+        }
+        if (directoryOrigin != null) {
+            (normalizeOrigin(directoryOrigin, allowInsecureLoopback) as? Result.Ok)?.let {
+                return Resolution(it.origin, if (directoryIsFresh) Source.DIRECTORY else Source.CACHED_OFFLINE)
+            }
+        }
+        return Resolution((normalizeOrigin(DEFAULT_ORIGIN, allowInsecureLoopback = false) as Result.Ok).origin, Source.DEFAULT)
     }
 
     /**
      * Final check on the URL the engine asked to open (`RelayConnect`), right before the socket is created: `wss://` only,
-     * to an allowlisted host (the default hosts, or the host of the origin the user configured). In a debug build `ws://`
+     * to an allowlisted host (the vmd1.dev domain rule, or the host of the user's custom address). In a debug build `ws://`
      * is also allowed to loopback. Returns the URL to open, or `null`.
      */
     fun validateConnectUrl(
@@ -92,7 +114,7 @@ object RelayEndpointPolicy {
         if (uri.rawUserInfo != null || uri.rawFragment != null) return null
         if (scheme == "ws") return if (allowInsecureLoopback && isLoopback(host)) urlString else null
         if (scheme != "wss") return null
-        if (isDefaultConfigured && host in DEFAULT_HOSTS) return urlString
+        if (isAllowedHost(host)) return urlString
         val custom = customUrl.trim()
         if (custom.isNotEmpty()) {
             val origin = (normalizeOrigin(custom, allowInsecureLoopback = false) as? Result.Ok)?.origin

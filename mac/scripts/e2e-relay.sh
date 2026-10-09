@@ -1,7 +1,8 @@
 #!/bin/bash
 # End-to-end test of the relay path on the Mac: starts the local relay server from relay/ on a free port, then runs
 # mac/GossipTests/RelayE2ETests, which pairs two in-process Mac TransportManagers through it (the LAN is off) and
-# exchanges messages, including a 1 MiB payload.
+# exchanges messages, including a 1 MiB payload. The nodes learn the relay address from a local relay directory (a tiny
+# HTTP server serving the JSON blob), so the directory poll, cache and reconfigure path run for real.
 #
 #   mac/scripts/e2e-relay.sh
 #
@@ -15,8 +16,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 OUT="${TMPDIR:-/tmp}/gossip-e2e-relay"; mkdir -p "$OUT"
 RELAY_PID=""
+DIR_PID=""
 
-cleanup() { [ -n "$RELAY_PID" ] && kill "$RELAY_PID" >/dev/null 2>&1; }
+cleanup() { [ -n "$RELAY_PID" ] && kill "$RELAY_PID" >/dev/null 2>&1; [ -n "$DIR_PID" ] && kill "$DIR_PID" >/dev/null 2>&1; }
 trap cleanup EXIT
 
 PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
@@ -34,12 +36,25 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
+# A tiny local relay directory: the nodes get the relay address from this JSON blob (ws://127.0.0.1 is accepted by the
+# directory parser only in Debug builds), so the whole directory path is exercised, not just a custom address.
+DIR_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+mkdir -p "$OUT/directory"
+printf '{"relayServer":"%s","note":"unknown fields are ignored"}' "$ORIGIN" >"$OUT/directory/relay.json"
+(cd "$OUT/directory" && exec python3 -m http.server "$DIR_PORT" --bind 127.0.0.1) >"$OUT/directory.log" 2>&1 &
+DIR_PID=$!
+DIRECTORY_URL="http://127.0.0.1:$DIR_PORT/relay.json"
+for _ in $(seq 1 50); do
+  python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.2); sys.exit(s.connect_ex(('127.0.0.1',$DIR_PORT)))" 2>/dev/null && break
+  sleep 0.1
+done
+
 echo "== building the protocol engine and the Mac test host"
 "$HERE/build-core.sh" >/dev/null || exit 2
 (cd "$REPO/mac" && xcodegen generate >/dev/null) || exit 2
 
 echo "== running the relay end-to-end test"
-(cd "$REPO/mac" && TEST_RUNNER_GOSSIP_E2E_RELAY="$ORIGIN" \
+(cd "$REPO/mac" && TEST_RUNNER_GOSSIP_E2E_RELAY="$ORIGIN" TEST_RUNNER_GOSSIP_E2E_DIRECTORY="$DIRECTORY_URL" \
   xcodebuild -project Gossip.xcodeproj -scheme Gossip -configuration Debug -destination 'platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
   -derivedDataPath "$OUT/derived" test -only-testing:GossipTests/RelayE2ETests >"$OUT/xcodebuild.log" 2>&1)
 STATUS=$?

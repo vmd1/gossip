@@ -23,16 +23,27 @@ final class RelayE2ETests: XCTestCase {
         private var inbox: [Envelope] = []
         private var raws: [(Envelope, Data)] = []
 
-        init(_ name: String, directory: URL, origin: String, topicSecret: Data) {
+        let directoryService: RelayDirectoryService?
+
+        /// With `directoryURL` the relay address is not configured at all: the node learns it from the relay directory
+        /// (a local HTTP server serving `{"relayServer": origin}`), exactly the production path.
+        init(_ name: String, directory: URL, origin: String, topicSecret: Data, directoryURL: String? = nil) {
             self.name = name
             identity = IdentityKeyStore(fileURL: directory.appendingPathComponent("\(name)-identity.json"))
             trust = TrustedDevicesStore(fileURL: directory.appendingPathComponent("\(name)-trusted.json"))
             let defaults = UserDefaults(suiteName: "RelayE2E-\(name)-\(UUID().uuidString)")!
             settings = RelaySettings(defaults: defaults)
-            settings.setCustomURL(origin)
+            if let directoryURL {
+                directoryService = RelayDirectoryService(
+                    endpoint: directoryURL, cacheURL: directory.appendingPathComponent("\(name)-relay-directory.json"), allowInsecureLocal: true)
+            } else {
+                directoryService = nil
+                settings.setCustomURL(origin)
+            }
             let topics = RelayTopicStore(blob: FileBlobStore(url: directory.appendingPathComponent("\(name)-topic.json")))
             topics.save(secret: topicSecret, epoch: 1)
-            transport = TransportManager(trustedDevices: trust, identity: identity, relaySettings: settings, topicStore: topics)
+            transport = TransportManager(trustedDevices: trust, identity: identity, relaySettings: settings, topicStore: topics,
+                                         relayDirectory: directoryService ?? RelayDirectoryService(endpoint: RelayEndpointPolicy.directoryEndpoint, cacheURL: directory.appendingPathComponent("\(name)-unused-directory.json")))
             transport.router.register(prefix: "e2e.") { [weak self] envelope in
                 self?.lock.lock(); self?.inbox.append(envelope); self?.lock.unlock()
             }
@@ -80,8 +91,10 @@ final class RelayE2ETests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let secret = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
-        let a = Node("alpha", directory: directory, origin: origin, topicSecret: secret)
-        let b = Node("beta", directory: directory, origin: origin, topicSecret: secret)
+        // When the script also serves a relay directory, the nodes learn the relay from it instead of a custom address.
+        let directoryURL = ProcessInfo.processInfo.environment["GOSSIP_E2E_DIRECTORY"].flatMap { $0.isEmpty ? nil : $0 }
+        let a = Node("alpha", directory: directory, origin: origin, topicSecret: secret, directoryURL: directoryURL)
+        let b = Node("beta", directory: directory, origin: origin, topicSecret: secret, directoryURL: directoryURL)
         a.trusts(b); b.trusts(a)
         defer { a.transport.stop(); b.transport.stop() }
 
@@ -90,6 +103,13 @@ final class RelayE2ETests: XCTestCase {
         for node in [a, b] {
             node.transport.setLanGraceMs(0) // dial through the relay right away instead of after the LAN grace period
             node.transport.start(deviceName: node.name, lan: false)
+        }
+
+        if directoryURL != nil {
+            wait("both nodes to learn the relay from the directory") { a.directoryService?.cachedOrigin == origin && b.directoryService?.cachedOrigin == origin }
+            XCTAssertTrue(a.directoryService?.isFresh ?? false)
+            let cached = try? Data(contentsOf: directory.appendingPathComponent("alpha-relay-directory.json"))
+            XCTAssertNotNil(cached, "the directory answer was cached on disk")
         }
 
         // ---- Both devices join the topic and the lower device id dials the other through it. ----

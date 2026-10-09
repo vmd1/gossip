@@ -1,6 +1,6 @@
 # Relay threat model
 
-Applies to the topic-hub relay in `relay/` ([plan](plans/relay.md), [README](../relay/README.md)). Status: implemented in the server; clients (Rust core, shells) are not yet.
+Applies to the topic-hub relay in `relay/` ([plan](plans/relay.md), [README](../relay/README.md)). Status: implemented in the server, the Rust core client and the Mac and Android shells.
 
 ## Assets and trust
 
@@ -39,6 +39,8 @@ The relay is untrusted for content and trusted only for availability and for not
 **Spoofing inside a topic.** `srcTag` is always overwritten with the authenticated sender's tag; a member cannot address another topic (lookup is per topic); route tags are per-topic so they are unlinkable across topics and epochs.
 
 **Operator-side compromise of logs.** Only event names, counters and coarse reasons are logged, with IPs truncated to /24 (v4) or /48 (v6). No payloads, tags, topic ids or key hashes are logged. Metrics are counters without identifiers and are served only on an ops-only listener (disabled by default on the public port).
+
+**Compromised or malicious relay directory.** Devices learn the current relay from a small HTTPS JSON document (`relayServer`; see [plan](plans/relay.md) "Relay directory"). If that endpoint, its TLS certificate or its DNS is compromised, the attacker can change which relay devices use, but only to a host equal to or under `vmd1.dev` (checked in the core by `parse_directory`, together with `wss://`-only, no userinfo/query/path, lowercase ASCII, no punycode or IP literals); anything else is rejected and the last valid cached answer stays in use. So the directory cannot send devices to an attacker's own domain, and a relay at an allowed host still cannot read, forge or splice traffic. What remains: an attacker who also controls a `vmd1.dev` subdomain (a dangling DNS record, a subdomain takeover) could run a relay there and see metadata (IPs, timing, volume) for devices that follow the directory; keep the `vmd1.dev` zone clean and prefer few, deliberate subdomains. An unreachable or garbage-serving directory is harmless: failed and invalid fetches never replace or clear the cache. Polling sends nothing identifying (no device id, no custom headers), is rate limited (6 h period, 1 to 30 min backoff, one extra poll per 10 min on relay connect failure), and fetches are size and time capped (64 KiB, 10 s). A user's explicit custom relay URL overrides the directory on that device and bypasses the domain rule; it is never read from the directory.
 
 ## Cryptographic notes
 

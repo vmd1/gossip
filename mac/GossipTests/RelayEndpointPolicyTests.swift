@@ -32,28 +32,29 @@ final class RelayEndpointPolicyTests: XCTestCase {
         XCTAssertNil(origin("ws://127.0.0.1.evil.com", insecure: true))
     }
 
-    func testThePlaceholderDefaultIsNotUsable() {
-        XCTAssertFalse(RelayEndpointPolicy.isDefaultConfigured)
-        XCTAssertNil(RelayEndpointPolicy.resolveOrigin(customURL: ""), "no host configured, so no origin")
-        XCTAssertNil(RelayEndpointPolicy.resolveOrigin(customURL: "   "))
-        if case .success(let origin)? = RelayEndpointPolicy.resolveOrigin(customURL: "wss://my.example.com/connect") {
-            XCTAssertEqual(origin, "wss://my.example.com")
-        } else { XCTFail("a custom address is used") }
-        if case .failure? = RelayEndpointPolicy.resolveOrigin(customURL: "ws://my.example.com") {} else { XCTFail("an insecure custom address is an error, not a silent fallback") }
+    func testResolutionOrderIsCustomThenDirectoryThenDefault() {
+        func resolve(_ custom: String, _ directory: String?, fresh: Bool = true) -> RelayEndpointPolicy.Resolution? {
+            if case .success(let value) = RelayEndpointPolicy.resolve(customURL: custom, directoryOrigin: directory, directoryIsFresh: fresh, allowInsecureLoopback: false) { return value }
+            return nil
+        }
+        XCTAssertEqual(resolve("", nil), .init(origin: "wss://gossip.vmd1.dev", source: .builtInDefault))
+        XCTAssertEqual(resolve("  ", nil)?.source, .builtInDefault)
+        XCTAssertEqual(resolve("", "wss://eu.vmd1.dev"), .init(origin: "wss://eu.vmd1.dev", source: .directory))
+        XCTAssertEqual(resolve("", "wss://eu.vmd1.dev", fresh: false)?.source, .cachedOffline)
+        XCTAssertEqual(resolve("wss://my.example.com/connect", "wss://eu.vmd1.dev"), .init(origin: "wss://my.example.com", source: .custom), "custom wins")
+        XCTAssertEqual(resolve("", "ws://evil.example.com")?.source, .builtInDefault, "an unusable directory answer falls back to the default")
+        if case .failure = RelayEndpointPolicy.resolve(customURL: "ws://my.example.com", directoryOrigin: "wss://eu.vmd1.dev", allowInsecureLoopback: false) {} else { XCTFail("an invalid custom address is an error, not a silent fallback") }
+        XCTAssertEqual(resolve("", nil)?.host, "gossip.vmd1.dev")
     }
 
-    func testConnectURLMustBeWssToAnAllowedHost() {
-        let custom = "wss://my.example.com"
-        XCTAssertNotNil(RelayEndpointPolicy.validateConnectURL("wss://my.example.com/connect", customURL: custom, allowInsecureLoopback: false))
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("wss://other.example.com/connect", customURL: custom, allowInsecureLoopback: false), "not the configured host")
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("wss://my.example.com/connect", customURL: "", allowInsecureLoopback: false), "no custom address and the default is a placeholder")
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("wss://relay.gossip.invalid/connect", customURL: "", allowInsecureLoopback: false))
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("ws://my.example.com/connect", customURL: custom, allowInsecureLoopback: false))
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("ws://127.0.0.1:9/connect", customURL: "", allowInsecureLoopback: false), "release builds never allow ws://")
-        XCTAssertNotNil(RelayEndpointPolicy.validateConnectURL("ws://127.0.0.1:9/connect", customURL: "", allowInsecureLoopback: true))
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("ws://example.com/connect", customURL: "", allowInsecureLoopback: true))
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("wss://u:p@my.example.com/connect", customURL: custom, allowInsecureLoopback: false))
-        XCTAssertNil(RelayEndpointPolicy.validateConnectURL("https://my.example.com/connect", customURL: custom, allowInsecureLoopback: false))
+    func testAllowedHostsAreTheVmd1DevDomain() {
+        for host in ["vmd1.dev", "gossip.vmd1.dev", "a.b.vmd1.dev"] { XCTAssertTrue(RelayEndpointPolicy.isAllowedHost(host), host) }
+        for host in ["evilvmd1.dev", "vmd1.dev.evil.com", "gossip.vmd1.dev.evil.com", "vmd1.devx", "dev", ""] { XCTAssertFalse(RelayEndpointPolicy.isAllowedHost(host), host) }
+    }
+
+    func testDirectoryEndpointIsAPlaceholderUntilTheOperatorSetsIt() {
+        XCTAssertTrue(RelayEndpointPolicy.directoryEndpointIsPlaceholder)
+        XCTAssertTrue(RelayEndpointPolicy.directoryEndpoint.hasPrefix("https://"))
     }
 
     func testLoggableShowsOnlyTheHost() {
@@ -63,7 +64,7 @@ final class RelayEndpointPolicyTests: XCTestCase {
 
     func testStatusLines() {
         XCTAssertEqual(RelayStatusText.line(enabled: false, hasOrigin: false, status: "disabled", errorCode: nil), "Off")
-        XCTAssertEqual(RelayStatusText.line(enabled: true, hasOrigin: false, status: "disabled", errorCode: nil), "No relay host configured")
+        XCTAssertEqual(RelayStatusText.line(enabled: true, hasOrigin: false, status: "disabled", errorCode: nil), "The custom relay address is not valid")
         XCTAssertEqual(RelayStatusText.line(enabled: true, hasOrigin: true, status: "joined", errorCode: nil), "Connected to the relay")
         XCTAssertTrue(RelayStatusText.line(enabled: true, hasOrigin: true, status: "disconnected", errorCode: "upgrade_required").contains("newer version"))
     }
@@ -72,15 +73,18 @@ final class RelayEndpointPolicyTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "RelaySettingsTests-\(UUID().uuidString)")!
         let settings = RelaySettings(defaults: defaults)
         XCTAssertFalse(settings.enabled)
-        XCTAssertNil(settings.configuration.origin)
+        XCTAssertFalse(settings.configuration().enabled)
         settings.setEnabled(true)
-        XCTAssertNil(settings.configuration.origin, "enabled with the placeholder default: still no origin, so no connection")
-        XCTAssertFalse(settings.configuration.enabled)
+        XCTAssertTrue(settings.configuration().enabled)
+        XCTAssertEqual(settings.configuration().origin, "wss://gossip.vmd1.dev", "the built-in default needs no setup")
+        XCTAssertEqual(settings.configuration(directoryOrigin: "wss://eu.vmd1.dev", directoryIsFresh: true).origin, "wss://eu.vmd1.dev")
         settings.setCustomURL("wss://my.example.com")
-        XCTAssertEqual(settings.configuration.origin, "wss://my.example.com")
+        XCTAssertEqual(settings.configuration(directoryOrigin: "wss://eu.vmd1.dev").origin, "wss://my.example.com")
+        settings.setCustomURL("ws://bad.example.com")
+        XCTAssertNil(settings.configuration().origin, "an invalid custom address never silently falls back")
         let reloaded = RelaySettings(defaults: defaults)
         XCTAssertTrue(reloaded.enabled)
-        XCTAssertEqual(reloaded.customURL, "wss://my.example.com")
+        XCTAssertEqual(reloaded.customURL, "ws://bad.example.com")
     }
 
     func testTopicStoreRoundTripsAndRejectsBadData() {

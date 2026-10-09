@@ -11,11 +11,16 @@ import org.junit.Test
 
 class RelaySettingsTest {
     @Test
-    fun offByDefaultAndTheShippedPlaceholderNeverYieldsAnOrigin() {
+    fun offByDefaultAndTheBuiltInDefaultNeedsNoSetup() {
         val settings = RelaySettings(FakeSharedPreferences())
         assertFalse(settings.enabled.value)
+        assertEquals(RelaySettings.Configuration(false, null), settings.configuration())
         settings.setEnabled(true)
-        assertEquals("on, but no host configured: stays off", RelaySettings.Configuration(false, null), settings.configuration())
+        assertEquals(RelaySettings.Configuration(true, "wss://gossip.vmd1.dev"), settings.configuration())
+        assertEquals(RelaySettings.Configuration(true, "wss://eu.vmd1.dev"), settings.configuration("wss://eu.vmd1.dev", true))
+        assertEquals("held back while the first directory answer is pending", RelaySettings.Configuration(false, null), settings.configuration(awaitingDirectory = true))
+        settings.setCustomUrl("wss://my.relay.test")
+        assertEquals("custom wins and never waits", RelaySettings.Configuration(true, "wss://my.relay.test"), settings.configuration("wss://eu.vmd1.dev", true, awaitingDirectory = true))
     }
 
     @Test
@@ -32,7 +37,7 @@ class RelaySettingsTest {
     @Test
     fun anInvalidCustomAddressNeverReachesTheEngine() {
         val settings = RelaySettings(FakeSharedPreferences()).apply { setEnabled(true); setCustomUrl("ws://insecure.test") }
-        assertEquals(RelaySettings.Configuration(false, null), settings.configuration())
+        assertEquals(RelaySettings.Configuration(false, null), settings.configuration("wss://eu.vmd1.dev", true))
     }
 
     @Test
@@ -54,7 +59,7 @@ class RelaySettingsTest {
         fun line(enabled: Boolean = true, origin: Boolean = true, status: String = "joined", idle: Boolean = false, error: String? = null) =
             RelayStatusText.line(enabled, origin, status, idle, error)
         assertEquals("Off", line(enabled = false))
-        assertEquals("No relay host configured", line(origin = false))
+        assertEquals("The custom relay address is not valid", line(origin = false))
         assertEquals("Connected to the relay", line())
         assertEquals("Connecting…", line(status = "connecting"))
         assertEquals("Not connected, retrying", line(status = "disconnected"))
