@@ -80,6 +80,12 @@ impl Feature {
     }
 }
 
+/// Message types that never travel over a relayed link: bulk or latency-sensitive streams that the relay's rate
+/// limits would cut off anyway. Enforced by the engine on both receive and send.
+pub fn is_relay_restricted(kind: &str) -> bool {
+    kind.starts_with("screen.") || kind.starts_with("control.")
+}
+
 /// Which features are turned off on this device. Everything is on by default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeatureSettings {

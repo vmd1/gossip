@@ -96,7 +96,7 @@ Verification so far: Mac 182 tests (172 existing + 10 driving two real engines t
 See [`relay.md`](relay.md) for the protocol, the abuse model and the rollout.
 
 - Rewrite the relay server as a topic hub (`relay/`), with the hard limits and operational tooling a public service needs.
-- Add the relay client state machine to the core: join and auth, route tags, presence, `mesh.topic`, and the LAN-first fallback policy as core actions the shells execute.
+- Add the relay client state machine to the core: join and auth, route tags, presence, `mesh.topic`, and the LAN-first fallback policy as core actions the shells execute. **Done (2026-10-09):** `desktop/core/src/relay.rs`, `topic.rs`, engine integration, FFI (`relay_configure`, `relay_*` socket events, `set_topic`, `RelayConnect`/`RelaySend*`/`RelayClose`/`TopicChanged` actions).
 - Shell adapters: a WebSocket on Mac and Android, a Settings toggle, and Android foreground-service handling.
 - Milestone: two devices on different networks sync clipboard, battery and notifications through a staged relay; then a canary; then public. Windows and Linux inherit it.
 

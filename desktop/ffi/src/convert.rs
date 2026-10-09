@@ -100,7 +100,9 @@ impl From<CorePeer> for PeerInfo {
 }
 
 /// What the shell must do. Returned from every input method of [`crate::engine::GossipCore`].
-#[derive(Debug, Clone, uniffi::Enum)]
+///
+/// No `Debug`: `TopicChanged` carries the mesh topic secret, which must not end up in logs.
+#[derive(Clone, uniffi::Enum)]
 pub enum Action {
     /// Write these bytes (already length-framed) to the connection.
     Send {
@@ -152,6 +154,37 @@ pub enum Action {
         task: String,
         peer: Option<String>,
     },
+    /// Open a WebSocket to the relay at `url`, then call `relay_socket_opened` (or `relay_socket_closed` if it fails).
+    RelayConnect {
+        url: String,
+    },
+    /// Send this text message on the relay socket.
+    RelaySendText {
+        text: String,
+    },
+    /// Send this binary message on the relay socket.
+    RelaySendBinary {
+        bytes: Vec<u8>,
+    },
+    /// Close the relay socket. The core already considers it gone: do not report its close back.
+    RelayClose,
+    /// Joined the relay topic; `members` other devices are present.
+    RelayJoined {
+        members: u32,
+    },
+    /// The relay connection ended; every relayed link is gone.
+    RelayDown,
+    /// The relay refused or throttled this device: "upgrade_required", "denied", "disabled", "join_failed",
+    /// "rate_limited", ... (UI hint only; the core backs off by itself).
+    RelayError {
+        code: String,
+    },
+    /// The mesh topic changed: persist `secret` (32 bytes) and `epoch` in secure storage and pass them to
+    /// `set_topic` at the next start. Never log the secret.
+    TopicChanged {
+        secret: Vec<u8>,
+        epoch: u64,
+    },
 }
 
 pub(crate) fn actions(list: Vec<engine::Action>) -> Vec<Action> {
@@ -194,7 +227,20 @@ impl From<engine::Action> for Action {
                     task: due.task.to_owned(),
                     peer: due.peer,
                 },
+                E::RelayJoined { members } => Action::RelayJoined {
+                    members: u32::try_from(members).unwrap_or(u32::MAX),
+                },
+                E::RelayDown => Action::RelayDown,
+                E::RelayError { code } => Action::RelayError { code },
+                E::TopicChanged { secret, epoch } => Action::TopicChanged {
+                    secret: secret.expose().to_vec(),
+                    epoch,
+                },
             },
+            A::RelayConnect { url } => Action::RelayConnect { url },
+            A::RelaySendText { text } => Action::RelaySendText { text },
+            A::RelaySendBinary { bytes } => Action::RelaySendBinary { bytes },
+            A::RelayClose => Action::RelayClose,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use ed25519_dalek::SigningKey;
 use gossip_core::crypto::noise::StaticKeypair;
-use gossip_core::engine::{Core, Identity, PairingIntent};
+use gossip_core::engine::{Core, Identity, PairingIntent, RelayStatus};
 use gossip_core::env::{Env, SystemEnv};
 use gossip_core::features::{Feature, FeatureSettings};
 use gossip_core::trust::TrustSnapshot;
@@ -170,6 +170,70 @@ impl GossipCore {
     /// Whether a new dial to this device would be accepted (not live, not already being dialed).
     pub fn should_dial(&self, device_id: String) -> bool {
         self.lock().should_dial(&device_id)
+    }
+
+    // ---- Relay ------------------------------------------------------------------------------------------------
+
+    /// Turns the relay on or off. `origin` is the relay address, `wss://host` (`ws://` only for local development;
+    /// a trailing `/connect` is accepted). It must equal the relay's configured origin exactly, because it is signed
+    /// into every join. Local setting only: never gossiped. Returns `RelayConnect` when enabling with a topic.
+    pub fn relay_configure(&self, enabled: bool, origin: String) -> Vec<Action> {
+        actions(self.lock().relay_configure(enabled, &origin))
+    }
+
+    /// The relay WebSocket opened (after `RelayConnect`).
+    pub fn relay_socket_opened(&self) -> Vec<Action> {
+        actions(self.lock().relay_socket_opened())
+    }
+
+    /// The relay WebSocket closed or failed to open on its own. Do not call it for a socket you closed because the core
+    /// returned `RelayClose`.
+    pub fn relay_socket_closed(&self) -> Vec<Action> {
+        actions(self.lock().relay_socket_closed())
+    }
+
+    /// A text message arrived on the relay socket.
+    pub fn relay_text_received(&self, text: String) -> Vec<Action> {
+        actions(self.lock().relay_text_received(&text))
+    }
+
+    /// A binary message arrived on the relay socket.
+    pub fn relay_binary_received(&self, bytes: Vec<u8>) -> Vec<Action> {
+        actions(self.lock().relay_binary_received(&bytes))
+    }
+
+    /// "disabled", "no_topic", "disconnected", "connecting" or "joined".
+    pub fn relay_status(&self) -> String {
+        match self.lock().relay_status() {
+            RelayStatus::Disabled => "disabled",
+            RelayStatus::NoTopic => "no_topic",
+            RelayStatus::Disconnected => "disconnected",
+            RelayStatus::Connecting => "connecting",
+            RelayStatus::Joined => "joined",
+        }
+        .to_owned()
+    }
+
+    /// Whether the live link to this device goes through the relay (`screen.*` and `control.*` are refused on it).
+    pub fn is_relayed(&self, device_id: String) -> bool {
+        self.lock().is_relayed(&device_id)
+    }
+
+    /// How long a trusted peer must have had no live link before it is dialed through the relay (default 8000 ms).
+    pub fn set_lan_grace_ms(&self, ms: i64) {
+        self.lock().set_lan_grace_ms(ms);
+    }
+
+    /// Loads the persisted mesh topic at startup (from the last `TopicChanged`).
+    pub fn set_topic(&self, secret: Vec<u8>, epoch: u64) -> Result<Vec<Action>, GossipError> {
+        Ok(actions(
+            self.lock().set_topic(key32(&secret, "secret")?, epoch),
+        ))
+    }
+
+    /// The current topic epoch, if this mesh has a topic.
+    pub fn topic_epoch(&self) -> Option<u64> {
+        self.lock().topic_epoch()
     }
 
     // ---- Pairing and trust ------------------------------------------------------------------------------------

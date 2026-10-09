@@ -97,6 +97,10 @@ impl Net {
                     }
                 }
                 Action::Event(e) => self.nodes[n].events.push(e),
+                Action::RelayConnect { .. }
+                | Action::RelaySendText { .. }
+                | Action::RelaySendBinary { .. }
+                | Action::RelayClose => unreachable!("relay is not configured in these tests"),
             }
         }
     }
@@ -227,6 +231,8 @@ fn kinds(node: &Node) -> Vec<&'static str> {
             Event::TrustChanged(_) => "trust",
             Event::DeviceRevoked { .. } => "revoked",
             Event::ReconcileDue(_) => "reconcile",
+            Event::TopicChanged { .. } => "topic",
+            Event::RelayJoined { .. } | Event::RelayDown | Event::RelayError { .. } => "relay",
         })
         .collect()
 }
@@ -773,6 +779,7 @@ fn bytes_can_arrive_in_arbitrary_pieces() {
             }
             Action::Event(e) => net.nodes[n].events.push(e),
             Action::Close { .. } => panic!("unexpected close"),
+            _ => unreachable!("relay is not configured in these tests"),
         }
     }
     assert!(net.prompt(mac).is_some() && net.prompt(phone).is_some());

@@ -20,6 +20,11 @@ pub const TASKS: &[Task] = &[
         name: "trust.roster_update",
         interval_ms: 300_000,
     },
+    // Handled inside the engine (`Core` resends the topic itself); never surfaces as a `Due` event.
+    Task {
+        name: "mesh.topic",
+        interval_ms: 300_000,
+    },
     Task {
         name: "ble.beacon_key",
         interval_ms: 300_000,

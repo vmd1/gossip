@@ -28,10 +28,12 @@ use thiserror::Error;
 use crate::crypto::noise::{Handshake, NoiseError, Role, StaticKeypair, Transport};
 use crate::crypto::{pairing, sign};
 use crate::env::Env;
-use crate::features::FeatureSettings;
+use crate::features::{self, FeatureSettings};
 use crate::limits::{InboundRateLimiter, PendingFrameQueue};
 use crate::mesh::{self, SeenCache};
 use crate::reconcile::{Due, Reconciler};
+use crate::relay::{self, RelayClient, RelayOut, RelayState, RouteTag};
+use crate::topic::{Topic, TopicSecret};
 use crate::trust::{SelfEntry, TrustSnapshot, TrustStore, TrustedDevice};
 use crate::wire::envelope::{Envelope, DEFAULT_TTL};
 use crate::wire::frame::{self, FrameDecoder, MAX_HANDSHAKE_FRAME, MAX_TRANSPORT_FRAME};
@@ -50,6 +52,20 @@ pub const CONFIRMATION_TIMEOUT_MS: i64 = 90_000;
 pub const PAIRING_ARM_DURATION_MS: i64 = 300_000;
 /// Consecutive undecryptable frames tolerated before a connection is considered corrupt.
 const MAX_CONSECUTIVE_DECRYPT_FAILURES: u32 = 16;
+/// Connection ids at or above this are virtual links through the relay, allocated by the core. A shell must keep
+/// the ids it chooses for its own sockets below it.
+pub const VIRTUAL_CONN_BASE: ConnId = 1 << 63;
+/// How long a trusted peer must have had no live link before this device dials it through the relay.
+pub const DEFAULT_LAN_GRACE_MS: i64 = 8_000;
+/// The reconcile task the core answers itself (see `reconcile.rs`); it never surfaces as a `ReconcileDue`.
+const TOPIC_TASK: &str = "mesh.topic";
+/// Delay before a relayed dial to the same device is retried after a link that was up went down.
+const RELAY_REDIAL_DELAY_MS: i64 = 3_000;
+const RELAY_DIAL_BACKOFF_MAX_MS: i64 = 60_000;
+
+fn is_virtual(conn: ConnId) -> bool {
+    conn >= VIRTUAL_CONN_BASE
+}
 
 /// This device's long-term identity.
 pub struct Identity {
@@ -108,6 +124,20 @@ pub enum Action {
         conn: ConnId,
     },
     Event(Event),
+    /// Open a WebSocket to the relay at `url`, then report `relay_socket_opened` (or `relay_socket_closed` on failure).
+    RelayConnect {
+        url: String,
+    },
+    /// Send this text on the relay socket.
+    RelaySendText {
+        text: String,
+    },
+    /// Send this binary message on the relay socket.
+    RelaySendBinary {
+        bytes: Vec<u8>,
+    },
+    /// Close the relay socket. The core already considers it gone; do not report its close back.
+    RelayClose,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +179,34 @@ pub enum Event {
     },
     /// A reconciliation resend is due; the owning feature answers it.
     ReconcileDue(Due),
+    /// This device joined the relay topic; `members` other devices are present.
+    RelayJoined {
+        members: usize,
+    },
+    /// The relay connection ended (or was torn down); every relayed link is gone.
+    RelayDown,
+    /// The relay refused or throttled this device (`upgrade_required`, `denied`, `disabled`, `join_failed`, ...).
+    RelayError {
+        code: String,
+    },
+    /// The mesh topic changed: persist `secret` and `epoch` (and feed them to `set_topic` at the next start).
+    TopicChanged {
+        secret: TopicSecret,
+        epoch: u64,
+    },
+}
+
+/// Coarse relay state for UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatus {
+    Disabled,
+    /// Enabled but this mesh has no topic yet (no peer has ever connected).
+    NoTopic,
+    /// Waiting to (re)connect, e.g. in backoff.
+    Disconnected,
+    /// Socket opening or join in progress.
+    Connecting,
+    Joined,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -217,6 +275,8 @@ struct Conn {
     rate: InboundRateLimiter,
     queued: PendingFrameQueue,
     raw_pending: Option<RawPending>,
+    /// Set for a virtual link through the relay: the remote device's route tag.
+    relay_tag: Option<RouteTag>,
     opened_ms: i64,
     stage_since_ms: i64,
     last_received_ms: i64,
@@ -239,6 +299,7 @@ impl Conn {
             rate: InboundRateLimiter::default(),
             queued: PendingFrameQueue::default(),
             raw_pending: None,
+            relay_tag: None,
             opened_ms: now,
             stage_since_ms: now,
             last_received_ms: now,
@@ -261,6 +322,19 @@ pub struct Core<E: Env> {
     reconciler: Reconciler,
     armed_pairing: Option<(String, i64)>,
     prompt_active: bool,
+    relay: RelayClient,
+    topic: Option<Topic>,
+    /// Devices this device sent (or received) the current topic secret to/from; used by the revoke-bump rule.
+    topic_shared_with: HashSet<String>,
+    route_conns: HashMap<RouteTag, ConnId>,
+    relay_dialing: HashSet<String>,
+    next_virtual: ConnId,
+    lan_grace_ms: i64,
+    /// When a trusted device was first noticed with no live link.
+    link_absent_since: HashMap<String, i64>,
+    /// Per device: consecutive failed relayed dials and the earliest next attempt.
+    relay_retry: HashMap<String, (u32, i64)>,
+    allow_restricted_for_tests: bool,
 }
 
 type Out = Vec<Action>;
@@ -272,6 +346,7 @@ impl<E: Env> Core<E> {
         trust: TrustSnapshot,
         features: FeatureSettings,
     ) -> Self {
+        let relay = RelayClient::new(identity.signing.clone());
         Self {
             env,
             identity,
@@ -284,6 +359,16 @@ impl<E: Env> Core<E> {
             reconciler: Reconciler::default(),
             armed_pairing: None,
             prompt_active: false,
+            relay,
+            topic: None,
+            topic_shared_with: HashSet::new(),
+            route_conns: HashMap::new(),
+            relay_dialing: HashSet::new(),
+            next_virtual: VIRTUAL_CONN_BASE,
+            lan_grace_ms: DEFAULT_LAN_GRACE_MS,
+            link_absent_since: HashMap::new(),
+            relay_retry: HashMap::new(),
+            allow_restricted_for_tests: false,
         }
     }
 
@@ -335,9 +420,16 @@ impl<E: Env> Core<E> {
         self.peers.contains_key(device_id)
     }
 
-    /// Whether a new dial to `device_id` would be accepted (not live, not already being dialed).
+    /// Whether the live link to `device_id` goes through the relay. Relayed links refuse `screen.*` and `control.*`.
+    pub fn is_relayed(&self, device_id: &str) -> bool {
+        self.peers.get(device_id).is_some_and(|c| is_virtual(*c))
+    }
+
+    /// Whether a new (LAN) dial to `device_id` would be accepted: not already being dialed, and not live over a
+    /// direct link. A relayed link does not count, so the shell keeps trying LAN and the first success replaces it.
     pub fn should_dial(&self, device_id: &str) -> bool {
-        !self.peers.contains_key(device_id) && !self.dialing.contains(device_id)
+        !self.dialing.contains(device_id)
+            && !self.peers.get(device_id).is_some_and(|c| !is_virtual(*c))
     }
 
     /// A fresh unsigned envelope from this device: new id, current time, default ttl.
@@ -350,7 +442,7 @@ impl<E: Env> Core<E> {
 
     /// An inbound connection was accepted.
     pub fn connection_accepted(&mut self, conn: ConnId) -> Result<Out, DialError> {
-        if self.conns.contains_key(&conn) {
+        if self.conns.contains_key(&conn) || is_virtual(conn) {
             return Err(DialError::DuplicateConnection);
         }
         let now = self.env.now_ms();
@@ -369,17 +461,43 @@ impl<E: Env> Core<E> {
         remote_static: [u8; 32],
         pairing: Option<PairingIntent>,
     ) -> Result<Out, DialError> {
+        if is_virtual(conn) {
+            return Err(DialError::DuplicateConnection);
+        }
+        self.dial_inner(conn, target, remote_static, pairing, None)
+    }
+
+    fn dial_inner(
+        &mut self,
+        conn: ConnId,
+        target: &str,
+        remote_static: [u8; 32],
+        pairing: Option<PairingIntent>,
+        relay_tag: Option<RouteTag>,
+    ) -> Result<Out, DialError> {
         if self.conns.contains_key(&conn) {
             return Err(DialError::DuplicateConnection);
         }
-        if self.peers.contains_key(target) {
+        // A direct dial may replace a relayed link; nothing replaces a direct link, and a relayed dial needs none.
+        let blocked = match (self.peers.get(target), relay_tag) {
+            (Some(existing), None) => !is_virtual(*existing),
+            (Some(_), Some(_)) => true,
+            (None, _) => false,
+        };
+        if blocked {
             return Err(DialError::AlreadyConnected);
         }
-        if !self.dialing.insert(target.to_owned()) {
+        let set = if relay_tag.is_some() {
+            &mut self.relay_dialing
+        } else {
+            &mut self.dialing
+        };
+        if !set.insert(target.to_owned()) {
             return Err(DialError::AlreadyDialing);
         }
         let now = self.env.now_ms();
         let mut c = Conn::new(Role::Initiator, Stage::AwaitingAck, now);
+        c.relay_tag = relay_tag;
         c.dial_target = Some(target.to_owned());
         c.pairing_intent = pairing.is_some();
         let identity = self.identity.handshake_identity(pairing.map(|p| p.token));
@@ -388,12 +506,15 @@ impl<E: Env> Core<E> {
         let msg1 = match hs.write_message1(&identity.encode(), ephemeral) {
             Ok(m) => m,
             Err(e) => {
-                self.dialing.remove(target);
+                self.release_dial(target, relay_tag.is_some());
                 return Err(DialError::Handshake(e));
             }
         };
         c.handshake = Some(hs);
         self.conns.insert(conn, c);
+        if let Some(tag) = relay_tag {
+            self.route_conns.insert(tag, conn);
+        }
         let id = self.env.new_uuid();
         let hello = handshake::handshake_envelope(
             handshake::HELLO,
@@ -403,10 +524,42 @@ impl<E: Env> Core<E> {
             now,
             &msg1,
         );
-        Ok(vec![Action::Send {
-            conn,
-            bytes: frame::encode(&hello.encode()),
-        }])
+        let mut out = Vec::new();
+        self.emit_send(conn, frame::encode(&hello.encode()), &mut out);
+        Ok(out)
+    }
+
+    fn release_dial(&mut self, target: &str, relayed: bool) {
+        if relayed {
+            self.relay_dialing.remove(target);
+        } else {
+            self.dialing.remove(target);
+        }
+    }
+
+    /// Queues `bytes` (already length-framed) for a connection: a plain `Send` for a shell socket, relay frames for
+    /// a virtual link.
+    fn emit_send(&self, conn: ConnId, bytes: Vec<u8>, out: &mut Out) {
+        if !is_virtual(conn) {
+            out.push(Action::Send { conn, bytes });
+            return;
+        }
+        let Some(tag) = self.conns.get(&conn).and_then(|c| c.relay_tag) else {
+            return;
+        };
+        if !self.relay.is_joined() {
+            return;
+        }
+        for frame in self.relay.frames_for(&tag, &bytes) {
+            out.push(Action::RelaySendBinary { bytes: frame });
+        }
+    }
+
+    /// Virtual links have no socket for the shell to close.
+    fn emit_close(conn: ConnId, out: &mut Out) {
+        if !is_virtual(conn) {
+            out.push(Action::Close { conn });
+        }
     }
 
     /// The shell lost the connection (or the user closed it).
@@ -427,7 +580,7 @@ impl<E: Env> Core<E> {
 
     /// Removes a connection, emitting the events that follow from it. `close` also tells the shell to close it.
     fn drop_conn(&mut self, conn: ConnId, close: bool, out: &mut Out) {
-        let Some(c) = self.conns.remove(&conn) else {
+        let Some(c) = self.remove_conn_entry(conn) else {
             return;
         };
         if c.stage == Stage::AwaitingConfirm {
@@ -435,7 +588,10 @@ impl<E: Env> Core<E> {
             out.push(Action::Event(Event::PairingPromptCancelled { conn }));
         }
         if let Some(target) = &c.dial_target {
-            self.dialing.remove(target);
+            self.release_dial(target, c.relay_tag.is_some());
+            if c.relay_tag.is_some() {
+                self.note_relay_dial_ended(target, c.stage == Stage::Live);
+            }
         }
         if c.stage == Stage::Live {
             if let Some(peer) = &c.peer {
@@ -448,7 +604,30 @@ impl<E: Env> Core<E> {
             }
         }
         if close {
-            out.push(Action::Close { conn });
+            Self::emit_close(conn, out);
+        }
+    }
+
+    /// Removes a connection from the tables (not an event source: callers emit what follows).
+    fn remove_conn_entry(&mut self, conn: ConnId) -> Option<Conn> {
+        let c = self.conns.remove(&conn)?;
+        if let Some(tag) = c.relay_tag {
+            if self.route_conns.get(&tag) == Some(&conn) {
+                self.route_conns.remove(&tag);
+            }
+        }
+        Some(c)
+    }
+
+    /// A relayed dial ended: back off before the next one so a flapping link cannot cause a dial storm.
+    fn note_relay_dial_ended(&mut self, target: &str, was_live: bool) {
+        let now = self.env.now_ms();
+        let entry = self.relay_retry.entry(target.to_owned()).or_insert((0, 0));
+        if was_live {
+            *entry = (0, now + RELAY_REDIAL_DELAY_MS);
+        } else {
+            let wait = (5_000i64 << entry.0.min(8)).min(RELAY_DIAL_BACKOFF_MAX_MS);
+            *entry = (entry.0 + 1, now + wait);
         }
     }
 
@@ -594,10 +773,7 @@ impl<E: Env> Core<E> {
                 now,
                 &msg2,
             );
-            out.push(Action::Send {
-                conn,
-                bytes: frame::encode(&ack.encode()),
-            });
+            self.emit_send(conn, frame::encode(&ack.encode()), out);
             Ok(())
         })();
         match result {
@@ -667,7 +843,10 @@ impl<E: Env> Core<E> {
         }
 
         // Unknown device: the responder needs an armed pairing and the right token; the initiator needs to have
-        // started a pairing itself. Either way only one prompt may be open.
+        // started a pairing itself. Either way only one prompt may be open. Pairing never happens over the relay.
+        if self.conns.get(&conn).is_some_and(|c| c.relay_tag.is_some()) {
+            return self.drop_conn(conn, true, out);
+        }
         let allowed = match role {
             Role::Responder => self.pairing_allows(presented.as_deref()),
             Role::Initiator => pairing_intent,
@@ -713,16 +892,33 @@ impl<E: Env> Core<E> {
     /// from the authenticated handshake is recorded, and presence plus on-connect reconciliation start.
     fn promote(&mut self, conn: ConnId, newly_paired: bool, out: &mut Out) {
         let now = self.env.now_ms();
-        let Some(c) = self.conns.get_mut(&conn) else {
+        let Some(c) = self.conns.get(&conn) else {
             return;
         };
         let Some(peer) = c.peer.clone() else { return };
+        // LAN first: a relayed link never displaces a direct one (the shell would never see a flap, so just forget it).
+        if c.relay_tag.is_some()
+            && self
+                .peers
+                .get(&peer.device_id)
+                .is_some_and(|e| !is_virtual(*e))
+        {
+            return self.drop_conn(conn, false, out);
+        }
+        let Some(c) = self.conns.get_mut(&conn) else {
+            return;
+        };
         c.stage = Stage::Live;
         c.stage_since_ms = now;
         c.last_received_ms = now;
         c.last_heartbeat_ms = now;
+        let relayed = c.relay_tag.is_some();
         if let Some(target) = c.dial_target.clone() {
-            self.dialing.remove(&target);
+            self.release_dial(&target, relayed);
+        }
+        self.link_absent_since.remove(&peer.device_id);
+        if relayed {
+            self.relay_retry.remove(&peer.device_id);
         }
 
         if self
@@ -735,12 +931,12 @@ impl<E: Env> Core<E> {
         if let Some(stale) = self.peers.insert(peer.device_id.clone(), conn) {
             if stale != conn {
                 // Replace the old connection without announcing a disconnect/connect flap for the same device.
-                if let Some(old) = self.conns.remove(&stale) {
+                if let Some(old) = self.remove_conn_entry(stale) {
                     if let Some(t) = &old.dial_target {
-                        self.dialing.remove(t);
+                        self.release_dial(t, old.relay_tag.is_some());
                     }
                 }
-                out.push(Action::Close { conn: stale });
+                Self::emit_close(stale, out);
             }
         }
 
@@ -752,8 +948,15 @@ impl<E: Env> Core<E> {
         // Presence, then the on-connect reconciliation sends for this peer.
         let presence = self.new_envelope("presence.online").broadcast();
         let _ = self.send_into(presence, &mut Vec::new(), out);
+        // The mesh topic is the core's own reconcile task: the first device with a peer mints it, and every fresh
+        // connect resends the current one.
+        if !self.ensure_topic(out) {
+            self.send_topic_to(&peer.device_id, out);
+        }
         for due in self.reconciler.on_peer_connected(&peer.device_id) {
-            out.push(Action::Event(Event::ReconcileDue(due)));
+            if due.task != TOPIC_TASK {
+                out.push(Action::Event(Event::ReconcileDue(due)));
+            }
         }
 
         // Frames that arrived while the user was confirming are decrypted now, in order.
@@ -805,7 +1008,7 @@ impl<E: Env> Core<E> {
         };
         // A raw follow-up frame armed by the previous metadata envelope: not JSON, so check before decoding.
         if let Some(pending) = c.raw_pending.take() {
-            return self.finish_raw(pending, plaintext, &arrived_from, out);
+            return self.finish_raw(conn, pending, plaintext, out);
         }
         // One undecodable message must not take the connection (and what is relayed over it) down.
         if let Ok(envelope) = Envelope::decode(&plaintext) {
@@ -880,7 +1083,7 @@ impl<E: Env> Core<E> {
             return;
         }
         if routing.deliver {
-            self.deliver(&envelope, None, out);
+            self.deliver(conn, &envelope, None, out);
         }
         for target in &routing.forward_to {
             let forwarded = envelope.with_forward_ttl(routing.forward_ttl);
@@ -888,13 +1091,7 @@ impl<E: Env> Core<E> {
         }
     }
 
-    fn finish_raw(
-        &mut self,
-        pending: RawPending,
-        raw: Vec<u8>,
-        _arrived_from: &str,
-        out: &mut Out,
-    ) {
+    fn finish_raw(&mut self, conn: ConnId, pending: RawPending, raw: Vec<u8>, out: &mut Out) {
         if pending.discard {
             return;
         }
@@ -904,7 +1101,7 @@ impl<E: Env> Core<E> {
         }
         let ttl = pending.envelope.ttl - 1;
         if pending.deliver {
-            self.deliver(&pending.envelope, Some(raw.clone()), out);
+            self.deliver(conn, &pending.envelope, Some(raw.clone()), out);
         }
         for target in &pending.forward_to {
             let forwarded = pending.envelope.with_forward_ttl(ttl);
@@ -913,10 +1110,15 @@ impl<E: Env> Core<E> {
     }
 
     /// Handles the infrastructure types itself; everything else goes to the feature handlers.
-    fn deliver(&mut self, envelope: &Envelope, raw: Option<Vec<u8>>, out: &mut Out) {
+    fn deliver(&mut self, conn: ConnId, envelope: &Envelope, raw: Option<Vec<u8>>, out: &mut Out) {
+        // Bulk and latency-sensitive features never run over the relay, whatever the sender claims.
+        if is_virtual(conn) && features::is_relay_restricted(&envelope.kind) {
+            return;
+        }
         match envelope.kind.as_str() {
             "trust.roster_update" => return self.handle_roster_update(envelope, out),
             "trust.revoke" => return self.handle_revoke(envelope, out),
+            "mesh.topic" => return self.handle_mesh_topic(conn, envelope, out),
             _ => {}
         }
         // A feature turned off on this device never reaches its handlers.
@@ -965,6 +1167,14 @@ impl<E: Env> Core<E> {
 
     fn handle_revoke(&mut self, envelope: &Envelope, out: &mut Out) {
         let now = self.env.now_ms();
+        let named = envelope
+            .payload
+            .get("deviceId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let already_revoked = named
+            .as_deref()
+            .is_some_and(|d| self.trust.revoked_at(d).is_some());
         let Some(device_id) = self.trust.apply_revoke(
             &envelope.payload,
             envelope.ts,
@@ -979,6 +1189,11 @@ impl<E: Env> Core<E> {
         }));
         if let Some(conn) = self.peers.get(&device_id).copied() {
             self.drop_conn(conn, true, out);
+        }
+        // The revoked device may know the topic secret: move the mesh to a fresh one it never gets. Only the first
+        // application counts, so a duplicate or resent revoke is a no-op.
+        if !already_revoked {
+            self.bump_topic(out);
         }
     }
 
@@ -999,10 +1214,14 @@ impl<E: Env> Core<E> {
     pub fn revoke_device(&mut self, device_id: &str) -> Out {
         let mut out = Vec::new();
         let now = self.env.now_ms();
+        let already_revoked = self.trust.revoked_at(device_id).is_some();
         self.trust.revoke(device_id, now);
         out.push(Action::Event(Event::TrustChanged(self.trust.snapshot())));
         if let Some(conn) = self.peers.get(device_id).copied() {
             self.drop_conn(conn, true, &mut out);
+        }
+        if !already_revoked {
+            self.bump_topic(&mut out);
         }
         let revoke =
             self.new_envelope("trust.revoke")
@@ -1096,6 +1315,12 @@ impl<E: Env> Core<E> {
     ) -> Result<(), SendError> {
         let envelope = self.sign_for_origination(envelope.clone())?;
         let conn = *self.peers.get(device_id).ok_or(SendError::NotConnected)?;
+        if is_virtual(conn)
+            && features::is_relay_restricted(&envelope.kind)
+            && !self.allow_restricted_for_tests
+        {
+            return Err(SendError::NotConnected);
+        }
         let c = self.conns.get_mut(&conn).ok_or(SendError::NotConnected)?;
         let transport = c.transport.as_mut().ok_or(SendError::NotConnected)?;
         let ciphertext = transport
@@ -1112,7 +1337,7 @@ impl<E: Env> Core<E> {
             }
             bytes.extend_from_slice(&frame::encode(&raw_ct));
         }
-        out.push(Action::Send { conn, bytes });
+        self.emit_send(conn, bytes, out);
         Ok(())
     }
 
@@ -1127,7 +1352,11 @@ impl<E: Env> Core<E> {
     ) -> Result<Out, SendError> {
         let mut out = Vec::new();
         let envelope = self.sign_for_origination(envelope)?;
-        self.send_envelope_to(device_id, &envelope, raw, &mut out)?;
+        // Also lets tests put a relay-restricted kind on a relayed link, to check the receiver refuses it.
+        self.allow_restricted_for_tests = true;
+        let sent = self.send_envelope_to(device_id, &envelope, raw, &mut out);
+        self.allow_restricted_for_tests = false;
+        sent?;
         Ok(out)
     }
 
@@ -1146,6 +1375,10 @@ impl<E: Env> Core<E> {
         {
             self.armed_pairing = None;
         }
+
+        let relay_outs = self.relay.tick(now, &mut self.env);
+        self.apply_relay(relay_outs, &mut out);
+        self.relay_poll(&mut out);
 
         let mut to_close = Vec::new();
         let mut to_ping = Vec::new();
@@ -1193,9 +1426,387 @@ impl<E: Env> Core<E> {
         }
 
         for due in self.reconciler.tick(now, !self.peers.is_empty()) {
-            out.push(Action::Event(Event::ReconcileDue(due)));
+            if due.task == TOPIC_TASK {
+                self.resend_topic_to_all(&mut out);
+            } else {
+                out.push(Action::Event(Event::ReconcileDue(due)));
+            }
         }
         out
+    }
+
+    // ---- Relay -------------------------------------------------------------------------------------------------
+
+    /// Turns the relay on or off. `origin` is the relay's address (`wss://host`, also accepted with a trailing
+    /// `/connect`); it is signed into joins, so it must be exactly what the relay is configured with. Never gossiped.
+    pub fn relay_configure(&mut self, enabled: bool, origin: &str) -> Out {
+        let mut out = Vec::new();
+        let now = self.env.now_ms();
+        let outs = self.relay.configure(enabled, origin, now);
+        self.apply_relay(outs, &mut out);
+        self.relay_poll(&mut out);
+        out
+    }
+
+    /// How long a trusted peer must have had no live link before it is dialed through the relay (default 8 s).
+    pub fn set_lan_grace_ms(&mut self, ms: i64) {
+        self.lan_grace_ms = ms.max(0);
+    }
+
+    pub fn relay_status(&self) -> RelayStatus {
+        if !self.relay.is_enabled() {
+            return RelayStatus::Disabled;
+        }
+        if !self.relay.has_topic() {
+            return RelayStatus::NoTopic;
+        }
+        match self.relay.state() {
+            RelayState::Disconnected => RelayStatus::Disconnected,
+            RelayState::Joined => RelayStatus::Joined,
+            _ => RelayStatus::Connecting,
+        }
+    }
+
+    /// The relay WebSocket opened (after `RelayConnect`).
+    pub fn relay_socket_opened(&mut self) -> Out {
+        let now = self.env.now_ms();
+        let outs = self.relay.socket_opened(now);
+        let mut out = Vec::new();
+        self.apply_relay(outs, &mut out);
+        out
+    }
+
+    /// The relay WebSocket closed or failed to open, without the core having asked (a `RelayClose` needs no report).
+    pub fn relay_socket_closed(&mut self) -> Out {
+        let now = self.env.now_ms();
+        let outs = self.relay.socket_closed(now, &mut self.env);
+        let mut out = Vec::new();
+        self.apply_relay(outs, &mut out);
+        out
+    }
+
+    /// A text message arrived on the relay socket.
+    pub fn relay_text_received(&mut self, text: &str) -> Out {
+        let now = self.env.now_ms();
+        let outs = self.relay.text_received(now, &mut self.env, text);
+        let mut out = Vec::new();
+        self.apply_relay(outs, &mut out);
+        self.relay_poll(&mut out);
+        out
+    }
+
+    /// A binary message arrived on the relay socket.
+    pub fn relay_binary_received(&mut self, bytes: &[u8]) -> Out {
+        let outs = self.relay.binary_received(bytes);
+        let mut out = Vec::new();
+        self.apply_relay(outs, &mut out);
+        out
+    }
+
+    fn apply_relay(&mut self, outs: Vec<RelayOut>, out: &mut Out) {
+        for o in outs {
+            match o {
+                RelayOut::Connect { url } => out.push(Action::RelayConnect { url }),
+                RelayOut::SendText(text) => out.push(Action::RelaySendText { text }),
+                RelayOut::SendBinary(bytes) => out.push(Action::RelaySendBinary { bytes }),
+                RelayOut::Close => out.push(Action::RelayClose),
+                RelayOut::Joined { members, .. } => {
+                    out.push(Action::Event(Event::RelayJoined {
+                        members: members.len(),
+                    }));
+                }
+                // Dialing waits for the LAN grace; `relay_poll` decides.
+                RelayOut::PeerSeen(_) => {}
+                RelayOut::PeerGone(tag) => {
+                    if let Some(conn) = self.route_conns.get(&tag).copied() {
+                        self.drop_conn(conn, false, out);
+                    }
+                }
+                RelayOut::Error(code) => out.push(Action::Event(Event::RelayError { code })),
+                RelayOut::Deliver { src, payload } => self.relay_deliver(src, payload, out),
+                RelayOut::Down => {
+                    let virtuals: Vec<ConnId> = self
+                        .conns
+                        .keys()
+                        .copied()
+                        .filter(|c| is_virtual(*c))
+                        .collect();
+                    for conn in virtuals {
+                        self.drop_conn(conn, false, out);
+                    }
+                    out.push(Action::Event(Event::RelayDown));
+                }
+            }
+        }
+    }
+
+    /// Connects the relay when allowed and dials peers that need it.
+    fn relay_poll(&mut self, out: &mut Out) {
+        let now = self.env.now_ms();
+        if let Some(connect) = self.relay.begin_connect(now) {
+            self.apply_relay(vec![connect], out);
+        }
+        self.relay_dial_pass(out);
+    }
+
+    /// The route tag a trusted device has in the current topic, once its signing key is known.
+    fn tag_of(&self, device: &TrustedDevice) -> Option<RouteTag> {
+        let topic = self.topic.as_ref()?;
+        let key: [u8; 32] = B64
+            .decode(device.signing_public_key.as_deref()?)
+            .ok()?
+            .try_into()
+            .ok()?;
+        Some(relay::route_tag_for_key(&topic.keys().topic_id, &key))
+    }
+
+    fn device_for_tag(&self, tag: &RouteTag) -> Option<String> {
+        self.trust
+            .devices()
+            .iter()
+            .find(|d| self.tag_of(d).as_ref() == Some(tag))
+            .map(|d| d.device_id.clone())
+    }
+
+    /// Frames from a relay member. A tag we have no link for starts a responder link, but only for a trusted device
+    /// with no direct link; everything else is dropped.
+    fn relay_deliver(&mut self, src: RouteTag, payload: Vec<u8>, out: &mut Out) {
+        let conn = match self.route_conns.get(&src).copied() {
+            Some(conn) => conn,
+            None => {
+                let Some(device) = self.device_for_tag(&src) else {
+                    return;
+                };
+                if self.peers.get(&device).is_some_and(|c| !is_virtual(*c)) {
+                    return;
+                }
+                let conn = self.alloc_virtual();
+                let now = self.env.now_ms();
+                let mut c = Conn::new(Role::Responder, Stage::AwaitingHello, now);
+                c.handshake = Some(Handshake::responder(&self.identity.noise, &[]));
+                c.relay_tag = Some(src);
+                self.conns.insert(conn, c);
+                self.route_conns.insert(src, conn);
+                conn
+            }
+        };
+        let more = self.bytes_received(conn, &payload);
+        out.extend(more);
+    }
+
+    fn alloc_virtual(&mut self) -> ConnId {
+        let id = self.next_virtual;
+        self.next_virtual = if id == ConnId::MAX {
+            VIRTUAL_CONN_BASE
+        } else {
+            id + 1
+        };
+        id
+    }
+
+    /// LAN first: dial a trusted peer over the relay only when it is present on the relay, has had no live link for
+    /// the grace period, and this device has the lower id (so exactly one side initiates).
+    fn relay_dial_pass(&mut self, out: &mut Out) {
+        if !self.relay.is_joined() {
+            self.link_absent_since.clear();
+            return;
+        }
+        let now = self.env.now_ms();
+        let mut to_dial = Vec::new();
+        for d in self.trust.devices() {
+            if self.trust.is_provisional(&d.device_id) || d.device_id == self.identity.device_id {
+                continue;
+            }
+            let Some(tag) = self.tag_of(d) else { continue };
+            if self.peers.contains_key(&d.device_id) {
+                self.link_absent_since.remove(&d.device_id);
+                continue;
+            }
+            if !self.relay.members().contains(&tag) {
+                continue;
+            }
+            let since = *self
+                .link_absent_since
+                .entry(d.device_id.clone())
+                .or_insert(now);
+            if now - since < self.lan_grace_ms
+                || self.identity.device_id > d.device_id
+                || self.dialing.contains(&d.device_id)
+                || self.relay_dialing.contains(&d.device_id)
+                || self.route_conns.contains_key(&tag)
+                || self
+                    .relay_retry
+                    .get(&d.device_id)
+                    .is_some_and(|(_, at)| now < *at)
+            {
+                continue;
+            }
+            let Some(key) = B64
+                .decode(&d.public_key)
+                .ok()
+                .and_then(|k| <[u8; 32]>::try_from(k).ok())
+            else {
+                continue;
+            };
+            to_dial.push((d.device_id.clone(), key, tag));
+        }
+        for (device, key, tag) in to_dial {
+            let conn = self.alloc_virtual();
+            if let Ok(actions) = self.dial_inner(conn, &device, key, None, Some(tag)) {
+                out.extend(actions);
+            }
+        }
+    }
+
+    // ---- Mesh topic --------------------------------------------------------------------------------------------
+
+    /// Loads the persisted topic at startup (no event: the shell already has it).
+    pub fn set_topic(&mut self, secret: [u8; 32], epoch: u64) -> Out {
+        let mut out = Vec::new();
+        self.topic = Some(Topic::new(secret, epoch));
+        self.topic_shared_with.clear();
+        self.sync_relay_topic(&mut out);
+        out
+    }
+
+    pub fn topic_epoch(&self) -> Option<u64> {
+        self.topic.as_ref().map(|t| t.epoch)
+    }
+
+    /// The public rendezvous name of the current topic (what the relay sees), for comparing meshes without
+    /// exposing the secret.
+    pub fn topic_id(&self) -> Option<[u8; 32]> {
+        self.topic.as_ref().map(|t| t.keys().topic_id)
+    }
+
+    fn sync_relay_topic(&mut self, out: &mut Out) {
+        let now = self.env.now_ms();
+        let keys = self.topic.as_ref().map(Topic::keys);
+        let outs = self.relay.set_topic(keys, now);
+        self.apply_relay(outs, out);
+        self.relay_poll(out);
+    }
+
+    /// The topic changed: persist it, rejoin the relay under it and hand it to every connected peer except
+    /// `except` (the device it came from).
+    fn topic_changed(&mut self, except: Option<&str>, out: &mut Out) {
+        let Some(topic) = &self.topic else { return };
+        out.push(Action::Event(Event::TopicChanged {
+            secret: TopicSecret::new(*topic.secret.expose()),
+            epoch: topic.epoch,
+        }));
+        self.sync_relay_topic(out);
+        let peers: Vec<String> = self
+            .peers
+            .keys()
+            .filter(|p| Some(p.as_str()) != except)
+            .cloned()
+            .collect();
+        for p in peers {
+            self.send_topic_to(&p, out);
+        }
+    }
+
+    /// The first device with a trusted peer mints the topic (random secret, epoch 1). Returns whether it did.
+    fn ensure_topic(&mut self, out: &mut Out) -> bool {
+        if self.topic.is_some()
+            || !self
+                .trust
+                .devices()
+                .iter()
+                .any(|d| !self.trust.is_provisional(&d.device_id))
+        {
+            return false;
+        }
+        let secret = self.env.random_array::<32>();
+        self.topic = Some(Topic::new(secret, 1));
+        self.topic_shared_with.clear();
+        self.topic_changed(None, out);
+        true
+    }
+
+    /// Moves the mesh to a fresh secret at the next epoch, which only non-revoked devices are given.
+    fn bump_topic(&mut self, out: &mut Out) {
+        let Some(epoch) = self.topic.as_ref().map(|t| t.epoch) else {
+            return;
+        };
+        let secret = self.env.random_array::<32>();
+        self.topic = Some(Topic::new(secret, epoch.saturating_add(1)));
+        self.topic_shared_with.clear();
+        self.topic_changed(None, out);
+    }
+
+    /// Sends the current topic to one connected, trusted, non-revoked peer (targeted, ttl 0: never relayed on).
+    fn send_topic_to(&mut self, device_id: &str, out: &mut Out) {
+        let Some(topic) = &self.topic else { return };
+        if !self.peers.contains_key(device_id)
+            || !self.trust.is_trusted(device_id)
+            || self.trust.revoked_at(device_id).is_some()
+        {
+            return;
+        }
+        let payload = topic.payload();
+        let envelope = self
+            .new_envelope("mesh.topic")
+            .to(device_id)
+            .with_ttl(0)
+            .with_payload(payload);
+        if self
+            .send_envelope_to(device_id, &envelope, None, out)
+            .is_ok()
+        {
+            self.topic_shared_with.insert(device_id.to_owned());
+        }
+    }
+
+    fn resend_topic_to_all(&mut self, out: &mut Out) {
+        let peers: Vec<String> = self.peers.keys().cloned().collect();
+        for p in peers {
+            self.send_topic_to(&p, out);
+        }
+    }
+
+    /// `mesh.topic` from a directly connected peer. Idempotent: only a strictly newer topic changes anything.
+    fn handle_mesh_topic(&mut self, conn: ConnId, envelope: &Envelope, out: &mut Out) {
+        let from = envelope.sender_id.as_str();
+        let direct = self
+            .conns
+            .get(&conn)
+            .and_then(|c| c.peer.as_ref())
+            .is_some_and(|p| p.device_id == from);
+        if !direct
+            || envelope.broadcast
+            || envelope.recipient_id.as_deref() != Some(self.identity.device_id.as_str())
+            || !self.trust.is_trusted(from)
+            || self.trust.revoked_at(from).is_some()
+        {
+            return;
+        }
+        let Some(incoming) = Topic::from_payload(&envelope.payload) else {
+            return;
+        };
+        let ordering = self.topic.as_ref().map(|cur| incoming.rank_cmp(cur));
+        match ordering {
+            None | Some(std::cmp::Ordering::Greater) => {
+                self.topic = Some(incoming);
+                self.topic_shared_with.clear();
+                self.topic_shared_with.insert(from.to_owned());
+                self.topic_changed(Some(from), out);
+                // Adopting a secret a revoked device also holds hands it the new mesh: bump past it.
+                if self
+                    .topic_shared_with
+                    .iter()
+                    .any(|d| self.trust.revoked_at(d).is_some())
+                {
+                    self.bump_topic(out);
+                }
+            }
+            Some(std::cmp::Ordering::Equal) => {
+                self.topic_shared_with.insert(from.to_owned());
+            }
+            // The sender is behind: tell it ours so it converges without waiting for the periodic resync.
+            Some(std::cmp::Ordering::Less) => self.send_topic_to(from, out),
+        }
     }
 }
 

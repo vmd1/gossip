@@ -29,3 +29,5 @@ system-env = ["dep:getrandom"]
 
 [dev-dependencies]
 hex = "0.4"
+# Only for tests/relay_live.rs (an #[ignore]d test against a real relay).
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

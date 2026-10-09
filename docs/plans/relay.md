@@ -1,6 +1,6 @@
 # Plan: public relay (off-LAN connectivity)
 
-Status: proposal (2026-10-09). Implements the roadmap's "Off-LAN connectivity" item. Sequenced after the Rust core has been adopted on Mac and Android (see [`desktop-clients.md`](desktop-clients.md), Phases 1 and 2). Replaces the earlier idea of a pairwise byte-bridging relay and the tailcat signaling mailbox as the first off-LAN transport.
+Status: relay server and core client implemented (2026-10-09); shell adapters (Mac `URLSessionWebSocketTask`, Android OkHttp, Settings, rollout) pending. Originally a proposal. Implements the roadmap's "Off-LAN connectivity" item. Sequenced after the Rust core has been adopted on Mac and Android (see [`desktop-clients.md`](desktop-clients.md), Phases 1 and 2). Replaces the earlier idea of a pairwise byte-bridging relay and the tailcat signaling mailbox as the first off-LAN transport.
 
 ## Decisions
 
@@ -98,6 +98,16 @@ The realistic abuse is therefore **bandwidth and resource theft**: someone using
 - A monthly budget cap and an alert at partial spend.
 - Fuzzing for the control-message parser and frame handling; load tests that exercise every limit, including the shedding behavior; a documented threat model in `docs/`.
 - Deployed behind a staged rollout: staging, then an allowlisted canary, then public.
+
+## Implementation notes (2026-10-09)
+
+Where the implementation refines the sketch above (the conformance vectors in `schema/conformance/relay-vectors.json` are authoritative):
+
+- `relay.join` carries a `verifier` = `SHA-256(topicAuthKey)` and `proof = HMAC-SHA256(key = verifier, msg = nonce)`, because the relay stores only the verifier and cannot check an HMAC keyed by `topicAuthKey`. `relay.challenge` carries `powBits`; `relay.joined` carries the device's own `routeTag`. `pow_required`/`pow_invalid` leave the socket open for a retry.
+- The client is `desktop/core/src/relay.rs` (`RelayClient`, sans-IO) wired into `Core` (`engine.rs`): relayed peers are virtual connections (ids at or above `VIRTUAL_CONN_BASE`) running the same Noise_IK code as TCP links. Dial policy, grace (8 s), the lower-`deviceId`-initiates tie-break and the screen/control refusal are core logic. `mesh.topic` is `desktop/core/src/topic.rs` plus the engine, reconciled every 5 minutes inside the core (it never surfaces as `ReconcileDue`).
+- Route tags for trusted peers are derived from their signing keys, so a peer whose signing key is not yet known is skipped.
+- A relayed link needs no shell socket: the core returns `RelayConnect`, `RelaySendText`, `RelaySendBinary` and `RelayClose`, and `relay_*` input methods for socket events.
+- Verified against a real relay in `desktop/core/tests/relay_live.rs` (ignored by default; see `desktop/README.md`).
 
 ## Work breakdown
 

@@ -83,6 +83,26 @@ class BindingsSmokeTest {
         assertTrue(net.nodes[mac].core.isConnected(net.nodes[phone].id.deviceId))
         assertEquals(listOf(net.nodes[mac].id.deviceId), net.nodes[phone].core.connectedPeers())
 
+        // Relay and mesh topic: pairing minted a topic on both sides; configure/status/connect round trip.
+        assertEquals(1uL, net.nodes[mac].core.topicEpoch())
+        assertEquals(1uL, net.nodes[phone].core.topicEpoch())
+        val minted = (net.nodes[mac].events + net.nodes[phone].events).filterIsInstance<Action.TopicChanged>().first { it.epoch == 1uL }
+        assertEquals(32, minted.secret.size)
+        assertEquals("disabled", net.nodes[mac].core.relayStatus())
+        val connect = net.nodes[mac].core.relayConfigure(true, "wss://relay.example.test").filterIsInstance<Action.RelayConnect>().single()
+        assertEquals("wss://relay.example.test/connect", connect.url)
+        assertEquals("connecting", net.nodes[mac].core.relayStatus())
+        net.nodes[mac].core.relaySocketOpened()
+        val challenge = """{"type":"relay.challenge","nonce":"gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8=","powBits":0}"""
+        val join = net.nodes[mac].core.relayTextReceived(challenge).filterIsInstance<Action.RelaySendText>().single()
+        assertTrue(join.text.contains("relay.join"))
+        assertTrue(net.nodes[mac].core.relayConfigure(false, "").any { it is Action.RelayClose })
+        assertEquals("disabled", net.nodes[mac].core.relayStatus())
+        assertFalse(net.nodes[mac].core.isRelayed(net.nodes[phone].id.deviceId))
+        net.nodes[mac].core.setTopic(ByteArray(32) { 7 }, 5uL)
+        assertEquals(5uL, net.nodes[mac].core.topicEpoch())
+        assertFailsWith<GossipException.InvalidArgument> { net.nodes[mac].core.setTopic(byteArrayOf(1), 1uL) }
+
         net.pump(phone, net.nodes[phone].core.sendMessage("dnd.update", null, """{"sourceDeviceId":"x","enabled":true,"isInitialSync":false}"""))
         val got = net.delivered(mac, "dnd.update")
         assertEquals(1, got.size)

@@ -93,6 +93,30 @@ do {
     check(net.nodes[mac].core.isConnected(deviceId: net.nodes[phone].id.deviceId), "mac sees the phone")
     check(net.nodes[phone].core.connectedPeers() == [net.nodes[mac].id.deviceId], "phone sees the mac")
 
+    // ---- Relay and mesh topic: pairing minted a topic on both sides; configure/status/connect round trip.
+    check(net.nodes[mac].core.topicEpoch() == 1 && net.nodes[phone].core.topicEpoch() == 1, "pairing mints a shared topic")
+    var topicSecret: Data?
+    for case .topicChanged(let secret, let epoch) in net.nodes[mac].events + net.nodes[phone].events { if epoch == 1 { topicSecret = secret } }
+    check(topicSecret?.count == 32, "TopicChanged carries a 32-byte secret to persist")
+    check(net.nodes[mac].core.relayStatus() == "disabled", "relay is off by default")
+    var connectURL: String?
+    for case .relayConnect(let url) in net.nodes[mac].core.relayConfigure(enabled: true, origin: "wss://relay.example.test") { connectURL = url }
+    check(connectURL == "wss://relay.example.test/connect", "enabling the relay asks the shell to connect")
+    check(net.nodes[mac].core.relayStatus() == "connecting", "status while connecting")
+    _ = net.nodes[mac].core.relaySocketOpened()
+    var sentJoin = false
+    let challenge = #"{"type":"relay.challenge","nonce":"gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8=","powBits":0}"#
+    for case .relaySendText(let text) in net.nodes[mac].core.relayTextReceived(text: challenge) { sentJoin = text.contains("relay.join") }
+    check(sentJoin, "a challenge is answered with a signed join")
+    var closed = false
+    for case .relayClose in net.nodes[mac].core.relayConfigure(enabled: false, origin: "") { closed = true }
+    check(closed && net.nodes[mac].core.relayStatus() == "disabled", "disabling closes the socket")
+    check(!net.nodes[mac].core.isRelayed(deviceId: net.nodes[phone].id.deviceId), "LAN link is not relayed")
+    _ = try net.nodes[mac].core.setTopic(secret: Data(repeating: 7, count: 32), epoch: 5)
+    check(net.nodes[mac].core.topicEpoch() == 5, "set_topic loads a persisted topic")
+    do { _ = try net.nodes[mac].core.setTopic(secret: Data([1]), epoch: 1); check(false, "short secret must fail") }
+    catch GossipError.InvalidArgument { /* expected */ }
+
     // ---- Messages: signed, delivered once, with a payload.
     net.pump(phone, try net.nodes[phone].core.sendMessage(kind: "dnd.update", recipient: nil,
                                                           payloadJson: #"{"sourceDeviceId":"x","enabled":true,"isInitialSync":false}"#))

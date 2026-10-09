@@ -17,5 +17,7 @@ pub mod features;
 pub mod limits;
 pub mod mesh;
 pub mod reconcile;
+pub mod relay;
+pub mod topic;
 pub mod trust;
 pub mod wire;
