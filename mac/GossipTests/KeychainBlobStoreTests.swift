@@ -6,15 +6,24 @@ final class KeychainBlobStoreTests: XCTestCase {
     private var service: String!
     private let account = "test-blob"
 
-    override func setUpWithError() throws {
-        // A headless runner has no one to answer a Keychain access prompt, and the call would block until the job times out.
-        if ProcessInfo.processInfo.environment["CI"] != nil { throw XCTSkip("no interactive Keychain on CI") }
-        service = "dev.vmd1.gossip.tests.\(UUID().uuidString)"
-        // Keychain access can be unavailable (headless runner, locked keychain): skip rather than fail.
-        guard KeychainBlobStore(service: service, account: account).write(Data("probe".utf8)) else {
-            throw XCTSkip("Keychain not usable in this environment")
+    /// Whether the Keychain answers without anyone at the keyboard. A headless runner can block forever on an access
+    /// prompt nobody sees (the test host does not see the runner's `CI` variable, so that cannot be the check); the probe
+    /// runs on another thread and the tests skip if it has not come back after ten seconds. Decided once per run.
+    private static let keychainAnswers: Bool = {
+        let probe = "dev.vmd1.gossip.tests.probe.\(UUID().uuidString)"
+        let done = DispatchSemaphore(value: 0)
+        var ok = false
+        DispatchQueue.global().async {
+            ok = KeychainBlobStore(service: probe, account: "probe").write(Data("probe".utf8))
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: probe] as CFDictionary)
+            done.signal()
         }
-        deleteItem()
+        return done.wait(timeout: .now() + 10) == .success && ok
+    }()
+
+    override func setUpWithError() throws {
+        guard Self.keychainAnswers else { throw XCTSkip("Keychain not usable here (locked, headless, or waiting on a prompt)") }
+        service = "dev.vmd1.gossip.tests.\(UUID().uuidString)"
     }
 
     override func tearDown() { deleteItem() }
