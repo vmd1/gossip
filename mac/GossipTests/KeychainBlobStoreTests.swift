@@ -32,7 +32,7 @@ final class KeychainBlobStoreTests: XCTestCase {
     /// prompt in a session nobody is watching, so only the opt-in test below exercises it.
     private func makeStore() -> KeychainBlobStore {
         let defaults = UserDefaults(suiteName: "kb-\(UUID().uuidString)")!
-        defaults.set(true, forKey: "keychain.accessUpgraded.\(service!).\(account)")
+        defaults.set(KeychainBlobStore.currentAppPath, forKey: "keychain.accessUpgradedFor.\(service!).\(account)")
         return KeychainBlobStore(service: service, account: account, defaults: defaults)
     }
 
@@ -60,7 +60,7 @@ final class KeychainBlobStoreTests: XCTestCase {
         let defaults = UserDefaults(suiteName: "kb-\(UUID().uuidString)")!
         let store = KeychainBlobStore(service: service, account: account, defaults: defaults)
         XCTAssertEqual(store.read(), Data("old".utf8))
-        XCTAssertTrue(defaults.bool(forKey: "keychain.accessUpgraded.\(service!).\(account)"))
+        XCTAssertEqual(defaults.string(forKey: "keychain.accessUpgradedFor.\(service!).\(account)"), KeychainBlobStore.currentAppPath)
         XCTAssertEqual(KeychainBlobStore(service: service, account: account, defaults: defaults).read(), Data("old".utf8))
         XCTAssertTrue(store.write(Data("new".utf8)))
         XCTAssertEqual(store.read(), Data("new".utf8))
