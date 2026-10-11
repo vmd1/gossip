@@ -100,9 +100,7 @@ final class RelayTopicStore {
     init(blob: SecretBlobStore) { self.blob = blob }
 
     convenience init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-        self.init(blob: ProductionBlobStore.make(account: "relay-topic", legacyFile: dir.appendingPathComponent("relay-topic.json")))
+        self.init(blob: ProductionBlobStore.make(account: "relay-topic"))
     }
 
     func load() -> (secret: Data, epoch: UInt64)? {

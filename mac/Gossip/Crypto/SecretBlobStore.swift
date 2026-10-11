@@ -19,8 +19,8 @@ enum ProductionBlobStore {
         return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
     }
 
-    static func make(account: String, legacyFile: URL) -> SecretBlobStore {
-        guard isRunningUnderTest else { return KeychainBlobStore(account: account, legacyFile: legacyFile) }
+    static func make(account: String) -> SecretBlobStore {
+        guard isRunningUnderTest else { return KeychainBlobStore(account: account) }
         return FileBlobStore(url: scratchDirectory.appendingPathComponent("\(account).json"))
     }
 
@@ -32,8 +32,7 @@ enum ProductionBlobStore {
     }()
 }
 
-/// A `0600` file written atomically via `PrivateFile`. Used by tests, and as the legacy location that
-/// `KeychainBlobStore` migrates out of.
+/// A `0600` file written atomically via `PrivateFile`. Tests only: the app itself keeps these secrets in the Keychain.
 struct FileBlobStore: SecretBlobStore {
     let url: URL
 
@@ -42,49 +41,49 @@ struct FileBlobStore: SecretBlobStore {
 }
 
 /// Stores the blob as a generic-password item in the login Keychain, so other processes of the same user can't read
-/// it, or silently rewrite it, without macOS's access prompt. The item's ACL trusts the app that created it, so this
-/// relies on a stable code-signing identity (`mac/scripts/create-signing-cert.sh`); an ad-hoc rebuild is treated as a
-/// different app and prompts.
+/// it, or silently rewrite it, without macOS's access prompt. The item's ACL trusts the app that created it, and macOS
+/// asks again after each rebuild of an app that has no developer team identity (the access list is keyed to the code hash).
 ///
-/// Migration: the first run after upgrading finds the old plaintext `legacyFile`, copies it into the Keychain,
-/// reads it back to confirm, and only then overwrites and deletes the file. If the Keychain is unusable (locked,
-/// access denied, headless CI) the store falls back to the legacy file rather than regenerating the device
-/// identity or dropping every paired device, and logs that it did.
+/// The Keychain is the only place the secret lives: there is no file fallback. If the Keychain refuses a read of an item
+/// that exists (the user denied the prompt, the Keychain is locked), `read()` returns nil and writes are refused until
+/// the next launch, so a fresh value built because nothing could be read never replaces the real one.
 final class KeychainBlobStore: SecretBlobStore {
     private let service: String
     private let account: String
-    private let legacy: FileBlobStore
+    private let lock = NSLock()
+    private var unreadableItemExists = false
 
-    init(service: String = "dev.vmd1.gossip", account: String, legacyFile: URL) {
+    init(service: String = "dev.vmd1.gossip", account: String) {
         self.service = service
         self.account = account
-        self.legacy = FileBlobStore(url: legacyFile)
     }
 
     func read() -> Data? {
+        lock.lock(); defer { lock.unlock() }
         switch copyItem() {
         case .success(let data):
-            // A leftover plaintext copy (e.g. a failed delete after a previous migration) must not outlive the Keychain item.
-            removeLegacyFile()
+            unreadableItemExists = false
             return data
         case .notFound:
-            guard let data = legacy.read() else { return nil }
-            migrate(data)
-            return data
+            unreadableItemExists = false
+            return nil
         case .failure(let status):
-            gossipError("Keychain read failed for \(account) (OSStatus \(status)); using the legacy file")
-            return legacy.read()
+            gossipError("Keychain read failed for \(account) (OSStatus \(status))")
+            unreadableItemExists = true
+            return nil
         }
     }
 
     @discardableResult
     func write(_ data: Data) -> Bool {
-        if store(data) {
-            removeLegacyFile()
-            return true
+        lock.lock(); defer { lock.unlock() }
+        if unreadableItemExists {
+            gossipError("Not writing \(account): its Keychain item could not be read, and writing would replace it")
+            return false
         }
-        gossipError("Keychain write failed for \(account); falling back to the legacy file")
-        return legacy.write(data)
+        if store(data) { return true }
+        gossipError("Keychain write failed for \(account)")
+        return false
     }
 
     // MARK: - Keychain primitives
@@ -125,27 +124,5 @@ final class KeychainBlobStore: SecretBlobStore {
         var add = baseQuery
         add[kSecValueData as String] = data
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
-    }
-
-    /// Moves `data` from the legacy file into the Keychain; the file is only destroyed after a verified read-back.
-    private func migrate(_ data: Data) {
-        guard store(data), case .success(let readBack) = copyItem(), readBack == data else {
-            gossipError("Could not migrate \(account) into the Keychain; leaving the legacy file in place")
-            return
-        }
-        removeLegacyFile()
-    }
-
-    /// Best-effort scrub (overwrite, then unlink). APFS is copy-on-write and may keep old blocks, so this narrows
-    /// the exposure rather than guaranteeing erasure.
-    private func removeLegacyFile() {
-        let url = legacy.url
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int else { return }
-        if size > 0, let handle = try? FileHandle(forWritingTo: url) {
-            try? handle.write(contentsOf: Data(count: size))
-            try? handle.synchronize()
-            try? handle.close()
-        }
-        try? FileManager.default.removeItem(at: url)
     }
 }

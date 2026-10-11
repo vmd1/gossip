@@ -92,8 +92,7 @@ struct TrustedDevice: Codable, Identifiable, Equatable {
 }
 
 /// Persists the `TrustedDevices` table (and the revocation tombstones) as JSON in the login Keychain, so another
-/// process of the same user can't read the peers' beacon keys or add a trusted device by editing a file. The old
-/// `~/Library/Application Support/Connect/{trusted-devices,revoked-devices}.json` files are migrated on first launch.
+/// process of the same user can't read the peers' beacon keys or add a trusted device by editing a file.
 final class TrustedDevicesStore: ObservableObject {
     static let shared = TrustedDevicesStore()
 
@@ -127,16 +126,10 @@ final class TrustedDevicesStore: ObservableObject {
         self.init(devicesBlob: FileBlobStore(url: fileURL), revokedBlob: FileBlobStore(url: revokedURL))
     }
 
-    /// The production store: Keychain, migrating from the legacy files.
+    /// The production store: the Keychain.
     convenience init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        // Deliberately still "Connect", not "Gossip" — see `IdentityKeyStore.init()`.
-        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-        PrivateFile.ensureDirectory(dir)
-        self.init(
-            devicesBlob: ProductionBlobStore.make(account: "trusted-devices", legacyFile: dir.appendingPathComponent("trusted-devices.json")),
-            revokedBlob: ProductionBlobStore.make(account: "revoked-devices", legacyFile: dir.appendingPathComponent("revoked-devices.json"))
-        )
+        self.init(devicesBlob: ProductionBlobStore.make(account: "trusted-devices"),
+                  revokedBlob: ProductionBlobStore.make(account: "revoked-devices"))
     }
 
     // MARK: - Public API
