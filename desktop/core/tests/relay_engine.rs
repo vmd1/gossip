@@ -565,6 +565,26 @@ fn a_live_lan_link_means_the_relay_is_never_dialed() {
 }
 
 #[test]
+fn a_peer_rejoining_the_relay_is_dialed_without_waiting_out_old_backoff() {
+    let mut w = World::new();
+    let (a, b) = relay_pair(&mut w);
+    // The relay lists b but nothing gets through, so a's dials fail and back off to the cap.
+    w.hub.blackhole = true;
+    w.advance(400);
+    assert!(!w.nodes[a].core.is_connected(&w.id(b)));
+
+    // The path recovers and b rejoins: that is fresh news, so a must not sit out a minute of old backoff.
+    w.hub.blackhole = false;
+    w.kill_socket(b);
+    w.advance(25);
+    assert_eq!(w.nodes[b].core.relay_status(), RelayStatus::Joined);
+    assert!(
+        w.nodes[a].core.is_relayed(&w.id(b)),
+        "dialed soon after b rejoined"
+    );
+}
+
+#[test]
 fn only_the_lower_device_id_initiates_over_the_relay() {
     let mut w = World::new();
     let (a, b) = relay_pair(&mut w);

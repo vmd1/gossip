@@ -65,7 +65,11 @@ final class KeychainBlobStore: SecretBlobStore {
         self.defaults = defaults
     }
 
-    private var upgradedKey: String { "keychain.accessUpgraded.\(service).\(account)" }
+    /// The app path whose access list was last written into this item. The access list names the app *by path*, so it is
+    /// redone whenever a different copy (the installed app, a build run from Xcode) is the one reading the item; keyed on
+    /// a plain "done" flag, one copy's upgrade marked the item done for all of them and the others kept being asked.
+    private var upgradedKey: String { "keychain.accessUpgradedFor.\(service).\(account)" }
+    static var currentAppPath: String { Bundle.main.bundlePath }
 
     func read() -> Data? {
         lock.lock(); defer { lock.unlock() }
@@ -157,8 +161,8 @@ final class KeychainBlobStore: SecretBlobStore {
     /// Items created before this change carry a partition list tied to one build's code hash. Recreates the item once,
     /// with the data already in hand and only after the new copy reads back, so a failure keeps the old item.
     private func upgradeAccessIfNeeded(_ data: Data) {
-        guard !defaults.bool(forKey: upgradedKey) else { return }
-        defer { defaults.set(true, forKey: upgradedKey) }
+        guard defaults.string(forKey: upgradedKey) != Self.currentAppPath else { return }
+        defer { defaults.set(Self.currentAppPath, forKey: upgradedKey) }
         guard let access = Self.ownAccess(label: "\(service) \(account)") else { return }
         var query = baseQuery
         query[kSecReturnRef as String] = true
