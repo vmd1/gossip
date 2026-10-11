@@ -1,4 +1,5 @@
 import Foundation
+import GossipCoreKit
 import AppKit
 import Combine
 import CoreGraphics
@@ -40,7 +41,11 @@ final class UniversalControlCoordinator: ObservableObject {
 
         transport.router.register(prefix: "control.") { [weak manager] envelope in manager?.handleMesh(envelope) }
 
-        transport.router.register(prefix: "display.info") { [weak manager] envelope in manager?.handleDisplayInfo(envelope) }
+        // A device's display size is a synchronised state slot (`control.display`), so cards are right before any session.
+        transport.addOnStateChanged { [weak manager] change in
+            guard change.slot == GossipCoreKit.displaySlot() else { return }
+            manager?.handleDisplaySlot(deviceId: change.deviceId, valueJSON: change.valueJSON)
+        }
 
         tap.handler = { [weak manager] event in manager?.handle(event) ?? .pass }
 

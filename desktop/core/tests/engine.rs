@@ -801,12 +801,17 @@ fn reconciliation_is_due_on_connect_and_periodically() {
             _ => None,
         })
         .collect();
-    assert!(on_connect.contains(&"trust.roster_update") && on_connect.contains(&"dnd.update"));
+    assert_eq!(
+        on_connect,
+        vec!["trust.roster_update"],
+        "feature state is the core's state sync, not a ReconcileDue"
+    );
 
     net.nodes[a].events.clear();
-    // Keep the connection healthy for two minutes; the 60s tasks fire, the 300s ones do not.
+    // Keep the connection healthy for just over five minutes: the 300 s roster resync fires, and the engine-internal
+    // tasks (mesh.topic, state.digest) never surface as events.
     let mut t = T0;
-    for _ in 0..13 {
+    for _ in 0..32 {
         t += 10_000;
         net.set_time(t);
         for n in [a, b] {
@@ -822,8 +827,7 @@ fn reconciliation_is_due_on_connect_and_periodically() {
             _ => None,
         })
         .collect();
-    assert!(periodic.contains(&"dnd.update"));
-    assert!(!periodic.contains(&"trust.roster_update"));
+    assert_eq!(periodic, vec!["trust.roster_update"]);
     assert!(net.wire.len() > 4);
 }
 
@@ -1474,6 +1478,50 @@ fn invalid_slots_are_refused() {
         .is_err());
     assert!(net.nodes[a]
         .core
-        .set_state("big", Some(Value::String("x".repeat(300_000))))
+        .set_state("big", Some(Value::String("x".repeat(2_000_000))))
         .is_err());
+}
+
+#[test]
+fn direct_slots_reach_only_direct_neighbours_and_never_a_device_two_hops_away() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "direct.ble.beacon_key", Some(json!({"key": "abc"})));
+    assert_eq!(
+        net.nodes[b].core.state(&id_of(1), "direct.ble.beacon_key"),
+        Some(json!({"key": "abc"})),
+        "the neighbour got it"
+    );
+    assert_eq!(
+        net.nodes[c].core.state(&id_of(1), "direct.ble.beacon_key"),
+        None,
+        "the device on the far side of b did not"
+    );
+    // The periodic digest must not leak it either, nor can c ask for it.
+    for step in 1..=8 {
+        net.set_time(T0 + step * 10_000);
+        net.tick_all();
+    }
+    assert_eq!(
+        net.nodes[c].core.state(&id_of(1), "direct.ble.beacon_key"),
+        None
+    );
+    assert!(
+        !net.state_changes(c)
+            .iter()
+            .any(|(_, slot, _)| slot == "direct.ble.beacon_key"),
+        "c never saw it"
+    );
+}
+
+#[test]
+fn a_direct_slot_is_sent_again_to_a_neighbour_that_connects_later() {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    let b = net.add(2, DeviceType::Mac);
+    net.set_state(a, "direct.ble.beacon_key", Some(json!({"key": "k"})));
+    net.pair(a, b);
+    assert_eq!(
+        net.nodes[b].core.state(&id_of(1), "direct.ble.beacon_key"),
+        Some(json!({"key": "k"}))
+    );
 }

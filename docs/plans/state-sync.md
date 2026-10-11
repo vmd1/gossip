@@ -47,14 +47,27 @@ What is **not** state and stays a message: one-shot events (`device.ring`, `noti
 
 ## Slots
 
-| Slot | Owner | Value | Consumer |
-|---|---|---|---|
-| `media.nowplaying` | Android phones | `title`, `artist`, `artBase64?`, `isPlaying`, `positionMs`, `durationMs`, `packageName`; cleared when no session | Mac `MediaControlManager` |
-| `notification.active` | Android phones | `ids`: the notifications currently mirrored | Mac `NotificationMirrorManager`, Android `NotificationMirrorReceiver` (drop copies no longer listed; re-send a lost dismiss) |
+| Slot | Scope | Owner | Value | Consumer |
+|---|---|---|---|---|
+| `media.nowplaying` | mesh | Android phones | `title`, `artist`, `artBase64?`, `isPlaying`, `positionMs`, `durationMs`, `packageName`; cleared when no session | Mac `MediaControlManager` |
+| `notification.active` | mesh | Android phones | `ids`: the notifications currently mirrored | Mac `NotificationMirrorManager`, Android `NotificationMirrorReceiver` |
+| `dnd.state` | mesh | every device | `enabled` | each device's `Dnd` (first state OR-merged, later mirrored) |
+| `battery.state` | mesh | devices with a battery | `level`, `isCharging` | device lists and the low-battery alert |
+| `hotspot.state` | mesh | Android phones | `enabled`, `ssid?` | hotspot icon / "Request Hotspot" |
+| `control.display` | mesh | devices with a display | `width`, `height`, `rotation` | Mac Universal Control layout |
+| `lock_on_leave.config` | mesh | Android phones | `armedFor`: computer ids | the computers' per-phone `lockOnLeaveEnabled` |
+| `clipboard.text` | mesh | every device | `text`, `sourceDeviceId` | clipboard writers (images stay `clipboard.update` messages) |
+| `direct.ble.beacon_key` | **direct only** | every device | `key` | trust row `beaconKey` |
+
+A slot name starting with `direct.` is shared only with directly connected devices: its updates, digests and answers are
+targeted with `ttl: 0`, the digest for it is sent to each neighbour separately, and a receiver ignores a copy that did not
+arrive straight from its owner. It is for secrets (the BLE beacon key) that must not reach a device two hops away.
 
 ## Migration
 
-Moved: `media.nowplaying`, `notification.active` (new). Still on their own message and resync, to move one at a time: `dnd.update`,
-`battery.update`, `hotspot.state_update`, `display.info`, `clipboard.update` (the text value; images stay raw frames),
-`lock_on_leave.config`, `ble.beacon_key`. Each move deletes that feature's resync timer and `ReconcileDue` task in both apps. The
-protocol version is not bumped for the moved slots because the slot messages are new types and the old ones were never released.
+Done: every feature that kept resendable state. `reconcile.rs` no longer lists any feature task; the apps no longer run a
+resync timer or an on-connect resend for DND, battery, hotspot state, display size, clipboard text, now-playing, active
+notifications, lock-on-leave or the beacon key. The only `ReconcileDue` left is the trust roster (300 s), and `mesh.topic`
+and `state.digest` are handled inside the engine. Because none of the replaced messages had been released, no
+compatibility path was kept: `dnd.update`, `battery.update`, `hotspot.state_update`, `display.info`, `lock_on_leave.config`,
+`ble.beacon_key`, `media.nowplaying` and text `clipboard.update` are gone from the wire.

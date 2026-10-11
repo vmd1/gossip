@@ -14,7 +14,7 @@
 //! nothing. A device can only write its own slots (the owner is the signed sender of the message).
 //!
 //! One-shot events (ring, reply, dismiss, commands) are not state and stay ordinary messages with dedupe keys.
-//! Values over [`MAX_VALUE_BYTES`] are refused; large content belongs in a raw follow-up frame, not a slot.
+//! Values over [`MAX_VALUE_BYTES`] (1.5 MiB, enough for a 1 MiB clipboard text) are refused; large content belongs in a raw follow-up frame, not a slot.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -25,7 +25,7 @@ pub const KIND_UPDATE: &str = "state.update";
 pub const KIND_DIGEST: &str = "state.digest";
 pub const KIND_REQUEST: &str = "state.request";
 
-pub const MAX_VALUE_BYTES: usize = 256 * 1024;
+pub const MAX_VALUE_BYTES: usize = 1536 * 1024;
 pub const MAX_SLOTS_PER_DEVICE: usize = 64;
 /// Slots a single digest, update or request may carry.
 pub const MAX_SLOTS_PER_MESSAGE: usize = 64;
@@ -39,6 +39,15 @@ pub enum StateError {
     TooLarge,
     #[error("a device may own at most {MAX_SLOTS_PER_DEVICE} slots")]
     TooManySlots,
+}
+
+/// Slots whose names start with `direct.` are shared only with directly connected devices, never flooded through the
+/// mesh (a secret such as the BLE beacon key must not reach a device two hops away). Their updates, digests and answers
+/// are targeted with `ttl: 0`, and a receiver ignores one that did not arrive straight from its owner.
+pub const DIRECT_PREFIX: &str = "direct.";
+
+pub fn is_direct_slot(name: &str) -> bool {
+    name.starts_with(DIRECT_PREFIX)
 }
 
 pub fn is_valid_slot_name(name: &str) -> bool {

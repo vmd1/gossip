@@ -35,10 +35,6 @@ class DndSyncManagerTest {
 
     @Test
     fun `payload round-trips through json`() {
-        val update = DndUpdatePayload(sourceDeviceId = "device-123", enabled = true)
-        val decoded = DndUpdatePayload.fromJsonObject(update.toJsonObject())
-        assertEquals(update, decoded)
-
         val set = DndSetPayload(enabled = false)
         val decodedSet = DndSetPayload.fromJsonObject(set.toJsonObject())
         assertEquals(set, decodedSet)

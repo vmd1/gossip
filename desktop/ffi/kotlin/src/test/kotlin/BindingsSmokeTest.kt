@@ -177,11 +177,11 @@ class BindingsSmokeTest {
     fun featureStateMachines() {
         val a = Dnd(null)
         val b = Dnd(true)
-        fun payload(fx: List<DndEffect>) = fx.filterIsInstance<DndEffect.Send>().single().message.payloadJson
-        val pa = payload(a.initialSync("a"))
-        val pb = payload(b.initialSync("b"))
-        a.onUpdate(pb, 0)
-        b.onUpdate(pa, 0)
+        fun payload(fx: List<DndEffect>) = fx.filterIsInstance<DndEffect.SetState>().single().valueJson
+        val pa = payload(a.start())
+        val pb = payload(b.start())
+        a.onPeerState("b", pb, 0)
+        b.onPeerState("a", pa, 0)
         assertEquals(true, a.expected())
         assertEquals(true, b.expected())
 
@@ -191,6 +191,13 @@ class BindingsSmokeTest {
         }
         assertEquals(1, alerts)
         assertEquals(18.toUByte(), battery.stateOf("p")?.level)
+        val reading = BatteryState(50.toUByte(), false)
+        assertTrue(battery.report(reading) is BatteryEffect.SetState)
+        assertNull(battery.report(reading), "an unchanged reading is not published again")
+        assertTrue(lockOnLeaveIsArmedFor(lockOnLeaveConfigPayload(listOf("x", "me")), "me"))
+        assertContentEquals(ByteArray(32) { 3 }, beaconKeyParse(beaconKeyPayload(ByteArray(32) { 3 })))
+        assertEquals(2340u, displayParse(displayPayload(DisplayInfo(1080u, 2340u, 1.toUByte())))?.height)
+        assertNull(displayParse("""{"width":0,"height":5,"rotation":0}"""))
 
         val ring = Ring()
         val start = ringPayload("start", "r1")
@@ -199,7 +206,7 @@ class BindingsSmokeTest {
         assertTrue(ring.stopRinging().isNotEmpty() && !ring.isRinging())
 
         val clip = ClipboardGuard()
-        assertNotNull(clip.outgoingText("m", "hi", false))
+        assertTrue(clip.outgoingText("m", "hi", false)!!.contains("\"text\":\"hi\""))
         assertNull(clip.outgoingText("m", "hi", false), "resync of the same value is suppressed")
         assertNull(clip.outgoingText("m", "secret", true), "sensitive content is never sent")
 

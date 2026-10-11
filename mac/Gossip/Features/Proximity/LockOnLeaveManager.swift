@@ -1,26 +1,25 @@
 import Foundation
 import Combine
+import GossipCoreKit
 
-/// Implements the Android-facing half of `lock_on_leave.config` (see
+/// Implements the Android-facing half of the `lock_on_leave.config` state slot (see
 /// `schema/message-types.md`) and the actual lock trigger. No message is needed for the
 /// trigger itself: the Mac is always the BLE central for phones (`docs/ble-proximity-protocol.md`),
 /// so it already knows directly, via `BLEProximityMonitor`, the instant a specific trusted
-/// phone leaves confirmed range — `lock_on_leave.config` only carries the per-device
-/// on/off setting itself.
+/// phone leaves confirmed range — the slot only lists which computers a phone armed.
 ///
 /// Fires **once per range-loss transition**, not on every tick while a device stays out
 /// of range, and enforces a cooldown per device on top of that — a device flapping in
 /// and out right at the RSSI threshold must not repeatedly re-lock a screen the user has
-/// since manually unlocked. See the memory note this session captured from the user's
-/// own request: "shouldn't spam it... should still be able to unlock it."
+/// since manually unlocked. The edge trigger and the cooldown are the core's `LockOnLeave`
+/// (`desktop/core/src/features/lock_on_leave.rs`).
 final class LockOnLeaveManager {
-    static let cooldown: TimeInterval = 30
+    static let cooldown: TimeInterval = TimeInterval(GossipCoreKit.lockOnLeaveCooldownMs()) / 1000
 
     private let transportManager: TransportManager
     private let trustedDevicesStore: TrustedDevicesStore
     private let bleProximityMonitor: BLEProximityMonitor
-    private var previousNearbyDeviceIds: Set<String> = []
-    private var lastFiredAt: [String: Date] = [:]
+    private let logic: GossipCoreKit.LockOnLeave
     private var cancellable: AnyCancellable?
     var featureSettings: FeatureSettings = .shared
 
@@ -32,10 +31,15 @@ final class LockOnLeaveManager {
         self.transportManager = transportManager
         self.trustedDevicesStore = trustedDevicesStore
         self.bleProximityMonitor = bleProximityMonitor
-        self.previousNearbyDeviceIds = bleProximityMonitor.nearbyDeviceIds
+        self.logic = GossipCoreKit.LockOnLeave(initiallyNearby: Array(bleProximityMonitor.nearbyDeviceIds))
+        let me = IdentityKeyStore.shared.deviceId
 
-        transportManager.router.register(prefix: "lock_on_leave.config") { [weak self] envelope in
-            self?.handleConfig(envelope)
+        // A phone arms lock-on-leave for the computers it lists in its `lock_on_leave.config` slot (cleared, or the phone
+        // was revoked: nothing armed).
+        transportManager.addOnStateChanged { [weak self] change in
+            guard change.slot == GossipCoreKit.lockOnLeaveSlot() else { return }
+            let armed = change.valueJSON.flatMap { try? GossipCoreKit.lockOnLeaveIsArmedFor(valueJson: $0, me: me) } ?? false
+            self?.trustedDevicesStore.setLockOnLeaveEnabled(deviceId: change.deviceId, enabled: armed)
         }
 
         cancellable = bleProximityMonitor.$nearbyDeviceIds.sink { [weak self] newValue in
@@ -43,24 +47,11 @@ final class LockOnLeaveManager {
         }
     }
 
-    private func handleConfig(_ envelope: Envelope) {
-        guard let enabled = envelope.payload["enabled"]?.boolValue else { return }
-        trustedDevicesStore.setLockOnLeaveEnabled(deviceId: envelope.senderId, enabled: enabled)
-    }
-
     private func handleNearbyDeviceIdsChanged(_ newValue: Set<String>) {
-        let justLeft = previousNearbyDeviceIds.subtracting(newValue)
-        previousNearbyDeviceIds = newValue
         // Local BLE trigger (not a message), so the transport-level feature gate can't cover it.
-        guard featureSettings.isEnabled(.lockOnLeave) else { return }
-
-        for deviceId in justLeft {
-            let device = trustedDevicesStore.device(for: deviceId)
-            guard device?.lockOnLeaveEnabled == true else { continue }
-            if let last = lastFiredAt[deviceId], Date().timeIntervalSince(last) < Self.cooldown {
-                continue
-            }
-            lastFiredAt[deviceId] = Date()
+        let armed = trustedDevicesStore.allDevices().filter { $0.lockOnLeaveEnabled }.map(\.deviceId)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        if logic.nearbyChanged(nearby: Array(newValue), nowMs: nowMs, featureEnabled: featureSettings.isEnabled(.lockOnLeave), armed: armed) {
             Self.lockScreen()
         }
     }

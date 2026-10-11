@@ -1,6 +1,10 @@
 import XCTest
 import Combine
 @testable import Gossip
+import GossipCoreKit
+
+// Both modules declare an `Envelope` (the app's and the core's); these tests mean the app's.
+private typealias Envelope = Gossip.Envelope
 
 private final class FakeRinger: Ringer {
     var starts = 0, stops = 0
@@ -98,34 +102,37 @@ final class RingStateTests: XCTestCase {
 }
 
 final class BatterySyncManagerTests: XCTestCase {
-    private func update(_ from: String, _ level: Int, _ charging: Bool) -> Envelope {
-        Envelope(type: "battery.update", senderId: from, broadcast: true,
-                 payload: BatterySyncManager.payload(sourceDeviceId: from, state: BatteryState(level: level, isCharging: charging)))
+    private func slot(_ level: Int, _ charging: Bool) -> String {
+        GossipCoreKit.batteryPayload(state: GossipCoreKit.BatteryState(level: UInt8(level), isCharging: charging))
     }
 
     func testLowBatteryAlertsOncePerEpisodeAndTracksLastWrite() {
         var alerts: [(String, Int)] = []
         let m = BatterySyncManager(transportManager: TransportManager(), readBattery: { nil }, onLowBattery: { alerts.append(($0, $1)) })
-        m.handleUpdate(update("a", 19, false)); m.handleUpdate(update("a", 19, false)); m.handleUpdate(update("a", 18, false))
+        m.handleSlot(deviceId: "a", valueJSON: slot(19, false)); m.handleSlot(deviceId: "a", valueJSON: slot(19, false)); m.handleSlot(deviceId: "a", valueJSON: slot(18, false))
         XCTAssertEqual(alerts.count, 1)
         XCTAssertEqual(m.batteryBySenderId["a"], BatteryState(level: 18, isCharging: false))
-        m.handleUpdate(update("a", 25, false)); m.handleUpdate(update("a", 15, false))   // not re-armed yet
+        m.handleSlot(deviceId: "a", valueJSON: slot(25, false)); m.handleSlot(deviceId: "a", valueJSON: slot(15, false))   // not re-armed yet
         XCTAssertEqual(alerts.count, 1)
-        m.handleUpdate(update("a", 40, false)); m.handleUpdate(update("a", 20, false))   // re-armed
+        m.handleSlot(deviceId: "a", valueJSON: slot(40, false)); m.handleSlot(deviceId: "a", valueJSON: slot(20, false))   // re-armed
         XCTAssertEqual(alerts.count, 2)
-        m.handleUpdate(update("b", 5, true))                                              // charging: no alert
+        m.handleSlot(deviceId: "b", valueJSON: slot(5, true))                                                              // charging: no alert
         XCTAssertEqual(alerts.count, 2)
     }
 
-    func testMalformedUpdateIsIgnored() {
+    func testMalformedUpdateIsIgnoredAndAClearedSlotForgetsTheDevice() {
         let m = BatterySyncManager(transportManager: TransportManager(), readBattery: { nil }, onLowBattery: { _, _ in })
-        m.handleUpdate(Envelope(type: "battery.update", senderId: "a", payload: .object(["level": .number(5)])))
+        m.handleSlot(deviceId: "a", valueJSON: #"{"level":5}"#)
         XCTAssertTrue(m.batteryBySenderId.isEmpty)
+        m.handleSlot(deviceId: "a", valueJSON: slot(50, false))
+        XCTAssertNotNil(m.batteryBySenderId["a"])
+        m.handleSlot(deviceId: "a", valueJSON: nil)
+        XCTAssertNil(m.batteryBySenderId["a"], "a revoked device's reading is dropped")
     }
 }
 
 final class HotspotStateManagerThreadingTests: XCTestCase {
-    /// Regression: a `hotspot.state_update` arrives on the transport's background queue; publishing
+    /// Regression: a `hotspot.state` slot update arrives on the transport's background queue; publishing
     /// the state there crashed the app (AppKit aborts when the menu-bar item is rebuilt off-main).
     func testStateUpdateFromBackgroundQueueIsPublishedOnMainThread() {
         let transport = TransportManager()
@@ -136,9 +143,8 @@ final class HotspotStateManagerThreadingTests: XCTestCase {
             publishedOnMain = Thread.isMainThread
             published.fulfill()
         }
-        let envelope = Envelope(type: "hotspot.state_update", senderId: "phone", broadcast: true,
-                                payload: .object(["enabled": .bool(true), "ssid": .string("net")]))
-        DispatchQueue.global().async { transport.router.route(envelope) }
+        let value = GossipCoreKit.hotspotStatePayload(enabled: true, ssid: "net")
+        DispatchQueue.global().async { manager.handleSlot(deviceId: "phone", valueJSON: value) }
         wait(for: [published], timeout: 2)
         XCTAssertEqual(publishedOnMain, true)
         XCTAssertEqual(manager.hotspotStateBySenderId["phone"]?.enabled, true)

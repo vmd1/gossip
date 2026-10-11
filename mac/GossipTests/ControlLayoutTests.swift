@@ -139,10 +139,10 @@ final class ControlLayoutTests: XCTestCase {
     }
 
     func testParseDisplaySize() {
-        XCTAssertEqual(UniversalControlManager.parseDisplaySize(.object(["width": .number(1080), "height": .number(2400)]))?.height, 2400)
-        XCTAssertNil(UniversalControlManager.parseDisplaySize(.object(["width": .number(0), "height": .number(2400)])))
-        XCTAssertNil(UniversalControlManager.parseDisplaySize(.object(["width": .number(99999), "height": .number(10)])))
-        XCTAssertNil(UniversalControlManager.parseDisplaySize(.object([:])))
+        XCTAssertEqual(UniversalControlManager.parseDisplaySize(#"{"width":1080,"height":2400,"rotation":0}"#)?.height, 2400)
+        XCTAssertNil(UniversalControlManager.parseDisplaySize(#"{"width":0,"height":2400,"rotation":0}"#))
+        XCTAssertNil(UniversalControlManager.parseDisplaySize(#"{"width":99999,"height":10,"rotation":0}"#))
+        XCTAssertNil(UniversalControlManager.parseDisplaySize("{}"))
     }
 }
 

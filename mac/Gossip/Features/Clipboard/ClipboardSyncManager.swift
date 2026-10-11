@@ -1,48 +1,27 @@
 import AppKit
-import ImageIO
 import Combine
+import GossipCoreKit
 
-/// Bidirectional clipboard sync between this Mac and the rest of the mesh — plain text
-/// (broadcast, relayed through the whole mesh like any other message) and images
-/// (broadcast too, but the actual bytes travel as a raw follow-up frame per
-/// `docs/wire-protocol.md`'s "Large binary payloads" convention, relayed hop-by-hop
-/// alongside their metadata envelope — see `TransportManager.handleReceivedEnvelope`).
+/// Bidirectional clipboard sync between this Mac and the rest of the mesh: plain text, which travels as the
+/// `clipboard.text` state slot (so the core keeps it correct across reconnects, see `docs/plans/state-sync.md`), and images,
+/// which are `clipboard.update` messages whose bytes travel as a raw follow-up frame per `docs/wire-protocol.md`'s "Large
+/// binary payloads" convention, relayed hop-by-hop alongside their metadata envelope.
 ///
-/// `NSPasteboard` has no push/change-notification API, so this manager polls
-/// `NSPasteboard.general.changeCount` on a timer while the transport is connected. On a
-/// genuine local copy it sends a `clipboard.update` envelope (text inline, or an image
-/// normalized to PNG and sent as a raw follow-up frame); on a received `clipboard.update`
-/// it writes the content into the local pasteboard.
+/// `NSPasteboard` has no push/change-notification API, so this manager polls `NSPasteboard.general.changeCount` on a timer
+/// while the transport is connected. On a genuine local copy it publishes the text slot (or sends an image normalized to
+/// PNG); when a peer's text slot changes or an image arrives it writes the content into the local pasteboard.
 ///
-/// Loop suppression: writing to the pasteboard ourselves (in response to a remote
-/// update) bumps `changeCount` exactly like a real local copy would, which would
-/// otherwise be observed by the very next poll and re-sent right back to the
-/// sender. To avoid that, we remember the last value *we* wrote programmatically
-/// (text or image, whichever) and skip sending when the newly-observed pasteboard
-/// content matches it exactly.
+/// The content policy and the loop suppression (writing the pasteboard ourselves in response to a peer bumps `changeCount`
+/// exactly like a real copy, and must not be sent straight back) are the core's `ClipboardGuard`
+/// (`desktop/core/src/features/clipboard.rs`), shared with every platform.
 final class ClipboardSyncManager: ObservableObject {
     private let transportManager: TransportManager
     private let identity: IdentityKeyStore
     private let pollInterval: TimeInterval
+    private let guardLogic = GossipCoreKit.ClipboardGuard()
 
     private var timer: Timer?
-    private var resyncTimer: Timer?
     private var lastChangeCount: Int
-    private var lastRemoteSetValue: String?
-    private var lastRemoteSetImageData: Data?
-
-    /// The last value *this Mac itself* successfully sent (as opposed to
-    /// `lastRemoteSetValue`, which is the last value *received* from a peer). Without
-    /// this, the periodic resync in `sendCurrentPasteboardContentIfNeeded` would
-    /// re-broadcast a locally-originated pasteboard value on every tick forever —
-    /// `lastRemoteSetValue` alone never matches it, since that's only ever set by
-    /// `handleIncoming`/`handleIncomingImage`.
-    private var lastSentValue: String?
-    private var lastSentImageData: Data?
-
-    /// Periodic-resync interval — matches `dnd.update`/`trust.roster_update`/
-    /// `lock_on_leave.config`'s existing ~60s self-healing cadence.
-    private static let resyncInterval: TimeInterval = 60
 
     init(
         transportManager: TransportManager,
@@ -54,8 +33,9 @@ final class ClipboardSyncManager: ObservableObject {
         self.pollInterval = pollInterval
         self.lastChangeCount = NSPasteboard.general.changeCount
 
-        transportManager.router.register(prefix: "clipboard.update") { [weak self] envelope in
-            self?.handleIncoming(envelope)
+        transportManager.addOnStateChanged { [weak self] change in
+            guard change.slot == GossipCoreKit.clipboardTextSlot(), let json = change.valueJSON else { return }
+            self?.handleIncomingText(valueJSON: json)
         }
         transportManager.onRawFrameReceived = { [weak self] envelope, data in
             self?.handleIncomingImage(envelope, data)
@@ -64,19 +44,8 @@ final class ClipboardSyncManager: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Starts polling the pasteboard. Call when the transport becomes connected.
-    ///
-    /// Also resends whatever is currently on the pasteboard once, immediately — per
-    /// this project's `CLAUDE.md` convention that anything configuring state on a
-    /// recipient needs a self-healing resync, not just a one-shot send-on-change.
-    /// Without this, a local copy made *while transiently disconnected* (or lost to
-    /// any other send race) would never reach a peer until the next actual clipboard
-    /// change on this Mac, which might be a long time or never — the exact same
-    /// silent-desync failure mode `dnd.update`'s `isInitialSync` and
-    /// `lock_on_leave.config`'s on-connect resend both exist to prevent. Goes through
-    /// the same `shouldSend` loop-guard as a real poll, so it's a no-op on a peer that
-    /// already has this exact value (e.g. multiple peers reconnecting around the same
-    /// time doesn't cause a resend storm beyond one message per newly-live peer).
+    /// Starts polling the pasteboard. Call when the transport becomes connected. Publishes whatever is on the pasteboard now
+    /// (a copy made while disconnected is picked up here); the core ignores a value it already has.
     func start() {
         stop()
         lastChangeCount = NSPasteboard.general.changeCount
@@ -86,26 +55,12 @@ final class ClipboardSyncManager: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-
-        // Periodic backstop on top of the on-connect resync above and the frequent
-        // change-detecting poll — covers a `clipboard.update` send that was attempted
-        // mid-disconnect or otherwise dropped, which neither of those catches (the
-        // poll only reacts to a *new* local change; a drop leaves both sides silently
-        // mismatched until the next one). Harmless when already in sync: goes through
-        // the same loop-guarded send path as a real poll.
-        let resync = Timer(timeInterval: Self.resyncInterval, repeats: true) { [weak self] _ in
-            self?.sendCurrentPasteboardContentIfNeeded()
-        }
-        RunLoop.main.add(resync, forMode: .common)
-        self.resyncTimer = resync
     }
 
     /// Stops polling. Call when the transport disconnects.
     func stop() {
         timer?.invalidate()
         timer = nil
-        resyncTimer?.invalidate()
-        resyncTimer = nil
     }
 
     // MARK: - Outbound: local pasteboard -> wire
@@ -118,147 +73,87 @@ final class ClipboardSyncManager: ObservableObject {
         sendCurrentPasteboardContentIfNeeded()
     }
 
-    /// Sends whatever is currently on the pasteboard (if anything, and if it isn't
-    /// just the echo of a remote update we wrote ourselves), regardless of whether
-    /// `changeCount` moved — the shared body behind both a real detected change
-    /// (`pollPasteboard`) and the on-connect resync (`start`).
+    /// Publishes whatever is currently on the pasteboard (if anything, and if it isn't just the echo of a remote update we
+    /// wrote ourselves), regardless of whether `changeCount` moved.
     private func sendCurrentPasteboardContentIfNeeded() {
         let pasteboard = NSPasteboard.general
 
         // Never broadcast what the copying app marked as a secret (password managers) or transient.
-        guard !Self.isSensitive(types: pasteboard.types) else { return }
+        let sensitive = Self.isSensitive(types: pasteboard.types)
+        guard !sensitive else { return }
 
-        // Text takes priority when both are somehow present, matching pre-image
-        // behavior exactly for plain-text copies.
+        // Text takes priority when both are somehow present.
         if let text = pasteboard.string(forType: .string) {
-            guard Self.textAllowed(text) else { return }
-            guard Self.shouldSend(newValue: text, lastRemoteSetValue: lastRemoteSetValue, lastSentValue: lastSentValue) else { return }
-            sendClipboardUpdate(text: text)
+            if let value = guardLogic.outgoingText(me: identity.deviceId, text: text, sensitive: sensitive) {
+                transportManager.setState(slot: GossipCoreKit.clipboardTextSlot(), valueJSON: value)
+            }
             return
         }
 
-        guard let pngData = Self.imagePNGData(from: pasteboard), Self.imageBytesAllowed(pngData.count) else { return }
-        guard Self.shouldSend(newImageData: pngData, lastRemoteSetImageData: lastRemoteSetImageData, lastSentImageData: lastSentImageData) else { return }
-        sendClipboardImage(data: pngData)
+        guard let pngData = Self.imagePNGData(from: pasteboard),
+              let outgoing = guardLogic.outgoingImage(me: identity.deviceId, png: pngData, sensitive: sensitive) else { return }
+        sendClipboardImage(outgoing: outgoing, data: pngData)
     }
 
-    private func sendClipboardUpdate(text: String) {
-        lastSentValue = text
+    private func sendClipboardImage(outgoing: GossipCoreKit.Outgoing, data: Data) {
+        guard let payload = try? JSONDecoder().decode(JSONValue.self, from: Data(outgoing.payloadJson.utf8)) else { return }
         let envelope = Envelope(
-            type: "clipboard.update",
-            senderId: identity.deviceId,
-            broadcast: true,
-            payload: .object([
-                "kind": .string("text"),
-                "text": .string(text),
-                "sourceDeviceId": .string(identity.deviceId),
-            ])
-        )
-        try? transportManager.send(envelope: envelope)
-    }
-
-    private func sendClipboardImage(data: Data) {
-        lastSentImageData = data
-        let envelope = Envelope(
-            type: "clipboard.update",
+            type: outgoing.kind,
             senderId: identity.deviceId,
             broadcast: true,
             hasRawFollowup: true,
-            payload: .object([
-                "kind": .string("image"),
-                "sourceDeviceId": .string(identity.deviceId),
-                "contentType": .string("image/png"),
-                "byteLength": .number(Double(data.count)),
-            ])
+            payload: payload
         )
         try? transportManager.send(envelope, withRawFollowup: data)
     }
 
     // MARK: - Inbound: wire -> local pasteboard
 
-    private func handleIncoming(_ envelope: Envelope) {
-        guard let text = envelope.payload["text"]?.stringValue, Self.textAllowed(text) else { return }
+    /// A peer's `clipboard.text` slot changed (main queue).
+    func handleIncomingText(valueJSON: String) {
+        guard let text = try? guardLogic.incomingText(payloadJson: valueJSON) else { return }
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // Record both what we wrote and the resulting changeCount so our own
-        // poll doesn't treat this as a new local copy and echo it back.
+        // Record the resulting changeCount so our own poll doesn't treat this as a new local copy and echo it back.
         lastChangeCount = pasteboard.changeCount
-        lastRemoteSetValue = text
     }
 
     private func handleIncomingImage(_ envelope: Envelope, _ data: Data) {
         guard envelope.type == "clipboard.update",
-              envelope.payload["kind"]?.stringValue == "image",
-              Self.imageBytesAllowed(data.count), Self.isReasonableImage(data) else { return }
+              let json = try? JSONEncoder().encode(envelope.payload),
+              (try? guardLogic.incomingImage(payloadJson: String(decoding: json, as: UTF8.self), png: data)) == true else { return }
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setData(data, forType: .png)
 
         lastChangeCount = pasteboard.changeCount
-        lastRemoteSetImageData = data
     }
 
-    // MARK: - Content policy (pure, unit-testable)
+    // MARK: - Content policy (the core's, shared with every platform)
 
     static let maxTextBytes = 1 << 20
     static let maxImageBytes = 8 << 20
-    static let maxImagePixels = 40_000_000
-
-    /// Pasteboard types the nspasteboard.org convention uses to mark content that must not be stored
-    /// or synced: concealed (passwords), transient, auto-generated; plus 1Password's own marker.
-    static let sensitiveTypes: Set<String> = [
-        "org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType",
-        "org.nspasteboard.AutoGeneratedType", "com.agilebits.onepassword",
-    ]
 
     static func isSensitive(types: [NSPasteboard.PasteboardType]?) -> Bool {
-        (types ?? []).contains { sensitiveTypes.contains($0.rawValue) }
+        GossipCoreKit.clipboardIsSensitive(types: (types ?? []).map(\.rawValue))
     }
 
-    static func textAllowed(_ text: String) -> Bool { text.utf8.count <= maxTextBytes }
+    static func textAllowed(_ text: String) -> Bool { GossipCoreKit.clipboardTextAllowed(text: text) }
 
-    static func imageBytesAllowed(_ count: Int) -> Bool { count > 0 && count <= maxImageBytes }
+    static func imageBytesAllowed(_ count: Int) -> Bool { GossipCoreKit.clipboardImageBytesAllowed(len: UInt64(max(0, count))) }
 
-    /// Reads just the header: refuses data that isn't an image or whose decoded size is a decompression bomb.
-    static func isReasonableImage(_ data: Data) -> Bool {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int,
-              w > 0, h > 0 else { return false }
-        return w * h <= maxImagePixels
-    }
-
-    // MARK: - Loop-suppression (pure, unit-testable)
-
-    /// Returns whether a newly-observed pasteboard value should be sent over the
-    /// wire, given the last value this manager itself wrote to the pasteboard in
-    /// response to a remote update (`lastRemoteSetValue`) and the last value this
-    /// manager itself already sent (`lastSentValue`). Returns `false` when `newValue`
-    /// matches either (an echoed remote update, or a value the periodic resync would
-    /// otherwise re-broadcast forever since `lastRemoteSetValue` alone never catches a
-    /// locally-originated value), `true` otherwise (a genuine local copy, or the very
-    /// first observation).
-    static func shouldSend(newValue: String, lastRemoteSetValue: String?, lastSentValue: String? = nil) -> Bool {
-        newValue != lastRemoteSetValue && newValue != lastSentValue
-    }
-
-    /// Same loop-suppression check as `shouldSend(newValue:lastRemoteSetValue:lastSentValue:)`,
-    /// for image content.
-    static func shouldSend(newImageData: Data, lastRemoteSetImageData: Data?, lastSentImageData: Data? = nil) -> Bool {
-        newImageData != lastRemoteSetImageData && newImageData != lastSentImageData
-    }
+    /// Refuses data that isn't a PNG or whose decoded size is a decompression bomb (images are normalized to PNG).
+    static func isReasonableImage(_ data: Data) -> Bool { GossipCoreKit.clipboardIsReasonablePng(data: data) }
 
     // MARK: - Image handling (pure enough to unit test the byte-level parts; pasteboard read is not)
 
-    /// Reads whatever image is currently on the pasteboard (if any) and normalizes it
-    /// to PNG — regardless of which representation the source app actually put there
-    /// (TIFF is the one AppKit guarantees is always present for image content) — so
-    /// the wire format is always a single, universally-decodable content type
-    /// (`image/png`) rather than whatever the copying app happened to provide.
+    /// Reads whatever image is currently on the pasteboard (if any) and normalizes it to PNG — regardless of which
+    /// representation the source app actually put there (TIFF is the one AppKit guarantees is always present for image
+    /// content) — so the wire format is always a single, universally-decodable content type (`image/png`).
     static func imagePNGData(from pasteboard: NSPasteboard) -> Data? {
         guard pasteboard.canReadItem(withDataConformingToTypes: [NSPasteboard.PasteboardType.tiff.rawValue, NSPasteboard.PasteboardType.png.rawValue]) else {
             return nil

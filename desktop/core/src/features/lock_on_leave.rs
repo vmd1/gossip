@@ -1,6 +1,7 @@
 //! Lock on leave: lock this computer when a trusted phone walks out of BLE range.
 //!
-//! `lock_on_leave.config` only carries the per-device on/off setting (and is reconciled). The trigger is local: the
+//! The `lock_on_leave.config` slot (see `crate::state_sync`) is published by a phone and lists the computers it arms
+//! (`{"armedFor": [deviceId, ...]}`); it is reconciled by the core. The trigger is local: the
 //! computer is the BLE central, so it learns directly when a device leaves confirmed range. Two rules keep it from
 //! being hostile: it fires once per range-loss *transition*, not on every tick while a device stays away, and a
 //! per-device cooldown stops a device flapping at the RSSI threshold from re-locking a screen the user has since
@@ -14,8 +15,31 @@ use super::object;
 
 pub const COOLDOWN_MS: i64 = 30_000;
 
-pub fn config_payload(enabled: bool) -> Map<String, Value> {
-    object([("enabled", enabled.into())])
+/// The state slot a phone publishes its lock-on-leave arming in.
+pub const SLOT: &str = "lock_on_leave.config";
+
+/// The slot value for a phone that arms lock-on-leave for the computers in `armed_for`.
+pub fn config_payload(armed_for: &[String]) -> Map<String, Value> {
+    let mut sorted: Vec<&String> = armed_for.iter().collect();
+    sorted.sort();
+    sorted.dedup();
+    object([(
+        "armedFor",
+        Value::Array(
+            sorted
+                .into_iter()
+                .map(|d| Value::String(d.clone()))
+                .collect(),
+        ),
+    )])
+}
+
+/// Whether the phone that published `payload` armed lock-on-leave for `me`.
+pub fn is_armed_for(payload: &Map<String, Value>, me: &str) -> bool {
+    payload
+        .get("armedFor")
+        .and_then(Value::as_array)
+        .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(me)))
 }
 
 #[derive(Debug, Clone, Default)]

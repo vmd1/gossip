@@ -124,6 +124,7 @@ impl FeatureSettings {
 
 pub mod battery;
 pub mod clipboard;
+pub mod display;
 pub mod dnd;
 pub mod hotspot;
 pub mod hotspot_gatt;

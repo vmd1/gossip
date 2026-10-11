@@ -239,18 +239,8 @@ class MainActivity : ComponentActivity() {
                         },
                         onSetLockOnLeave = { deviceId, enabled ->
                             trustedDevicesStore.setLockOnLeaveEnabled(deviceId, enabled)
-                            val transport = boundService?.transportManager()
-                            if (transport != null) {
-                                val envelope = Envelope(
-                                    type = MessageType.LOCK_ON_LEAVE_CONFIG,
-                                    senderId = IdentityKeyStore.getInstance(applicationContext).deviceId,
-                                    recipientId = deviceId,
-                                    payload = buildJsonObject { put("enabled", JsonPrimitive(enabled)) }
-                                )
-                                lifecycleScope.launch {
-                                    runCatching { transport.send(envelope) }
-                                }
-                            }
+                            // The phone publishes which computers it arms as a state slot; the core keeps it correct.
+                            boundService?.lockOnLeaveManager()?.publishArmed()
                         },
                         provideHotspotEnabledProvider = { OnboardingPreferences(applicationContext).provideHotspotEnabled },
                         onSetProvideHotspotEnabled = { enabled ->

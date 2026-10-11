@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gossip_core::features::{
-    battery, clipboard, dnd, hotspot, lock_on_leave, media, notifications, ring,
+    battery, clipboard, display, dnd, hotspot, lock_on_leave, media, notifications, ring,
     Outgoing as CoreOutgoing,
 };
 use serde_json::{Map, Value};
@@ -43,23 +43,21 @@ fn payload(json: &str) -> Result<Map<String, Value>, GossipError> {
 
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum DndEffect {
-    Send {
-        message: Outgoing,
-    },
+    /// Publish this device's state: `GossipCore::set_state(slot, value_json)`.
+    SetState { slot: String, value_json: String },
     /// Change the OS Do Not Disturb setting.
-    ApplyLocal {
-        enabled: bool,
-    },
+    ApplyLocal { enabled: bool },
     /// The believed state changed: persist it (the OS offers no way to read it back).
-    Persist {
-        expected: Option<bool>,
-    },
+    Persist { expected: Option<bool> },
 }
 
 impl From<dnd::Effect> for DndEffect {
     fn from(e: dnd::Effect) -> Self {
         match e {
-            dnd::Effect::Send(o) => Self::Send { message: o.into() },
+            dnd::Effect::SetState { enabled } => Self::SetState {
+                slot: dnd::SLOT.to_owned(),
+                value_json: object_json(dnd::state_payload(enabled)),
+            },
             dnd::Effect::ApplyLocal { enabled } => Self::ApplyLocal { enabled },
             dnd::Effect::Persist(expected) => Self::Persist { expected },
         }
@@ -80,24 +78,15 @@ impl Dnd {
         lock(&self.0).expected()
     }
 
-    /// The local DND/Focus state changed (as observed by the OS hook).
-    pub fn local_changed(
-        &self,
-        source_device_id: String,
-        enabled: bool,
-        now_ms: i64,
-    ) -> Vec<DndEffect> {
-        lock(&self.0)
-            .local_changed(&source_device_id, enabled, now_ms)
-            .into_iter()
-            .map(Into::into)
-            .collect()
+    /// Call once at start: publishes the best-known state. The core sends it to every device that connects later.
+    pub fn start(&self) -> Vec<DndEffect> {
+        lock(&self.0).start().into_iter().map(Into::into).collect()
     }
 
-    /// Always reports the best-known state with `isInitialSync`: call on every fresh connect and every 60s.
-    pub fn initial_sync(&self, source_device_id: String) -> Vec<DndEffect> {
+    /// The local DND/Focus state changed (as observed by the OS hook).
+    pub fn local_changed(&self, enabled: bool, now_ms: i64) -> Vec<DndEffect> {
         lock(&self.0)
-            .initial_sync(&source_device_id)
+            .local_changed(enabled, now_ms)
             .into_iter()
             .map(Into::into)
             .collect()
@@ -112,18 +101,30 @@ impl Dnd {
             .collect())
     }
 
-    /// `dnd.update` from a peer.
-    pub fn on_update(
+    /// The `dnd.state` slot of `sender` changed (`value_json` is the slot value).
+    pub fn on_peer_state(
         &self,
-        payload_json: String,
+        sender: String,
+        value_json: String,
         now_ms: i64,
     ) -> Result<Vec<DndEffect>, GossipError> {
         Ok(lock(&self.0)
-            .on_update(&payload(&payload_json)?, now_ms)
+            .on_peer_state(&sender, &payload(&value_json)?, now_ms)
             .into_iter()
             .map(Into::into)
             .collect())
     }
+
+    /// A device was revoked: its next state counts as first contact again.
+    pub fn forget_peer(&self, sender: String) {
+        lock(&self.0).forget_peer(&sender);
+    }
+}
+
+/// The slot the DND state is published in.
+#[uniffi::export]
+pub fn dnd_slot() -> String {
+    dnd::SLOT.to_owned()
 }
 
 // ---- Battery ---------------------------------------------------------------------------------------------------
@@ -154,24 +155,21 @@ impl From<BatteryState> for battery::BatteryState {
 
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum BatteryEffect {
-    Send {
-        message: Outgoing,
-    },
+    /// Publish this device's reading: `GossipCore::set_state(slot, value_json)`.
+    SetState { slot: String, value_json: String },
     /// Raise a low-battery notification for `sender`.
-    LowBattery {
-        sender: String,
-        level: u8,
-    },
+    LowBattery { sender: String, level: u8 },
     /// `sender`'s stored state changed (refresh the UI).
-    Updated {
-        sender: String,
-    },
+    Updated { sender: String },
 }
 
 impl From<battery::Effect> for BatteryEffect {
     fn from(e: battery::Effect) -> Self {
         match e {
-            battery::Effect::Send(o) => Self::Send { message: o.into() },
+            battery::Effect::SetState(state) => Self::SetState {
+                slot: battery::SLOT.to_owned(),
+                value_json: object_json(battery::Battery::payload(state)),
+            },
             battery::Effect::LowBattery { sender, level } => Self::LowBattery { sender, level },
             battery::Effect::Updated { sender } => Self::Updated { sender },
         }
@@ -192,26 +190,17 @@ impl Battery {
         lock(&self.0).state_of(&sender).map(Into::into)
     }
 
-    /// A local power-source change: sends only if the reading differs from the last one sent.
-    pub fn report_if_changed(
-        &self,
-        me: String,
-        reading: Option<BatteryState>,
-    ) -> Option<BatteryEffect> {
+    /// A local power-source reading: publishes only if it differs from the last one published, so it is safe to call on
+    /// every power event.
+    pub fn report(&self, reading: Option<BatteryState>) -> Option<BatteryEffect> {
         lock(&self.0)
-            .report_if_changed(&me, reading.map(Into::into))
+            .report(reading.map(Into::into))
             .map(Into::into)
     }
 
-    /// Sends the current reading unconditionally: on every fresh connect and every 60s.
-    pub fn report_always(
-        &self,
-        me: String,
-        reading: Option<BatteryState>,
-    ) -> Option<BatteryEffect> {
-        lock(&self.0)
-            .report_always(&me, reading.map(Into::into))
-            .map(Into::into)
+    /// A device was revoked: forget its reading and alert state.
+    pub fn forget(&self, sender: String) {
+        lock(&self.0).forget(&sender);
     }
 
     pub fn on_update(
@@ -341,11 +330,12 @@ impl ClipboardGuard {
         Arc::new(Self(Mutex::new(clipboard::ClipboardGuard::new())))
     }
 
-    /// Whether a freshly observed local text value should be sent (records it as sent when it should).
-    pub fn outgoing_text(&self, me: String, text: String, sensitive: bool) -> Option<Outgoing> {
+    /// Whether a freshly observed local text value should be published (records it as sent when it should): the value
+    /// to set in the `clipboard.text` slot, as JSON.
+    pub fn outgoing_text(&self, me: String, text: String, sensitive: bool) -> Option<String> {
         lock(&self.0)
             .outgoing_text(&me, &text, sensitive)
-            .map(Into::into)
+            .map(object_json)
     }
 
     /// Same for an image already normalised to PNG; send the message with `png` as its raw follow-up frame.
@@ -584,6 +574,11 @@ impl HotspotStates {
         Ok(lock(&self.0).on_update(&sender, &payload(&payload_json)?))
     }
 
+    /// A device was revoked, or its slot was cleared.
+    pub fn forget(&self, sender: String) {
+        lock(&self.0).forget(&sender);
+    }
+
     pub fn state_of(&self, sender: String) -> Option<HotspotState> {
         lock(&self.0).state_of(&sender).map(|s| HotspotState {
             enabled: s.enabled,
@@ -621,30 +616,136 @@ impl LockOnLeave {
     }
 }
 
-/// The `lock_on_leave.config` payload JSON.
+/// Per-device cooldown after lock-on-leave fires, in milliseconds.
 #[uniffi::export]
-pub fn lock_on_leave_config_payload(enabled: bool) -> String {
-    object_json(lock_on_leave::config_payload(enabled))
+pub fn lock_on_leave_cooldown_ms() -> i64 {
+    lock_on_leave::COOLDOWN_MS
 }
 
-/// The `battery.update` payload JSON.
+/// The `lock_on_leave.config` slot value for a phone that arms lock-on-leave for these computers.
 #[uniffi::export]
-pub fn battery_payload(source_device_id: String, state: BatteryState) -> String {
-    object_json(battery::Battery::payload(&source_device_id, state.into()))
+pub fn lock_on_leave_config_payload(armed_for: Vec<String>) -> String {
+    object_json(lock_on_leave::config_payload(&armed_for))
 }
 
-/// The `dnd.update` payload JSON.
+/// Whether the phone that published this `lock_on_leave.config` slot value armed lock-on-leave for `me`.
 #[uniffi::export]
-pub fn dnd_update_payload(
-    source_device_id: String,
-    enabled: bool,
-    is_initial_sync: bool,
-) -> String {
-    object_json(dnd::Dnd::update_payload(
-        &source_device_id,
-        enabled,
-        is_initial_sync,
-    ))
+pub fn lock_on_leave_is_armed_for(value_json: String, me: String) -> Result<bool, GossipError> {
+    Ok(lock_on_leave::is_armed_for(&payload(&value_json)?, &me))
+}
+
+/// The slot names the features publish in.
+#[uniffi::export]
+pub fn battery_low_threshold() -> u8 {
+    battery::LOW_THRESHOLD
+}
+
+#[uniffi::export]
+pub fn battery_rearm_level() -> u8 {
+    battery::REARM_LEVEL
+}
+
+#[uniffi::export]
+pub fn battery_slot() -> String {
+    battery::SLOT.to_owned()
+}
+
+#[uniffi::export]
+pub fn hotspot_slot() -> String {
+    hotspot::SLOT.to_owned()
+}
+
+#[uniffi::export]
+pub fn lock_on_leave_slot() -> String {
+    lock_on_leave::SLOT.to_owned()
+}
+
+#[uniffi::export]
+pub fn clipboard_text_slot() -> String {
+    clipboard::TEXT_SLOT.to_owned()
+}
+
+/// The `hotspot.state` slot value.
+#[uniffi::export]
+pub fn hotspot_state_payload(enabled: bool, ssid: Option<String>) -> String {
+    object_json(hotspot::state_payload(enabled, ssid.as_deref()))
+}
+
+/// The `battery.state` slot value.
+#[uniffi::export]
+pub fn battery_payload(state: BatteryState) -> String {
+    object_json(battery::Battery::payload(state.into()))
+}
+
+/// The `dnd.state` slot value.
+#[uniffi::export]
+pub fn dnd_state_payload(enabled: bool) -> String {
+    object_json(dnd::state_payload(enabled))
+}
+
+// ---- Display size -----------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct DisplayInfo {
+    pub width: u32,
+    pub height: u32,
+    pub rotation: u8,
+}
+
+/// The slot a device publishes its display size in.
+#[uniffi::export]
+pub fn display_slot() -> String {
+    display::SLOT.to_owned()
+}
+
+/// The `control.display` slot value for a display size.
+#[uniffi::export]
+pub fn display_payload(info: DisplayInfo) -> String {
+    object_json(
+        display::DisplayInfo {
+            width: info.width,
+            height: info.height,
+            rotation: info.rotation,
+        }
+        .payload(),
+    )
+}
+
+/// The display size in a `control.display` slot value, or `None` if it is missing or out of range.
+#[uniffi::export]
+pub fn display_parse(value_json: String) -> Option<DisplayInfo> {
+    let value = payload(&value_json).ok()?;
+    display::DisplayInfo::parse(&value).map(|d| DisplayInfo {
+        width: d.width,
+        height: d.height,
+        rotation: d.rotation,
+    })
+}
+
+// ---- BLE beacon key ---------------------------------------------------------------------------------------------
+
+/// The direct-only slot a device publishes its BLE beacon key in.
+#[uniffi::export]
+pub fn beacon_key_slot() -> String {
+    gossip_core::crypto::beacon::KEY_SLOT.to_owned()
+}
+
+/// The `direct.ble.beacon_key` slot value for a 32-byte key.
+#[uniffi::export]
+pub fn beacon_key_payload(key: Vec<u8>) -> Result<String, GossipError> {
+    let key: [u8; 32] = key
+        .try_into()
+        .map_err(|_| GossipError::invalid("a beacon key is 32 bytes"))?;
+    Ok(object_json(gossip_core::crypto::beacon::key_slot_payload(
+        &key,
+    )))
+}
+
+/// The 32-byte key in a `direct.ble.beacon_key` slot value, or `None` if it is malformed.
+#[uniffi::export]
+pub fn beacon_key_parse(value_json: String) -> Option<Vec<u8>> {
+    let value = payload(&value_json).ok()?;
+    gossip_core::crypto::beacon::parse_key_slot(&value).map(|k| k.to_vec())
 }
 
 /// The `device.ring` payload JSON.
