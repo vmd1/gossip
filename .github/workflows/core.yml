@@ -1,8 +1,15 @@
 name: Core CI
 
 # The sans-IO Rust core (`desktop/core`) and the shared conformance vectors it is checked against.
-# Runs on pull requests (and manually) only, like the other CI workflows.
+# Runs on pull requests (and manually), like the other CI workflows.
+# A push to dev or main also runs it, which warms the Rust build cache that pull requests start from.
 on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "desktop/**"
+      - "schema/**"
+      - ".github/workflows/core.yml"
   pull_request:
     paths:
       - "desktop/**"
@@ -32,6 +39,12 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: core-test
+
       - name: Format and lint
         run: |
           cargo fmt --check
@@ -59,6 +72,12 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: core-kotlin
+
       - name: Set up Java
         run: java -version
 
@@ -77,50 +96,3 @@ jobs:
           /tmp/venv/bin/pip install --quiet noiseprotocol
           /tmp/venv/bin/python -W ignore schema/conformance/gen_noise_vectors.py > /tmp/noise-ik-vectors.json
           diff /tmp/noise-ik-vectors.json schema/noise-ik-vectors.json
-
-  swift-package:
-    # The universal macOS XCFramework + generated Swift, as the SwiftPM package the Mac app will depend on.
-    runs-on: macos-15
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: desktop
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install the pinned Rust toolchain and both Mac targets
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Build the XCFramework package
-        run: ./scripts/build-xcframework.sh
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: gossip-core-swift-package
-          path: desktop/target/swift-package
-
-  android-libs:
-    # libgossip_ffi.so for every ABI plus the generated Kotlin, using the NDK GitHub's Ubuntu runners ship with.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: desktop
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install the pinned Rust toolchain, the Android targets and cargo-ndk
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
-          cargo install cargo-ndk --locked
-
-      - name: Build the Android libraries
-        run: ./scripts/build-android.sh
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: gossip-core-android
-          path: desktop/target/android

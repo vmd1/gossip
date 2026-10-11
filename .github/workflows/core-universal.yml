@@ -1,0 +1,58 @@
+name: Core universal build
+
+# The universal (arm64 + x86_64) macOS XCFramework the releases use, built as the SwiftPM package the Mac app depends on.
+# The Mac CI builds the host architecture only, so this runs just when something that decides the universal build changes
+# (and on every release, see release.yml). It is the slowest job in the repository, which is why it is not on every PR.
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "desktop/scripts/build-xcframework.sh"
+      - "desktop/Cargo.toml"
+      - "desktop/Cargo.lock"
+      - "desktop/rust-toolchain.toml"
+      - ".github/workflows/core-universal.yml"
+  pull_request:
+    paths:
+      - "desktop/scripts/build-xcframework.sh"
+      - "desktop/Cargo.toml"
+      - "desktop/Cargo.lock"
+      - "desktop/rust-toolchain.toml"
+      - ".github/workflows/core-universal.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: core-universal-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  swift-package:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain and both Mac targets
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: core-universal
+
+      - name: Build the XCFramework package
+        run: ./scripts/build-xcframework.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gossip-core-swift-package
+          path: desktop/target/swift-package
