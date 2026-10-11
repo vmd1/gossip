@@ -4,8 +4,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gossip_core::features::{
-    battery, clipboard, display, dnd, hotspot, lock_on_leave, media, notifications, relay_config, ring,
-    Outgoing as CoreOutgoing,
+    battery, clipboard, display, dnd, hotspot, lock_on_leave, media, notifications, relay_config,
+    ring, Outgoing as CoreOutgoing,
 };
 use serde_json::{Map, Value};
 
@@ -487,7 +487,11 @@ impl MediaController {
 
 /// The `media.command` payload JSON; `command_id` must be a fresh UUID per call.
 #[uniffi::export]
-pub fn media_command_payload(action: MediaAction, seek_ms: Option<i64>, command_id: String) -> String {
+pub fn media_command_payload(
+    action: MediaAction,
+    seek_ms: Option<i64>,
+    command_id: String,
+) -> String {
     object_json(media::command_payload(action.into(), seek_ms, &command_id))
 }
 

@@ -96,7 +96,10 @@ mod tests {
         let theirs = cfg(true, Some("wss://relay.example.com"), 200);
         assert!(theirs.supersedes(&mine));
         assert!(!mine.supersedes(&theirs));
-        assert!(!theirs.supersedes(&theirs), "re-applying the same config is a no-op");
+        assert!(
+            !theirs.supersedes(&theirs),
+            "re-applying the same config is a no-op"
+        );
     }
 
     #[test]
