@@ -119,3 +119,57 @@ describe("health and metrics", () => {
     expect(relay.metrics.render()).toContain('relay_rejects_total{reason="version"} 1');
   });
 });
+
+describe("website", () => {
+  const makeSite = () => {
+    const dir = mkdtempSync(pjoin(tmpdir(), "site-"));
+    writeFileSync(pjoin(dir, "index.html"), "<!doctype html><title>Gossip</title>");
+    writeFileSync(pjoin(dir, "style.css"), "body{}");
+    writeFileSync(pjoin(dir, "secret.env"), "nope");
+    writeFileSync(pjoin(dir, ".hidden.html"), "nope");
+    return dir;
+  };
+  const fetchRaw = async (url: string, init: RequestInit = {}) => {
+    const r = await fetch(url, init);
+    return { status: r.status, type: r.headers.get("content-type"), csp: r.headers.get("content-security-policy"), etag: r.headers.get("etag"), body: await r.text() };
+  };
+
+  it("serves the site at the root with a strict policy, and keeps the relay endpoints", async () => {
+    relay = await startRelay({ SITE_DIR: makeSite(), ABUSE_CONTACT: "abuse@example.test" });
+    const base = `http://127.0.0.1:${relay.port}`;
+    const root = await fetchRaw(`${base}/`);
+    expect(root.status).toBe(200);
+    expect(root.type).toBe("text/html; charset=utf-8");
+    expect(root.body).toContain("<title>Gossip</title>");
+    expect(root.csp).toContain("default-src 'none'");
+    expect((await fetchRaw(`${base}/index.html`)).status).toBe(200);
+    expect((await fetchRaw(`${base}/style.css`)).type).toBe("text/css; charset=utf-8");
+    expect((await fetchRaw(`${base}/healthz`)).body).toBe("ok");
+    expect((await fetchRaw(`${base}/abuse`)).body).toContain("abuse@example.test");
+  });
+
+  it("serves only listed web files: no traversal, no hidden or unknown types, no writes", async () => {
+    relay = await startRelay({ SITE_DIR: makeSite() });
+    const base = `http://127.0.0.1:${relay.port}`;
+    for (const path of ["/secret.env", "/.hidden.html", "/../package.json", "/%2e%2e/package.json", "/style.css/x", "/nope", "/%zz"]) {
+      expect((await fetchRaw(`${base}${path}`)).status, path).toBe(404);
+    }
+    expect((await fetchRaw(`${base}/`, { method: "POST", body: "x" })).status).toBe(404);
+  });
+
+  it("answers HEAD and conditional requests", async () => {
+    relay = await startRelay({ SITE_DIR: makeSite() });
+    const base = `http://127.0.0.1:${relay.port}`;
+    const first = await fetchRaw(`${base}/`);
+    expect((await fetchRaw(`${base}/`, { method: "HEAD" })).body).toBe("");
+    expect((await fetchRaw(`${base}/`, { headers: { "if-none-match": first.etag! } })).status).toBe(304);
+  });
+
+  it("is off unless SITE_DIR is set, and refuses a directory without an index", async () => {
+    relay = await startRelay();
+    expect((await fetchRaw(`http://127.0.0.1:${relay.port}/`)).status).toBe(404);
+    await relay.close();
+    relay = null;
+    await expect(startRelay({ SITE_DIR: mkdtempSync(pjoin(tmpdir(), "empty-")) })).rejects.toThrow(/index\.html/);
+  });
+});
