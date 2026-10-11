@@ -81,6 +81,8 @@ struct ControlLayout: Equatable {
 
     // MARK: Core bridge
 
+    var coreLayout: GossipCoreKit.ControlLayout { core }
+
     private var core: GossipCoreKit.ControlLayout {
         GossipCoreKit.ControlLayout(
             localDisplays: macDisplays.map { GossipCoreKit.LocalDisplay(id: $0.key, rect: .init($0.value)) },
