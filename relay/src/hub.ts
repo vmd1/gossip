@@ -24,6 +24,7 @@ import {
 import { TokenBucket, WindowCounter, coarseIp, limitKeyForIp, type Clock } from "./limits.js";
 import { logger, setLogLevel } from "./logger.js";
 import { Metrics } from "./metrics.js";
+import { Site } from "./site.js";
 import { parseControl, versionAtLeast, type ErrorCode, type JoinMessage } from "./protocol.js";
 
 interface Conn {
@@ -68,6 +69,7 @@ export class Relay {
   readonly httpServer: Server;
   readonly wss: WebSocketServer;
   metricsServer: Server | null = null;
+  private readonly site: Site | null;
 
   private readonly now: Clock;
   private readonly conns = new Set<Conn>();
@@ -87,6 +89,8 @@ export class Relay {
     this.now = opts.now ?? Date.now;
     setLogLevel(config.logLevel);
     this.killManual = config.killSwitch;
+    this.site = config.siteDir ? new Site(config.siteDir) : null;
+    if (this.site) logger.info("site.loaded", { files: this.site.size });
     this.bans = new BanList(this.now);
     this.newKeys = new WindowCounter(config.newKeysPerIpPerHour, 3_600_000, this.now);
     this.newTopics = new WindowCounter(config.newTopicsPerIpPerHour, 3_600_000, this.now);
@@ -219,6 +223,7 @@ export class Relay {
       res.end(this.metrics.render());
       return;
     }
+    if (!onMetricsPort && this.site?.handle(req, res, url)) return;
     res.writeHead(404, { "content-type": "text/plain" });
     res.end("not found");
   }

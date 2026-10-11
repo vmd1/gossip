@@ -1,20 +1,24 @@
 # syntax=docker/dockerfile:1
 
+# Build from the repository root, because the image also carries the project website (site/):
+#   docker build -f relay/Dockerfile -t gossip-relay .
 FROM node:22-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY relay/package.json relay/package-lock.json* ./
 RUN npm ci
-COPY tsconfig.json ./
-COPY src ./src
-COPY scripts ./scripts
+COPY relay/tsconfig.json ./
+COPY relay/src ./src
+COPY relay/scripts ./scripts
 RUN npm run build
 
 FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-COPY package.json package-lock.json* ./
+COPY relay/package.json relay/package-lock.json* ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+# The website, served by the relay at the root of its HTTP port (SITE_DIR).
+COPY site ./site
 
 # TLS termination (wss://) happens in front of this container (reverse proxy /
 # platform load balancer). Set RELAY_ORIGIN to the public wss:// origin clients
@@ -24,6 +28,7 @@ ENV PORT=8080
 ENV RELAY_PATH=/connect
 ENV RELAY_ORIGIN=wss://relay.example.invalid
 ENV ABUSE_CONTACT=
+ENV SITE_DIR=/app/site
 EXPOSE 8080
 USER node
 
