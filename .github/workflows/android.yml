@@ -40,12 +40,21 @@ jobs:
 
       # The app's protocol engine is the Rust core (desktop/core). Gradle builds it (scripts/build-android.sh) with the NDK
       # that ships on the runner, so the toolchain, the four Android targets and cargo-ndk are needed first.
-      - name: Set up the Rust toolchain for the protocol engine
+      - name: Install the Rust toolchain and the Android targets
         working-directory: desktop
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
-          cargo install cargo-ndk --locked
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: android
+
+      # After the cache restore, so the cached cargo-ndk binary is found and only built the first time.
+      - name: Install cargo-ndk
+        run: command -v cargo-ndk || cargo install cargo-ndk --locked
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
