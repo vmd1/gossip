@@ -86,18 +86,12 @@ object MessageType {
     const val NOTIFICATION_REMOVED = "notification.removed"
     const val NOTIFICATION_REPLY = "notification.reply"
     const val NOTIFICATION_DISMISS = "notification.dismiss"
-    const val DND_UPDATE = "dnd.update"
     const val DND_SET = "dnd.set"
     const val CLIPBOARD_UPDATE = "clipboard.update"
     const val TRUST_ROSTER_UPDATE = "trust.roster_update"
     const val TRUST_REVOKE = "trust.revoke"
-    const val LOCK_ON_LEAVE_CONFIG = "lock_on_leave.config"
-    const val HOTSPOT_STATE_UPDATE = "hotspot.state_update"
     const val DEVICE_RING = "device.ring"
     const val DEVICE_RING_STATE = "device.ring_state"
-    const val BATTERY_UPDATE = "battery.update"
-    const val DISPLAY_INFO = "display.info"
-    const val BLE_BEACON_KEY = "ble.beacon_key"
 }
 
 /** Device types advertised in handshake payloads and pairing metadata. */

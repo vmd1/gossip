@@ -124,12 +124,14 @@ impl FeatureSettings {
 
 pub mod battery;
 pub mod clipboard;
+pub mod display;
 pub mod dnd;
 pub mod hotspot;
 pub mod hotspot_gatt;
 pub mod lock_on_leave;
 pub mod media;
 pub mod notifications;
+pub mod relay_config;
 pub mod ring;
 
 use serde_json::{Map, Value};

@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import GossipCoreKit
 
 /// Platform-neutral wire format of the Universal Control data channel (Mac -> Android device).
 /// The Kotlin twin is `ControlProtocol.kt`; both are checked against `schema/control-test-vectors.json`.
@@ -20,10 +21,6 @@ import CryptoKit
 enum ControlDirection: UInt8 {
     case macToDevice = 1
     case deviceToMac = 2
-
-    var hkdfInfo: Data {
-        Data((self == .macToDevice ? "gossip-control-v1 m2d" : "gossip-control-v1 d2m").utf8)
-    }
 }
 
 /// Screen edge, from the point of view of the screen the cursor enters or leaves through.
@@ -119,182 +116,103 @@ enum ControlFrame: Equatable {
         static let cursorPos: UInt8 = 0x86
     }
 
-    func encoded() -> Data {
-        var w = ByteWriter()
-        switch self {
-        case .hello(let id): w.u8(Kind.hello); w.bytes(Data(id.utf8))
-        case .enter(let edge, let pos): w.u8(Kind.enter); w.u8(edge.rawValue); w.u16(pos)
-        case .leave: w.u8(Kind.leave)
-        case .mouseMove(let dx, let dy): w.u8(Kind.mouseMove); w.i16(dx); w.i16(dy)
-        case .buttons(let mask): w.u8(Kind.buttons); w.u8(mask)
-        case .scroll(let dx, let dy): w.u8(Kind.scroll); w.i16(dx); w.i16(dy)
-        case .key(let usage, let down, let mods): w.u8(Kind.key); w.u16(usage); w.u8(down ? 1 : 0); w.u8(mods)
-        case .text(let s): w.u8(Kind.text); w.bytes(Data(s.utf8))
-        case .ping: w.u8(Kind.ping)
-        case .cursorQuery(let t): w.u8(Kind.cursorQuery); w.u8(t)
-        case .action(let a): w.u8(Kind.action); w.u8(a.rawValue)
-        case .helloAck(let d): w.u8(Kind.helloAck); w.display(d)
-        case .displayInfo(let d): w.u8(Kind.displayInfo); w.display(d)
-        case .error(let s): w.u8(Kind.error); w.bytes(Data(s.utf8))
-        case .pong: w.u8(Kind.pong)
-        case .cursorPos(let t, let x, let y, let n): w.u8(Kind.cursorPos); w.u8(t); w.u16(x); w.u16(y); w.u32(n)
-        }
-        return w.data
-    }
+    /// The wire bytes; the codec is the core's (`desktop/core/src/features/control.rs`), shared with every platform.
+    func encoded() -> Data { Data(GossipCoreKit.controlFrameEncode(frame: core)) }
 
     static func decode(_ data: Data) -> ControlFrame? {
-        var r = ByteReader(data)
-        guard let kind = r.u8() else { return nil }
-        switch kind {
-        case Kind.hello: return r.rest().flatMap { String(data: $0, encoding: .utf8) }.map { .hello(sessionId: $0) }
-        case Kind.enter:
-            guard let e = r.u8(), let edge = ControlEdge(rawValue: e), let p = r.u16(), r.isAtEnd else { return nil }
-            return .enter(edge: edge, position: p)
-        case Kind.leave: return r.isAtEnd ? .leave : nil
-        case Kind.mouseMove:
-            guard let dx = r.i16(), let dy = r.i16(), r.isAtEnd else { return nil }
-            return .mouseMove(dx: dx, dy: dy)
-        case Kind.buttons:
-            guard let m = r.u8(), r.isAtEnd else { return nil }
-            return .buttons(m)
-        case Kind.scroll:
-            guard let dx = r.i16(), let dy = r.i16(), r.isAtEnd else { return nil }
-            return .scroll(dx: dx, dy: dy)
-        case Kind.key:
-            guard let u = r.u16(), let d = r.u8(), let m = r.u8(), r.isAtEnd, d <= 1 else { return nil }
-            return .key(usage: u, down: d == 1, modifiers: m)
-        case Kind.text: return r.rest().flatMap { String(data: $0, encoding: .utf8) }.map { .text($0) }
-        case Kind.ping: return r.isAtEnd ? .ping : nil
-        case Kind.cursorQuery:
-            guard let t = r.u8(), r.isAtEnd else { return nil }
-            return .cursorQuery(token: t)
-        case Kind.action:
-            guard let a = r.u8().flatMap(ControlAction.init(rawValue:)), r.isAtEnd else { return nil }
-            return .action(a)
-        case Kind.helloAck: return r.display().map { .helloAck($0) }
-        case Kind.displayInfo: return r.display().map { .displayInfo($0) }
-        case Kind.error: return r.rest().flatMap { String(data: $0, encoding: .utf8) }.map { .error($0) }
-        case Kind.pong: return r.isAtEnd ? .pong : nil
-        case Kind.cursorPos:
-            guard let t = r.u8(), let x = r.u16(), let y = r.u16(), let n = r.u32(), r.isAtEnd else { return nil }
-            return .cursorPos(token: t, x: x, y: y, applied: n)
-        default: return nil
+        GossipCoreKit.controlFrameDecode(data: data).map(ControlFrame.init(core:))
+    }
+
+    private var core: GossipCoreKit.ControlFrame {
+        func info(_ d: ControlDisplayInfo) -> GossipCoreKit.ControlDisplayInfo {
+            GossipCoreKit.ControlDisplayInfo(width: UInt16(clamping: d.width), height: UInt16(clamping: d.height),
+                                             rotation: UInt8(clamping: d.rotation), backend: UInt8(clamping: d.backend))
+        }
+        switch self {
+        case .hello(let id): return .hello(sessionId: id)
+        case .enter(let edge, let pos): return .enter(edge: edge.core, position: pos)
+        case .leave: return .leave
+        case .mouseMove(let dx, let dy): return .mouseMove(dx: dx, dy: dy)
+        case .buttons(let mask): return .buttons(mask: mask)
+        case .scroll(let dx, let dy): return .scroll(dx: dx, dy: dy)
+        case .key(let usage, let down, let mods): return .key(usage: usage, down: down, modifiers: mods)
+        case .text(let s): return .text(text: s)
+        case .ping: return .ping
+        case .cursorQuery(let t): return .cursorQuery(token: t)
+        case .action(let a): return .action(action: a.core)
+        case .helloAck(let d): return .helloAck(info: info(d))
+        case .displayInfo(let d): return .displayInfo(info: info(d))
+        case .error(let s): return .error(reason: s)
+        case .pong: return .pong
+        case .cursorPos(let t, let x, let y, let n): return .cursorPos(token: t, x: x, y: y, applied: n)
+        }
+    }
+
+    private init(core: GossipCoreKit.ControlFrame) {
+        func info(_ d: GossipCoreKit.ControlDisplayInfo) -> ControlDisplayInfo {
+            ControlDisplayInfo(width: Int(d.width), height: Int(d.height), rotation: Int(d.rotation), backend: Int(d.backend))
+        }
+        switch core {
+        case .hello(let id): self = .hello(sessionId: id)
+        case .enter(let edge, let pos): self = .enter(edge: ControlEdge(core: edge), position: pos)
+        case .leave: self = .leave
+        case .mouseMove(let dx, let dy): self = .mouseMove(dx: dx, dy: dy)
+        case .buttons(let mask): self = .buttons(mask)
+        case .scroll(let dx, let dy): self = .scroll(dx: dx, dy: dy)
+        case .key(let usage, let down, let mods): self = .key(usage: usage, down: down, modifiers: mods)
+        case .text(let s): self = .text(s)
+        case .ping: self = .ping
+        case .cursorQuery(let t): self = .cursorQuery(token: t)
+        case .action(let a): self = .action(ControlAction(core: a))
+        case .helloAck(let d): self = .helloAck(info(d))
+        case .displayInfo(let d): self = .displayInfo(info(d))
+        case .error(let s): self = .error(s)
+        case .pong: self = .pong
+        case .cursorPos(let t, let x, let y, let n): self = .cursorPos(token: t, x: x, y: y, applied: n)
         }
     }
 }
 
-/// Encrypts/decrypts frames for one end of a session. Not thread-safe; owned by one queue.
+extension ControlEdge {
+    fileprivate var core: GossipCoreKit.ControlEdge {
+        switch self { case .left: return .left; case .right: return .right; case .top: return .top; case .bottom: return .bottom }
+    }
+    fileprivate init(core: GossipCoreKit.ControlEdge) {
+        switch core { case .left: self = .left; case .right: self = .right; case .top: self = .top; case .bottom: self = .bottom }
+    }
+}
+
+extension ControlAction {
+    fileprivate var core: GossipCoreKit.ControlAction {
+        switch self { case .home: return .home; case .appSwitch: return .appSwitch; case .notifications: return .notifications; case .back: return .back }
+    }
+    fileprivate init(core: GossipCoreKit.ControlAction) {
+        switch core { case .home: self = .home; case .appSwitch: self = .appSwitch; case .notifications: self = .notifications; case .back: self = .back }
+    }
+}
+
+/// Encrypts/decrypts frames for one end of a session. The construction is the core's `StreamCipher`
+/// (`desktop/core/src/crypto/stream.rs`), shared with every platform. Owned by one queue.
 struct ControlCipher {
     enum Failure: Error { case badLength, replayed, authentication }
 
-    private let sendKey: SymmetricKey
-    private let receiveKey: SymmetricKey
-    private let sendDirection: ControlDirection
-    private let sessionIdData: Data
-    private(set) var sendCounter: UInt64 = 0
-    private(set) var lastReceivedCounter: UInt64 = 0
+    private let inner: GossipCoreKit.StreamCipher
 
     /// `role` is this end's role: the Mac sends m2d and receives d2m.
     init(secret: Data, sessionId: String, role: ControlDirection) {
-        sessionIdData = Data(sessionId.utf8)
-        func key(_ d: ControlDirection) -> SymmetricKey {
-            HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: secret), salt: Data(sessionId.utf8), info: d.hkdfInfo, outputByteCount: 32)
-        }
-        let other: ControlDirection = role == .macToDevice ? .deviceToMac : .macToDevice
-        sendKey = key(role)
-        receiveKey = key(other)
-        sendDirection = role
+        inner = GossipCoreKit.StreamCipher(profile: .control, secret: secret, sessionId: sessionId, firstEnd: role == .macToDevice)
     }
 
-    private func aad(_ d: ControlDirection) -> Data {
-        var a = Data("gossip-control-v1".utf8)
-        a.append(d.rawValue)
-        a.append(sessionIdData)
-        return a
-    }
-
-    private static func nonce(_ counter: UInt64) throws -> ChaChaPoly.Nonce {
-        var n = Data(count: 4)
-        withUnsafeBytes(of: counter.bigEndian) { n.append(contentsOf: $0) }
-        return try ChaChaPoly.Nonce(data: n)
-    }
-
-    mutating func seal(_ frame: ControlFrame) throws -> Data {
-        sendCounter += 1
-        return try seal(plaintext: frame.encoded(), counter: sendCounter)
-    }
-
-    /// Exposed for the shared test vectors (fixed counter).
-    func seal(plaintext: Data, counter: UInt64) throws -> Data {
-        let box = try ChaChaPoly.seal(plaintext, using: sendKey, nonce: Self.nonce(counter), authenticating: aad(sendDirection))
-        var out = Data()
-        withUnsafeBytes(of: counter.bigEndian) { out.append(contentsOf: $0) }
-        out.append(box.ciphertext)
-        out.append(box.tag)
-        return out
-    }
+    mutating func seal(_ frame: ControlFrame) throws -> Data { try inner.seal(plaintext: frame.encoded()) }
 
     mutating func open(_ message: Data) throws -> ControlFrame? {
-        guard message.count >= 8 + 16 else { throw Failure.badLength }
-        let base = message.startIndex
-        var counter: UInt64 = 0
-        for i in 0..<8 { counter = (counter << 8) | UInt64(message[base + i]) }
-        guard counter > lastReceivedCounter else { throw Failure.replayed }
-        let ciphertext = message[(base + 8)..<(message.endIndex - 16)]
-        let tag = message[(message.endIndex - 16)...]
-        let receiveDirection: ControlDirection = sendDirection == .macToDevice ? .deviceToMac : .macToDevice
         let plaintext: Data
-        do {
-            let box = try ChaChaPoly.SealedBox(nonce: Self.nonce(counter), ciphertext: ciphertext, tag: tag)
-            plaintext = try ChaChaPoly.open(box, using: receiveKey, authenticating: aad(receiveDirection))
-        } catch {
+        do { plaintext = try inner.open(message: message) } catch {
+            let text = "\(error)"
+            if text.contains("too short") { throw Failure.badLength }
+            if text.contains("not greater") { throw Failure.replayed }
             throw Failure.authentication
         }
-        lastReceivedCounter = counter // only after authentication, so garbage can't burn counters
         return ControlFrame.decode(plaintext)
-    }
-}
-
-// MARK: - Byte helpers
-
-struct ByteWriter {
-    private(set) var data = Data()
-    mutating func u8(_ v: UInt8) { data.append(v) }
-    mutating func u16(_ v: UInt16) { data.append(UInt8(v >> 8)); data.append(UInt8(v & 0xff)) }
-    mutating func i16(_ v: Int16) { u16(UInt16(bitPattern: v)) }
-    mutating func u32(_ v: UInt32) { u16(UInt16(v >> 16)); u16(UInt16(v & 0xffff)) }
-    mutating func bytes(_ d: Data) { data.append(d) }
-    mutating func display(_ d: ControlDisplayInfo) {
-        u16(UInt16(clamping: d.width)); u16(UInt16(clamping: d.height))
-        u8(UInt8(clamping: d.rotation)); u8(UInt8(clamping: d.backend))
-    }
-}
-
-struct ByteReader {
-    private let data: Data
-    private var index: Data.Index
-    init(_ data: Data) { self.data = data; index = data.startIndex }
-    var isAtEnd: Bool { index == data.endIndex }
-    mutating func u8() -> UInt8? {
-        guard index < data.endIndex else { return nil }
-        defer { index = data.index(after: index) }
-        return data[index]
-    }
-    mutating func u16() -> UInt16? {
-        guard let a = u8(), let b = u8() else { return nil }
-        return UInt16(a) << 8 | UInt16(b)
-    }
-    mutating func i16() -> Int16? { u16().map { Int16(bitPattern: $0) } }
-    mutating func u32() -> UInt32? {
-        guard let a = u16(), let b = u16() else { return nil }
-        return UInt32(a) << 16 | UInt32(b)
-    }
-    mutating func rest() -> Data? {
-        defer { index = data.endIndex }
-        return Data(data[index...])
-    }
-    mutating func display() -> ControlDisplayInfo? {
-        guard let w = u16(), let h = u16(), let r = u8(), let b = u8(), isAtEnd else { return nil }
-        return ControlDisplayInfo(width: Int(w), height: Int(h), rotation: Int(r), backend: Int(b))
     }
 }

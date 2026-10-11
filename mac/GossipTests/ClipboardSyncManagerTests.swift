@@ -1,52 +1,27 @@
 import XCTest
 @testable import Gossip
+import GossipCoreKit
 
 final class ClipboardSyncManagerTests: XCTestCase {
-    func testSendsWhenValueDiffersFromLastRemoteSetValue() {
-        XCTAssertTrue(ClipboardSyncManager.shouldSend(newValue: "hello", lastRemoteSetValue: "goodbye"))
+    func testALocalCopyIsPublishedOnceAndEchoesAreSuppressed() throws {
+        let guardLogic = GossipCoreKit.ClipboardGuard()
+        XCTAssertNotNil(guardLogic.outgoingText(me: "me", text: "hello", sensitive: false), "a genuine local copy")
+        XCTAssertNil(guardLogic.outgoingText(me: "me", text: "hello", sensitive: false), "the same value is not published again")
+        let incoming = try guardLogic.incomingText(payloadJson: #"{"text":"from-peer","sourceDeviceId":"peer"}"#)
+        XCTAssertEqual(incoming, "from-peer")
+        XCTAssertNil(guardLogic.outgoingText(me: "me", text: "from-peer", sensitive: false), "our own write echoed back by the next poll")
+        XCTAssertNotNil(guardLogic.outgoingText(me: "me", text: "new local", sensitive: false))
+        XCTAssertNil(guardLogic.outgoingText(me: "me", text: "secret", sensitive: true), "sensitive content is never published")
     }
 
-    func testSendsWhenThereIsNoLastRemoteSetValueYet() {
-        XCTAssertTrue(ClipboardSyncManager.shouldSend(newValue: "hello", lastRemoteSetValue: nil))
-    }
-
-    func testSuppressesSendWhenValueMatchesLastRemoteSetValue() {
-        XCTAssertFalse(ClipboardSyncManager.shouldSend(newValue: "hello", lastRemoteSetValue: "hello"))
-    }
-
-    func testSuppressesSendWhenValueMatchesLastSentValue() {
-        // Regression test for #29: without checking lastSentValue too, the periodic resync
-        // would re-broadcast a locally-originated pasteboard value forever, since
-        // lastRemoteSetValue (only set on receiving a peer's update) never matches it.
-        XCTAssertFalse(ClipboardSyncManager.shouldSend(newValue: "hello", lastRemoteSetValue: nil, lastSentValue: "hello"))
-    }
-
-    func testSendsWhenValueDiffersFromBothLastRemoteSetAndLastSentValue() {
-        XCTAssertTrue(ClipboardSyncManager.shouldSend(newValue: "hello", lastRemoteSetValue: "goodbye", lastSentValue: "earlier"))
-    }
-
-    func testSendsImageWhenDataDiffersFromLastRemoteSetImageData() {
-        let a = Data([0x01, 0x02])
-        let b = Data([0x03, 0x04])
-        XCTAssertTrue(ClipboardSyncManager.shouldSend(newImageData: a, lastRemoteSetImageData: b))
-    }
-
-    func testSendsImageWhenThereIsNoLastRemoteSetImageDataYet() {
-        XCTAssertTrue(ClipboardSyncManager.shouldSend(newImageData: Data([0x01]), lastRemoteSetImageData: nil))
-    }
-
-    func testSuppressesImageSendWhenDataMatchesLastRemoteSetImageData() {
-        let data = Data([0x01, 0x02, 0x03])
-        XCTAssertFalse(ClipboardSyncManager.shouldSend(newImageData: data, lastRemoteSetImageData: data))
-    }
-
-    func testSuppressesImageSendWhenDataMatchesLastSentImageData() {
-        let data = Data([0x01, 0x02, 0x03])
-        XCTAssertFalse(ClipboardSyncManager.shouldSend(newImageData: data, lastRemoteSetImageData: nil, lastSentImageData: data))
-    }
-
-    func testSendsImageWhenDataDiffersFromBothLastRemoteSetAndLastSentImageData() {
-        XCTAssertTrue(ClipboardSyncManager.shouldSend(newImageData: Data([0x09]), lastRemoteSetImageData: Data([0x01]), lastSentImageData: Data([0x02])))
+    func testImagesAreSuppressedLikeText() {
+        let guardLogic = GossipCoreKit.ClipboardGuard()
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = rep.representation(using: .png, properties: [:])!
+        XCTAssertNotNil(guardLogic.outgoingImage(me: "me", png: png, sensitive: false))
+        XCTAssertNil(guardLogic.outgoingImage(me: "me", png: png, sensitive: false), "the same image is not sent again")
+        XCTAssertNil(guardLogic.outgoingImage(me: "me", png: png, sensitive: true))
     }
 
     func testSecretAndTransientPasteboardTypesAreNeverSynced() {

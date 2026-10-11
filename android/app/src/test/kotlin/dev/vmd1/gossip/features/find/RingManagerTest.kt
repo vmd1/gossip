@@ -4,8 +4,6 @@ import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.MessageType
 import dev.vmd1.gossip.transport.MessageRouter
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -21,12 +19,12 @@ class RingManagerTest {
     }
 
     private fun env(action: String, ringId: String) =
-        Envelope(type = MessageType.DEVICE_RING, senderId = "peer", recipientId = "me", payload = RingManager.payload(action, ringId))
+        Envelope(type = MessageType.DEVICE_RING, senderId = "peer", recipientId = "me", payload = kotlinx.serialization.json.buildJsonObject { put("action", kotlinx.serialization.json.JsonPrimitive(action)); put("ringId", kotlinx.serialization.json.JsonPrimitive(ringId)) })
 
     @Test
     fun `start rings and stop silences`() = runTest {
         val router = MessageRouter(); val ringer = FakeRinger()
-        val m = RingManager(router, ringer, this); m.start()
+        val m = RingManager(router, ringer, this, tickMs = 10_000_000); m.start()
         router.dispatch(env("start", "a"))
         assertTrue(m.isRinging); assertEquals(1, ringer.starts)
         router.dispatch(env("stop", "b"))
@@ -37,7 +35,7 @@ class RingManagerTest {
     @Test
     fun `duplicate start is a no-op and cannot restart a stopped ring`() = runTest {
         val router = MessageRouter(); val ringer = FakeRinger()
-        val m = RingManager(router, ringer, this); m.start()
+        val m = RingManager(router, ringer, this, tickMs = 10_000_000); m.start()
         router.dispatch(env("start", "a"))
         router.dispatch(env("start", "a"))
         assertEquals(1, ringer.starts)
@@ -52,7 +50,7 @@ class RingManagerTest {
     @Test
     fun `stop while silent and a second start while ringing are no-ops`() = runTest {
         val router = MessageRouter(); val ringer = FakeRinger()
-        val m = RingManager(router, ringer, this); m.start()
+        val m = RingManager(router, ringer, this, tickMs = 10_000_000); m.start()
         router.dispatch(env("stop", "x")); assertEquals(0, ringer.stops)
         router.dispatch(env("start", "a")); router.dispatch(env("start", "b"))
         assertEquals(1, ringer.starts)
@@ -62,24 +60,26 @@ class RingManagerTest {
     @Test
     fun `auto-stops after the timeout`() = runTest {
         val router = MessageRouter(); val ringer = FakeRinger()
-        val scope = TestScope(testScheduler)
-        val m = RingManager(router, ringer, scope, autoStopMs = 1_000); m.start()
+        var clock = 1_000_000L
+        val m = RingManager(router, ringer, this, now = { clock }, tickMs = 10_000_000); m.start()
         router.dispatch(env("start", "a"))
-        scope.advanceTimeBy(999); assertTrue(m.isRinging)
-        scope.advanceTimeBy(2); scope.testScheduler.runCurrent()
+        clock += RingManager.AUTO_STOP_MS - 1; m.tick(); assertTrue(m.isRinging)
+        clock += 2; m.tick()
         assertFalse(m.isRinging); assertEquals(1, ringer.stops)
+        m.shutdown()
     }
 
     @Test
     fun `malformed or disabled-feature messages do nothing`() = runTest {
         val ringer = FakeRinger()
         val router = MessageRouter(isMessageAllowed = { false })
-        val m = RingManager(router, ringer, this); m.start()
+        val m = RingManager(router, ringer, this, tickMs = 10_000_000); m.start()
         router.dispatch(env("start", "a"))
         assertEquals(0, ringer.starts)
-        val open = MessageRouter(); val m2 = RingManager(open, ringer, this); m2.start()
+        val open = MessageRouter(); val m2 = RingManager(open, ringer, this, tickMs = 10_000_000); m2.start()
         open.dispatch(Envelope(type = MessageType.DEVICE_RING, senderId = "p"))  // no payload
         assertEquals(0, ringer.starts)
+        m.shutdown(); m2.shutdown()
     }
 
     private fun ringState(from: String, ringing: Boolean) = Envelope(
@@ -93,13 +93,13 @@ class RingManagerTest {
     @Test
     fun `reports ring_state to the requester when ringing starts and stops, however it stops`() = runTest {
         val router = MessageRouter(); val sent = mutableListOf<Envelope>()
-        val scope = TestScope(testScheduler)
-        val m = RingManager(router, FakeRinger(), scope, autoStopMs = 1_000, selfId = "me", send = { sent += it }); m.start()
+        var clock = 1_000_000L
+        val m = RingManager(router, FakeRinger(), this, selfId = "me", send = { sent += it }, now = { clock }, tickMs = 10_000_000); m.start()
         router.dispatch(env("start", "a"))                       // requester is "peer"
         m.stopRinging()                                          // local Stop
         assertEquals(listOf("peer" to "true", "peer" to "false"), states(sent))
         sent.clear()
-        router.dispatch(env("start", "b")); scope.advanceTimeBy(1_001); scope.testScheduler.runCurrent()   // auto-stop
+        router.dispatch(env("start", "b")); clock += RingManager.AUTO_STOP_MS + 1; m.tick()   // auto-stop
         assertEquals(listOf("peer" to "true", "peer" to "false"), states(sent))
         sent.clear()
         router.dispatch(env("start", "c")); router.dispatch(env("stop", "d"))                              // stop message
@@ -113,7 +113,7 @@ class RingManagerTest {
     @Test
     fun `toggleRing sends start then stop and tracks the ringing peer`() = runTest {
         val router = MessageRouter(); val sent = mutableListOf<Envelope>()
-        val m = RingManager(router, FakeRinger(), TestScope(testScheduler), selfId = "me", send = { sent += it }); m.start()
+        val m = RingManager(router, FakeRinger(), this, selfId = "me", send = { sent += it }, tickMs = 10_000_000); m.start()
         m.toggleRing("phone")
         assertEquals(setOf("phone"), m.ringingPeers.value)
         assertEquals("start", sent.last().payload["action"].toString().trim('"'))
@@ -127,14 +127,14 @@ class RingManagerTest {
     @Test
     fun `peer ring_state updates the button state and a lost report expires`() = runTest {
         val router = MessageRouter()
-        val scope = TestScope(testScheduler)
-        val m = RingManager(router, FakeRinger(), scope, selfId = "me"); m.start()
+        var clock = 1_000_000L
+        val m = RingManager(router, FakeRinger(), this, selfId = "me", now = { clock }, tickMs = 10_000_000); m.start()
         router.dispatch(ringState("phone", true)); router.dispatch(ringState("phone", true))
         assertEquals(setOf("phone"), m.ringingPeers.value)
         router.dispatch(ringState("phone", false)); router.dispatch(ringState("phone", false))
         assertEquals(emptySet<String>(), m.ringingPeers.value)
         router.dispatch(ringState("tablet", true))                // report of "stopped" never arrives
-        scope.advanceTimeBy(RingManager.PEER_RINGING_EXPIRY_MS + 1); scope.testScheduler.runCurrent()
+        clock += RingManager.PEER_RINGING_EXPIRY_MS + 1; m.tick()
         assertEquals(emptySet<String>(), m.ringingPeers.value)
         m.shutdown()
     }

@@ -12,6 +12,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Base64
 import dev.vmd1.gossip.util.Log
+import uniffi.gossip_ffi.ReplyGuard as CoreReplyGuard
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.DeviceType
 import dev.vmd1.gossip.protocol.MessageType
@@ -30,7 +31,6 @@ import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "NotificationListener"
-private const val REPLY_DEDUPE_CACHE_LIMIT = 128
 private const val APP_ICON_SIZE_PX = 96
 private const val APP_ICON_CACHE_LIMIT = 128
 
@@ -60,30 +60,16 @@ class NotificationListenerImpl : NotificationListenerService() {
     private val replyTargets = ConcurrentHashMap<String, ReplyTarget>()
     private var scope: CoroutineScope? = null
 
-    /** Bounded, size-capped cache of recently-handled `notification.reply` [NotificationReplyPayload.attemptId]s.
-     *  A duplicate delivery (retry, relay race, mesh dedupe-cache eviction — see
-     *  `docs/wire-protocol.md`'s "De-duplication" section) must not fire the source app's
-     *  own `PendingIntent` twice, since that sends the same reply text into a real
-     *  conversation a second time. Mirrors `TransportManager.recentEnvelopeIds`/`recordSeen`. */
+    /** Acts on each `notification.reply` attempt once. A duplicate delivery (retry, relay race, mesh dedupe-cache eviction —
+     *  see `docs/wire-protocol.md`'s "De-duplication" section) must not fire the source app's own `PendingIntent` twice, since
+     *  that sends the same reply text into a real conversation a second time. The bounded recently-handled cache keyed by the
+     *  per-attempt `attemptId` (not the notification `id`, which is reused across distinct replies) is the core's `ReplyGuard`
+     *  (`desktop/core/src/features/notifications.rs`), shared with every platform. */
+    private val replyGuard = CoreReplyGuard()
+
     /** packageName -> encoded launcher icon (or null if unavailable); see [appIconBase64]. Bounded. */
     private val appIconCache = object : LinkedHashMap<String, String?>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String?>?) = size > APP_ICON_CACHE_LIMIT
-    }
-
-    private val dedupeLock = Any()
-    private val recentReplyAttemptIds = ArrayDeque<String>()
-    private val recentReplyAttemptIdSet = HashSet<String>()
-
-    /** Returns `true` the first time [attemptId] is seen (caller should act on it), `false`
-     *  for a repeat (caller should drop it as a no-op). */
-    private fun recordReplyAttemptSeen(attemptId: String): Boolean = synchronized(dedupeLock) {
-        if (!recentReplyAttemptIdSet.add(attemptId)) return@synchronized false
-        recentReplyAttemptIds.addLast(attemptId)
-        if (recentReplyAttemptIds.size > REPLY_DEDUPE_CACHE_LIMIT) {
-            val evicted = recentReplyAttemptIds.removeFirst()
-            recentReplyAttemptIdSet.remove(evicted)
-        }
-        true
     }
 
     /** Only phones forward their notifications to the mesh; a tablet (or any other non-phone) shows
@@ -261,18 +247,18 @@ class NotificationListenerImpl : NotificationListenerService() {
     // MARK: - notification.reply (mac -> android)
 
     private fun handleReply(payload: JsonObject) {
+        // `null`: a duplicate attempt, or a reply without the required `attemptId` (nothing to de-duplicate on).
         val reply = try {
-            NotificationReplyPayload.fromPayload(payload)
+            replyGuard.accept(payload.toString())
         } catch (e: Exception) {
             Log.w(TAG, "Failed to decode notification.reply payload", e)
             return
-        }
-        if (!recordReplyAttemptSeen(reply.attemptId)) {
-            Log.i(TAG, "Dropping duplicate delivery of reply attempt ${reply.attemptId} for notification ${reply.id}")
+        } ?: run {
+            Log.i(TAG, "Dropping a duplicate or malformed notification.reply")
             return
         }
-        val target = replyTargets[reply.id] ?: run {
-            Log.w(TAG, "No cached reply target for notification ${reply.id}; can't deliver reply")
+        val target = replyTargets[reply.notificationId] ?: run {
+            Log.w(TAG, "No cached reply target for notification ${reply.notificationId}; can't deliver reply")
             return
         }
         try {
@@ -284,7 +270,7 @@ class NotificationListenerImpl : NotificationListenerService() {
             RemoteInput.addResultsToIntent(target.remoteInputs, fillInIntent, resultsBundle)
             target.pendingIntent.send(applicationContext, 0, fillInIntent)
         } catch (e: PendingIntent.CanceledException) {
-            Log.w(TAG, "Reply PendingIntent was canceled for notification ${reply.id}", e)
+            Log.w(TAG, "Reply PendingIntent was canceled for notification ${reply.notificationId}", e)
         }
     }
 

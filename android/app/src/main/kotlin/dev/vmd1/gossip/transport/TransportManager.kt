@@ -337,7 +337,7 @@ class TransportManager(
                 if (first || event.deviceId !in _meshReachableDeviceIds.value) refreshMeshReachable()
             }
             is CoreBridge.BridgeAction.ReconcileDue -> {
-                // Only trust gossip is scheduled by the engine for now; each feature still runs its own resync loop.
+                // Only trust gossip is still a scheduled task; every feature's state is a slot the core reconciles itself.
                 if (event.task == "trust.roster_update") sendRoster(event.peer)
             }
             is CoreBridge.BridgeAction.DeviceRevoked -> Unit

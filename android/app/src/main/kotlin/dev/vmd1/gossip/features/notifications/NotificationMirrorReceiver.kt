@@ -205,9 +205,9 @@ class NotificationMirrorReceiver(
             type = MessageType.NOTIFICATION_REPLY,
             senderId = identityKeyStore.deviceId,
             recipientId = sourceDeviceId,
-            payload = Json.encodeToJsonElement(
-                NotificationReplyPayload.serializer(),
-                NotificationReplyPayload(id = originalId, text = text, attemptId = UUID.randomUUID().toString())
+            // The payload shape (and the per-attempt id the receiver de-duplicates on) is the core's.
+            payload = Json.parseToJsonElement(
+                uniffi.gossip_ffi.notificationReplyPayload(originalId, text, UUID.randomUUID().toString())
             ).jsonObject
         )
         scope.launch {

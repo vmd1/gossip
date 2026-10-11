@@ -5,9 +5,8 @@ import CryptoKit
 /// a UUID plus an Ed25519 signing keypair and an X25519 key-agreement keypair.
 ///
 /// Stored as JSON in the login Keychain (`KeychainBlobStore`), so another process of the same user can't read the
-/// private keys from disk. A pre-Keychain `~/Library/Application Support/Connect/identity.json` is migrated into the
-/// Keychain on first launch and then scrubbed. The Keychain ACL trusts the app's code-signing identity, which is
-/// stable now that builds are signed with `gossip.vmd1.dev` (`mac/scripts/create-signing-cert.sh`).
+/// private keys from disk. There is no file copy: if the Keychain refuses to hand the identity over, the store does not
+/// invent a new one on disk (see `KeychainBlobStore`).
 final class IdentityKeyStore {
     static let shared = IdentityKeyStore()
 
@@ -36,16 +35,9 @@ final class IdentityKeyStore {
         self.init(blob: FileBlobStore(url: fileURL))
     }
 
-    /// The production store: Keychain, migrating from the legacy file.
+    /// The production store: the Keychain.
     convenience init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        // Deliberately still "Connect", not "Gossip" — this is the on-disk
-        // ~/Library/Application Support directory that held IdentityKeyStore's
-        // device identity and TrustedDevicesStore's pairing state. Renaming it
-        // would orphan the legacy file we migrate from.
-        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-        PrivateFile.ensureDirectory(dir)
-        self.init(blob: ProductionBlobStore.make(account: "identity", legacyFile: dir.appendingPathComponent("identity.json")))
+        self.init(blob: ProductionBlobStore.make(account: "identity"))
     }
 
     // MARK: - Public API

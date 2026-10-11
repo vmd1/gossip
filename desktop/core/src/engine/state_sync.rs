@@ -39,7 +39,9 @@ impl<E: Env> Core<E> {
         slots: Vec<(String, SlotValue)>,
         out: &mut Out,
     ) {
-        for chunk in slots.chunks(ss::MAX_SLOTS_PER_MESSAGE) {
+        let (direct, mesh): (Vec<_>, Vec<_>) =
+            slots.into_iter().partition(|(n, _)| ss::is_direct_slot(n));
+        for chunk in mesh.chunks(ss::MAX_SLOTS_PER_MESSAGE) {
             let payload = ss::update_payload(chunk.iter().map(|(n, v)| (n.as_str(), v)));
             let mut envelope = self.new_envelope(KIND_UPDATE).with_payload(payload);
             match peer {
@@ -48,6 +50,24 @@ impl<E: Env> Core<E> {
             }
             // Nobody to tell is fine: the digest and the on-connect send reach them later.
             let _ = self.send_into(envelope, &mut Vec::new(), out);
+        }
+        if direct.is_empty() {
+            return;
+        }
+        let targets: Vec<String> = match peer {
+            Some(p) => vec![p.to_owned()],
+            None => self.peers.keys().cloned().collect(),
+        };
+        for target in targets {
+            for chunk in direct.chunks(ss::MAX_SLOTS_PER_MESSAGE) {
+                let payload = ss::update_payload(chunk.iter().map(|(n, v)| (n.as_str(), v)));
+                let envelope = self
+                    .new_envelope(KIND_UPDATE)
+                    .to(&target)
+                    .with_ttl(0)
+                    .with_payload(payload);
+                let _ = self.send_into(envelope, &mut Vec::new(), out);
+            }
         }
     }
 
@@ -65,6 +85,7 @@ impl<E: Env> Core<E> {
     }
 
     /// The periodic reconcile: broadcast what versions of our slots exist, so anyone who missed an update asks for it.
+    /// Direct-only slots are listed to each directly connected peer separately and never flooded.
     pub(super) fn broadcast_state_digest(&mut self, out: &mut Out) {
         if self.local_state.is_empty() {
             return;
@@ -75,27 +96,56 @@ impl<E: Env> Core<E> {
             .into_iter()
             .filter(|(name, _)| self.features.is_message_allowed(name))
             .collect();
-        if digest.is_empty() {
-            return;
+        let (direct, mesh): (
+            std::collections::BTreeMap<_, _>,
+            std::collections::BTreeMap<_, _>,
+        ) = digest
+            .into_iter()
+            .partition(|(name, _)| ss::is_direct_slot(name));
+        if !mesh.is_empty() {
+            let mut envelope = self
+                .new_envelope(KIND_DIGEST)
+                .with_payload(ss::digest_payload(&mesh));
+            envelope.broadcast = true;
+            let _ = self.send_into(envelope, &mut Vec::new(), out);
         }
-        let mut envelope = self
-            .new_envelope(KIND_DIGEST)
-            .with_payload(ss::digest_payload(&digest));
-        envelope.broadcast = true;
-        let _ = self.send_into(envelope, &mut Vec::new(), out);
+        if !direct.is_empty() {
+            let peers: Vec<String> = self.peers.keys().cloned().collect();
+            for peer in peers {
+                let envelope = self
+                    .new_envelope(KIND_DIGEST)
+                    .to(&peer)
+                    .with_ttl(0)
+                    .with_payload(ss::digest_payload(&direct));
+                let _ = self.send_into(envelope, &mut Vec::new(), out);
+            }
+        }
     }
 
     /// `state.update`, `state.digest` or `state.request` from `envelope.sender_id`. The sender can only ever write its
     /// own slots, because the owner is the signed sender.
-    pub(super) fn handle_state_message(&mut self, envelope: &Envelope, out: &mut Out) {
+    pub(super) fn handle_state_message(
+        &mut self,
+        conn: ConnId,
+        envelope: &Envelope,
+        out: &mut Out,
+    ) {
         let from = envelope.sender_id.clone();
         if !self.trust.is_trusted(&from) || self.trust.revoked_at(&from).is_some() {
             return;
         }
+        // Direct-only slots count only when this message came straight from its owner.
+        let arrived_directly = self
+            .conns
+            .get(&conn)
+            .and_then(|c| c.peer.as_ref())
+            .is_some_and(|p| p.device_id == from);
         match envelope.kind.as_str() {
             KIND_UPDATE => {
                 for (slot, incoming) in ss::parse_update(&envelope.payload) {
-                    if !self.features.is_message_allowed(&slot) {
+                    if !self.features.is_message_allowed(&slot)
+                        || (ss::is_direct_slot(&slot) && !arrived_directly)
+                    {
                         continue;
                     }
                     let version = incoming.version;
@@ -117,12 +167,16 @@ impl<E: Env> Core<E> {
                     .wanted(&from, &digest)
                     .into_iter()
                     .filter(|slot| self.features.is_message_allowed(slot))
+                    .filter(|slot| !ss::is_direct_slot(slot) || arrived_directly)
                     .collect();
                 if !wanted.is_empty() {
-                    let request = self
+                    let mut request = self
                         .new_envelope(KIND_REQUEST)
                         .to(&from)
                         .with_payload(ss::request_payload(&wanted));
+                    if wanted.iter().all(|s| ss::is_direct_slot(s)) {
+                        request = request.with_ttl(0);
+                    }
                     let _ = self.send_into(request, &mut Vec::new(), out);
                 }
             }
@@ -130,6 +184,7 @@ impl<E: Env> Core<E> {
                 let slots: Vec<(String, SlotValue)> = ss::parse_request(&envelope.payload)
                     .into_iter()
                     .filter(|slot| self.features.is_message_allowed(slot))
+                    .filter(|slot| !ss::is_direct_slot(slot) || arrived_directly)
                     .filter_map(|slot| self.local_state.get(&slot).map(|v| (slot, v.clone())))
                     .collect();
                 if !slots.is_empty() {

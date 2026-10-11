@@ -195,11 +195,11 @@ do {
     // ---- Feature state machines across the FFI.
     let dndA = Dnd(persistedExpected: nil), dndB = Dnd(persistedExpected: true)
     var payloadA = "", payloadB = ""
-    for case .send(let m) in dndA.initialSync(sourceDeviceId: "a") { payloadA = m.payloadJson }
-    for case .send(let m) in dndB.initialSync(sourceDeviceId: "b") { payloadB = m.payloadJson }
-    _ = try dndA.onUpdate(payloadJson: payloadB, nowMs: 0)
-    _ = try dndB.onUpdate(payloadJson: payloadA, nowMs: 0)
-    check(dndA.expected() == true && dndB.expected() == true, "DND initial sync OR-merges to on for both")
+    for case .setState(let slot, let value) in dndA.start() { payloadA = value; check(slot == "dnd.state", "DND publishes its slot") }
+    for case .setState(_, let value) in dndB.start() { payloadB = value }
+    _ = try dndA.onPeerState(sender: "b", valueJson: payloadB, nowMs: 0)
+    _ = try dndB.onPeerState(sender: "a", valueJson: payloadA, nowMs: 0)
+    check(dndA.expected() == true && dndB.expected() == true, "DND first contact OR-merges to on for both")
 
     let battery = Battery()
     var alerts = 0
@@ -209,6 +209,14 @@ do {
     }
     check(alerts == 1, "low-battery alert fires once per episode")
     check(battery.stateOf(sender: "p")?.level == 18, "battery state tracked")
+    let reading = BatteryState(level: 50, isCharging: false)
+    if case .setState(let slot, _)? = battery.report(reading: reading) { check(slot == "battery.state", "battery publishes its slot") } else { check(false, "a new reading is published") }
+    check(battery.report(reading: reading) == nil, "an unchanged reading is not published again")
+    check(try lockOnLeaveIsArmedFor(valueJson: lockOnLeaveConfigPayload(armedFor: ["x", "me"]), me: "me"), "lock-on-leave arming names the computer")
+    let beaconValue = try beaconKeyPayload(key: Data(repeating: 3, count: 32))
+    check(beaconKeyParse(valueJson: beaconValue) == Data(repeating: 3, count: 32), "beacon key slot round trip")
+    check(displayParse(valueJson: displayPayload(info: DisplayInfo(width: 1080, height: 2340, rotation: 1)))?.height == 2340, "display slot round trip")
+    check(displayParse(valueJson: #"{"width":0,"height":5,"rotation":0}"#) == nil, "a nonsense display size is refused")
 
     let ring = Ring()
     let startPayload = ringPayload(action: "start", ringId: "r1")
@@ -217,7 +225,7 @@ do {
     check(!ring.stopRinging().isEmpty && !ring.isRinging(), "ring stops")
 
     let clip = ClipboardGuard()
-    check(clip.outgoingText(me: "m", text: "hi", sensitive: false) != nil, "first copy is sent")
+    check(clip.outgoingText(me: "m", text: "hi", sensitive: false)?.contains("\"text\":\"hi\"") == true, "first copy is published as a slot value")
     check(clip.outgoingText(me: "m", text: "hi", sensitive: false) == nil, "resync of the same value is suppressed")
     check(clip.outgoingText(me: "m", text: "secret", sensitive: true) == nil, "sensitive content is never sent")
     check(clipboardIsSensitive(types: ["org.nspasteboard.ConcealedType"]), "concealed type detected")

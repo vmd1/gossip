@@ -76,27 +76,6 @@ data class NotificationSyncPayload(val ids: List<String>) {
     }
 }
 
-/** `notification.reply` payload (mac -> android / android -> android).
- *
- *  [attemptId] uniquely identifies this *reply attempt*, not the notification (`id` is
- *  reused across distinct replies to the same notification, so it can't serve as a
- *  dedupe key on its own). The receiver keys its recently-handled cache off this field —
- *  see `NotificationListenerImpl.handleReply` — so a duplicate delivery (retry, relay
- *  race, dedupe-cache eviction) can't fire the same real-world reply twice. */
-@Serializable
-data class NotificationReplyPayload(
-    val id: String,
-    val text: String,
-    val attemptId: String
-) {
-    companion object {
-        private val json = Json { ignoreUnknownKeys = true }
-
-        fun fromPayload(payload: JsonObject): NotificationReplyPayload =
-            json.decodeFromJsonElement(serializer(), payload)
-    }
-}
-
 /** `notification.dismiss` payload (mac -> android): the user dismissed the mirrored
  *  notification on the Mac, so the original on Android should be cleared too. */
 @Serializable

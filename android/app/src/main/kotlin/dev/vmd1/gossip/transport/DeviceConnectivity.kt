@@ -14,8 +14,7 @@ enum class Connectivity {
 
 object DeviceConnectivity {
     /** How long after the last message from a device it still counts as reachable over the mesh. Devices
-     *  broadcast something at least every 60s (`battery.update`, `dnd.update`, ...), so this tolerates two
-     *  missed rounds. */
+     *  broadcast their `state.digest` every 60s while any peer is connected, so this tolerates two missed rounds. */
     const val MESH_TTL_MS = 150_000L
 
     /** Devices not directly connected that were heard from within [MESH_TTL_MS]. */

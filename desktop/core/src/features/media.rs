@@ -121,6 +121,14 @@ impl MediaController {
         }
     }
 
+    /// The device has no media session any more (its slot was cleared) or was revoked.
+    pub fn forget(&mut self, sender: &str) {
+        self.by_device.remove(sender);
+        if self.most_recent.as_deref() == Some(sender) {
+            self.most_recent = self.by_device.keys().min().cloned();
+        }
+    }
+
     /// The user's explicit pick when several devices report a session; `None` falls back to the most recent reporter.
     pub fn select(&mut self, device: Option<String>) {
         self.selected = device;

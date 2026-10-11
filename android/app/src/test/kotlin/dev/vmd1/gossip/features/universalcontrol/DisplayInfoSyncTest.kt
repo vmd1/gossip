@@ -1,11 +1,7 @@
 package dev.vmd1.gossip.features.universalcontrol
 
-import dev.vmd1.gossip.protocol.Envelope
-import dev.vmd1.gossip.protocol.MessageType
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -13,27 +9,21 @@ import org.junit.Test
 
 class DisplayInfoSyncTest {
     @Test
-    fun `resync broadcasts the current size every time it is called`() = runTest {
-        val sent = mutableListOf<Envelope>()
-        val scope = TestScope(StandardTestDispatcher(testScheduler))
-        val sync = DisplayInfoSync("phone", { sent += it }, scope) { DisplaySize(1080, 2400, 0) }
-        sync.resync(); sync.resync()
-        scope.advanceUntilIdle()
-        assertEquals(2, sent.size)
-        val e = sent[0]
-        assertEquals(MessageType.DISPLAY_INFO, e.type)
-        assertTrue(e.broadcast)
-        assertEquals("1080", e.payload["width"]!!.jsonPrimitive.content)
-        assertEquals("2400", e.payload["height"]!!.jsonPrimitive.content)
-        assertEquals(sent[0].payload, sent[1].payload)
+    fun `publish sets the control display slot to the current size`() {
+        val published = mutableListOf<Pair<String, JsonElement?>>()
+        val sync = DisplayInfoSync({ slot, value -> published += slot to value }) { DisplaySize(1080, 2400, 1) }
+        sync.publish()
+        val (slot, value) = published.single()
+        assertEquals("control.display", slot)
+        assertEquals("1080", value!!.jsonObject["width"]!!.jsonPrimitive.content)
+        assertEquals("2400", value.jsonObject["height"]!!.jsonPrimitive.content)
+        assertEquals("1", value.jsonObject["rotation"]!!.jsonPrimitive.content)
     }
 
     @Test
-    fun `nothing is sent when the size cannot be read`() = runTest {
-        val sent = mutableListOf<Envelope>()
-        val scope = TestScope(StandardTestDispatcher(testScheduler))
-        DisplayInfoSync("phone", { sent += it }, scope) { null }.resync()
-        scope.advanceUntilIdle()
-        assertTrue(sent.isEmpty())
+    fun `nothing is published when the size cannot be read`() {
+        val published = mutableListOf<Pair<String, JsonElement?>>()
+        DisplayInfoSync({ slot, value -> published += slot to value }) { null }.publish()
+        assertTrue(published.isEmpty())
     }
 }

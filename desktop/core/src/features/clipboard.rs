@@ -1,17 +1,21 @@
-//! Clipboard sync (`clipboard.update`): the content policy and the loop guard. Reading and writing the actual
-//! pasteboard belongs to the shell.
+//! Clipboard sync: the content policy and the loop guard. Text travels as the `clipboard.text` state slot (see
+//! `crate::state_sync`), so the core keeps it correct across reconnects; an image is still a `clipboard.update`
+//! message with a raw follow-up frame (too large for a slot). Reading and writing the actual pasteboard belongs to the
+//! shell.
 //!
 //! Loop suppression: writing the clipboard ourselves in response to a remote update looks exactly like a local
 //! copy to the next poll. The guard remembers the last value this device wrote (received from a peer) and the last
 //! value it sent, and refuses to send a value that matches either, so neither an echo nor the periodic resync can
-//! ping-pong. The resync (`clipboard.update` every 60s) goes through the same guard, so it is a no-op when nothing
-//! changed.
+//! ping-pong.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::{object, Outgoing};
+
+/// The state slot a device publishes its current clipboard text in.
+pub const TEXT_SLOT: &str = "clipboard.text";
 
 pub const MAX_TEXT_BYTES: usize = 1 << 20;
 pub const MAX_IMAGE_BYTES: usize = 8 << 20;
@@ -88,8 +92,14 @@ impl ClipboardGuard {
         ])
     }
 
-    /// Whether a freshly observed local text value should be sent; records it as sent when it should.
-    pub fn outgoing_text(&mut self, me: &str, text: &str, sensitive: bool) -> Option<Outgoing> {
+    /// Whether a freshly observed local text value should be published; records it as sent when it should. Returns the
+    /// `clipboard.text` slot value to set.
+    pub fn outgoing_text(
+        &mut self,
+        me: &str,
+        text: &str,
+        sensitive: bool,
+    ) -> Option<Map<String, Value>> {
         if sensitive || !text_allowed(text) {
             return None;
         }
@@ -99,10 +109,7 @@ impl ClipboardGuard {
             return None;
         }
         self.last_sent_text = Some(text.to_owned());
-        Some(Outgoing::broadcast(
-            "clipboard.update",
-            Self::text_payload(me, text),
-        ))
+        Some(Self::text_payload(me, text))
     }
 
     /// Same for an image already normalised to PNG. The shell then sends the envelope with `png` as its raw frame.
