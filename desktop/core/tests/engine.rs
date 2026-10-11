@@ -1322,6 +1322,37 @@ fn line_of_three() -> (Net, usize, usize, usize) {
     (net, a, b, c)
 }
 
+fn heard(net: &Net, node: usize) -> Vec<String> {
+    net.nodes[node]
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Heard { device_id } => Some(device_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn only_a_copy_that_came_through_someone_else_counts_as_hearing_a_device() {
+    let (mut net, a, b, c) = line_of_three();
+    for n in [a, b, c] {
+        net.nodes[n].events.clear();
+    }
+    // c broadcasts; b gets it straight from c, a only through b.
+    let broadcast = feature_msg(&mut net, c, "clipboard.update").broadcast();
+    net.send(c, broadcast).unwrap();
+    assert!(
+        heard(&net, b).is_empty(),
+        "b received it from c itself, which proves nothing once that link is gone"
+    );
+    assert_eq!(
+        heard(&net, a),
+        vec![id_of(3)],
+        "a only reached c through b, so it counts as reachable through the mesh"
+    );
+}
+
 #[test]
 fn a_state_change_reaches_every_device_and_repeating_it_is_a_no_op() {
     let (mut net, a, b, c) = line_of_three();
