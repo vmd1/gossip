@@ -14,7 +14,9 @@ pub struct Task {
     pub interval_ms: i64,
 }
 
-/// Every message type that configures persistent state on its recipient.
+/// What the core resends on its own schedule. Feature state (DND, battery, hotspot, clipboard text, now playing, ...) is no
+/// longer listed here: it lives in state slots that the core's state sync (`crate::state_sync`) keeps correct, driven by
+/// the `state.digest` task below, so a feature never schedules its own resend.
 pub const TASKS: &[Task] = &[
     Task {
         name: "trust.roster_update",
@@ -28,34 +30,6 @@ pub const TASKS: &[Task] = &[
     // Handled inside the engine (the digest of the synchronised state slots, `crate::state_sync`).
     Task {
         name: "state.digest",
-        interval_ms: 60_000,
-    },
-    Task {
-        name: "ble.beacon_key",
-        interval_ms: 300_000,
-    },
-    Task {
-        name: "dnd.update",
-        interval_ms: 60_000,
-    },
-    Task {
-        name: "lock_on_leave.config",
-        interval_ms: 60_000,
-    },
-    Task {
-        name: "battery.update",
-        interval_ms: 60_000,
-    },
-    Task {
-        name: "hotspot.state_update",
-        interval_ms: 60_000,
-    },
-    Task {
-        name: "display.info",
-        interval_ms: 60_000,
-    },
-    Task {
-        name: "clipboard.update",
         interval_ms: 60_000,
     },
 ];

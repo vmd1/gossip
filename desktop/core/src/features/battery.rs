@@ -1,14 +1,17 @@
-//! Battery level sync (`battery.update`).
+//! Battery level sync: the `battery.state` slot (`{"level": 0-100, "isCharging": bool}`; see `crate::state_sync`).
 //!
-//! Reconciled like the other state messages: sent on every local change, on every fresh connect and every 60s.
-//! Receiving is last-write-wins per sender and idempotent. The low-battery alert fires once per low *episode*: it
+//! A device publishes its reading whenever it changes and the core keeps every other device's copy correct, so nothing
+//! here resends. Receiving is last-write-wins per sender and idempotent. The low-battery alert fires once per low *episode*: it
 //! re-arms after the device charges or climbs above `REARM_LEVEL`, so a resent report can never alert twice.
 
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
-use super::{object, Outgoing};
+use super::object;
+
+/// The state slot a device publishes its battery in.
+pub const SLOT: &str = "battery.state";
 
 pub const LOW_THRESHOLD: u8 = 20;
 pub const REARM_LEVEL: u8 = 30;
@@ -21,16 +24,12 @@ pub struct BatteryState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
-    Send(Outgoing),
+    /// Publish this device's reading: set the `battery.state` slot to [`Battery::payload`].
+    SetState(BatteryState),
     /// Raise a low-battery notification for `sender`.
-    LowBattery {
-        sender: String,
-        level: u8,
-    },
+    LowBattery { sender: String, level: u8 },
     /// `sender`'s stored state changed (refresh the UI).
-    Updated {
-        sender: String,
-    },
+    Updated { sender: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -49,35 +48,28 @@ impl Battery {
         self.by_sender.get(sender).copied()
     }
 
-    pub fn payload(source_device_id: &str, state: BatteryState) -> Map<String, Value> {
+    pub fn payload(state: BatteryState) -> Map<String, Value> {
         object([
-            ("sourceDeviceId", source_device_id.into()),
             ("level", u64::from(state.level).into()),
             ("isCharging", state.is_charging.into()),
         ])
     }
 
-    /// A local power-source change: sends only if the reading differs from the last one sent.
-    pub fn report_if_changed(&mut self, me: &str, reading: Option<BatteryState>) -> Option<Effect> {
+    /// A local power-source reading: publishes only if it differs from the last one published (so it is safe to call on
+    /// every power event or on a timer). `None` (no battery, or unreadable) publishes nothing.
+    pub fn report(&mut self, reading: Option<BatteryState>) -> Option<Effect> {
         let now = reading?;
         if self.last_reported == Some(now) {
             return None;
         }
         self.last_reported = Some(now);
-        Some(Effect::Send(Outgoing::broadcast(
-            "battery.update",
-            Self::payload(me, now),
-        )))
+        Some(Effect::SetState(now))
     }
 
-    /// Sends the current reading unconditionally: on every fresh connect and every 60s while connected.
-    pub fn report_always(&mut self, me: &str, reading: Option<BatteryState>) -> Option<Effect> {
-        let now = reading?;
-        self.last_reported = Some(now);
-        Some(Effect::Send(Outgoing::broadcast(
-            "battery.update",
-            Self::payload(me, now),
-        )))
+    /// A device was revoked: forget its reading and its alert state.
+    pub fn forget(&mut self, sender: &str) {
+        self.by_sender.remove(sender);
+        self.alerted.remove(sender);
     }
 
     pub fn on_update(&mut self, sender: &str, payload: &Map<String, Value>) -> Vec<Effect> {

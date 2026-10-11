@@ -4,6 +4,7 @@ use gossip_core::features::battery::{self, Battery, BatteryState};
 use gossip_core::features::clipboard::{self, ClipboardGuard};
 use gossip_core::features::dnd::{self, Dnd};
 use gossip_core::features::hotspot::HotspotStates;
+use gossip_core::features::lock_on_leave;
 use gossip_core::features::media::{self, CommandGuard, MediaController};
 use gossip_core::features::notifications::{self, ReplyGuard};
 use gossip_core::features::ring::{self, Ring};
@@ -23,14 +24,11 @@ fn obj(v: Value) -> Map<String, Value> {
 
 // ---- DND --------------------------------------------------------------------------------------------------------
 
-fn sends(effects: &[dnd::Effect]) -> Vec<(bool, bool)> {
+fn published(effects: &[dnd::Effect]) -> Vec<bool> {
     effects
         .iter()
         .filter_map(|e| match e {
-            dnd::Effect::Send(o) => Some((
-                o.payload["enabled"].as_bool().unwrap(),
-                o.payload["isInitialSync"].as_bool().unwrap(),
-            )),
+            dnd::Effect::SetState { enabled } => Some(*enabled),
             _ => None,
         })
         .collect()
@@ -44,75 +42,91 @@ fn applied(effects: &[dnd::Effect]) -> Option<bool> {
 }
 
 #[test]
-fn dnd_local_changes_are_reported_once_and_echoes_suppressed() {
+fn dnd_local_changes_are_published_once_and_echoes_suppressed() {
     let mut d = Dnd::new(None);
-    assert_eq!(sends(&d.local_changed("me", true, 0)), [(true, false)]);
-    assert!(
-        d.local_changed("me", true, 10).is_empty(),
-        "same state again"
-    );
-    assert_eq!(sends(&d.local_changed("me", false, 20)), [(false, false)]);
+    assert_eq!(published(&d.local_changed(true, 0)), [true]);
+    assert!(d.local_changed(true, 10).is_empty(), "same state again");
+    assert_eq!(published(&d.local_changed(false, 20)), [false]);
 }
 
 #[test]
 fn dnd_peer_state_applies_then_cooldown_swallows_the_resulting_local_trigger() {
+    // The peer was seen before, so this is a mirrored change, not first contact.
     let mut d = Dnd::new(Some(false));
-    let fx = d.on_update(
-        &obj(json!({"enabled": true, "isInitialSync": false})),
-        1_000,
-    );
+    d.on_peer_state("peer", &obj(json!({"enabled": false})), 0);
+    let fx = d.on_peer_state("peer", &obj(json!({"enabled": true})), 1_000);
     assert_eq!(applied(&fx), Some(true));
+    assert_eq!(
+        published(&fx),
+        [true],
+        "our own slot follows what we applied"
+    );
     // The OS fires its own "Focus on" trigger for the change we just made: swallowed by the cooldown.
-    assert!(d.local_changed("me", true, 1_500).is_empty());
+    assert!(d.local_changed(true, 1_500).is_empty());
     assert!(
-        d.local_changed("me", false, 1_000 + dnd::RECONCILE_COOLDOWN_MS - 1)
+        d.local_changed(false, 1_000 + dnd::RECONCILE_COOLDOWN_MS - 1)
             .is_empty(),
         "still inside the cooldown"
     );
     assert!(
-        !d.local_changed("me", false, 1_000 + dnd::RECONCILE_COOLDOWN_MS)
+        !d.local_changed(false, 1_000 + dnd::RECONCILE_COOLDOWN_MS)
             .is_empty(),
         "a real change afterwards is reported"
     );
-    // A peer update that agrees with what we believe is an echo.
+    // A peer state that agrees with what we believe is an echo.
     let mut e = Dnd::new(Some(true));
-    assert!(e.on_update(&obj(json!({"enabled": true})), 0).is_empty());
+    e.on_peer_state("peer", &obj(json!({"enabled": true})), 0);
+    assert!(e
+        .on_peer_state("peer", &obj(json!({"enabled": true})), 1)
+        .is_empty());
     // dnd.set always applies.
     assert_eq!(
         applied(&e.on_set(&obj(json!({"enabled": false})), 5)),
         Some(false)
     );
     assert!(e.on_set(&obj(json!({"nope": 1})), 6).is_empty());
+    assert!(e
+        .on_peer_state("peer", &obj(json!({"nope": 1})), 7)
+        .is_empty());
 }
 
 #[test]
-fn dnd_initial_sync_is_an_or_merge_that_converges_from_either_order() {
+fn dnd_first_contact_is_an_or_merge_that_converges_from_either_order() {
     for (a0, b0) in [(false, false), (false, true), (true, false), (true, true)] {
         let (mut a, mut b) = (Dnd::new(Some(a0)), Dnd::new(Some(b0)));
-        let (ra, rb) = (a.initial_sync("a"), b.initial_sync("b"));
-        let pa = |fx: &[dnd::Effect]| match fx.iter().find_map(|e| {
-            if let dnd::Effect::Send(o) = e {
-                Some(o.payload.clone())
-            } else {
-                None
-            }
-        }) {
-            Some(p) => p,
-            None => panic!(),
-        };
-        a.on_update(&pa(&rb), 0);
-        b.on_update(&pa(&ra), 0);
+        let (ra, rb) = (a.start(), b.start());
+        let pa = |fx: &[dnd::Effect]| dnd::state_payload(*published(fx).last().unwrap());
+        let (xa, xb) = (pa(&ra), pa(&rb));
+        let from_b = a.on_peer_state("b", &xb, 0);
+        let from_a = b.on_peer_state("a", &xa, 0);
         assert_eq!(a.expected(), Some(a0 || b0));
         assert_eq!(
             b.expected(),
             Some(a0 || b0),
             "both converge to OR for ({a0}, {b0})"
         );
+        // Whatever each side then publishes agrees with the other's state: nothing more to apply.
+        for fx in [&from_b, &from_a] {
+            if let Some(&last) = published(fx).last() {
+                assert_eq!(last, a0 || b0);
+            }
+        }
     }
     // Never observed anything: assumed off.
     let mut fresh = Dnd::new(None);
-    assert_eq!(sends(&fresh.initial_sync("me")), [(false, true)]);
+    assert_eq!(published(&fresh.start()), [false]);
     assert_eq!(fresh.expected(), Some(false));
+}
+
+#[test]
+fn dnd_forgetting_a_peer_makes_its_next_state_first_contact_again() {
+    let mut d = Dnd::new(Some(true));
+    d.on_peer_state("p", &obj(json!({"enabled": true})), 0);
+    // A mirrored change would turn it off; first contact after forgetting ORs instead, so it stays on.
+    d.forget_peer("p");
+    let fx = d.on_peer_state("p", &obj(json!({"enabled": false})), 1);
+    assert_eq!(applied(&fx), None);
+    assert_eq!(d.expected(), Some(true));
 }
 
 // ---- Battery ----------------------------------------------------------------------------------------------------
@@ -154,30 +168,36 @@ fn low_battery_alerts_once_per_episode_and_tracks_last_write() {
 }
 
 #[test]
-fn battery_reports_on_change_and_always_on_resync() {
+fn battery_publishes_only_when_the_reading_changes() {
     let mut b = Battery::new();
-    let r = Some(BatteryState {
+    let reading = BatteryState {
         level: 80,
         is_charging: false,
-    });
-    assert!(b.report_if_changed("me", r).is_some());
-    assert!(b.report_if_changed("me", r).is_none(), "unchanged");
-    assert!(b.report_always("me", r).is_some(), "resync always sends");
-    assert!(
-        b.report_if_changed("me", None).is_none(),
-        "no battery on this device"
-    );
-    let Some(battery::Effect::Send(o)) = b.report_always(
-        "me",
-        Some(BatteryState {
-            level: 7,
-            is_charging: true,
-        }),
-    ) else {
-        panic!()
     };
-    assert_eq!((o.kind, o.recipient.is_none()), ("battery.update", true));
-    assert_eq!(o.payload["level"], 7);
+    let r = Some(reading);
+    assert_eq!(b.report(r), Some(battery::Effect::SetState(reading)));
+    assert!(b.report(r).is_none(), "unchanged: the core already has it");
+    assert!(b.report(None).is_none(), "no battery on this device");
+    let low = BatteryState {
+        level: 7,
+        is_charging: true,
+    };
+    assert_eq!(b.report(Some(low)), Some(battery::Effect::SetState(low)));
+    assert_eq!(Battery::payload(low)["level"], 7);
+    assert_eq!(Battery::payload(low)["isCharging"], true);
+}
+
+#[test]
+fn battery_forgets_a_revoked_device() {
+    let mut b = Battery::new();
+    b.on_update("a", &obj(json!({"level": 10, "isCharging": false})));
+    b.forget("a");
+    assert_eq!(b.state_of("a"), None);
+    // Its alert state went too, so a re-paired device alerts again.
+    let fx = b.on_update("a", &obj(json!({"level": 10, "isCharging": false})));
+    assert!(fx
+        .iter()
+        .any(|e| matches!(e, battery::Effect::LowBattery { .. })));
 }
 
 // ---- Ring -------------------------------------------------------------------------------------------------------
@@ -297,7 +317,7 @@ fn png(w: u32, h: u32) -> Vec<u8> {
 }
 
 #[test]
-fn clipboard_loop_guard_blocks_echo_and_resync_repeats() {
+fn clipboard_loop_guard_blocks_echo_and_repeats() {
     let mut g = ClipboardGuard::new();
     assert!(
         g.outgoing_text("me", "hello", false).is_some(),
@@ -311,6 +331,9 @@ fn clipboard_loop_guard_blocks_echo_and_resync_repeats() {
         g.incoming_text(&ClipboardGuard::text_payload("peer", "from-peer")),
         Some("from-peer".to_owned())
     );
+    let value = g.outgoing_text("me", "slot value", false).unwrap();
+    assert_eq!(value["text"], "slot value");
+    assert_eq!(value["sourceDeviceId"], "me");
     assert!(
         g.outgoing_text("me", "from-peer", false).is_none(),
         "our own write echoed back by the next poll"
@@ -574,4 +597,61 @@ fn ble_fingerprints_accept_both_platform_formats() {
         .collect();
     assert!(fingerprint_matches(&mac, &key) && fingerprint_matches(&android, &key));
     assert!(!fingerprint_matches("AAAAAAAAAAA=", &key));
+}
+
+#[test]
+fn lock_on_leave_config_names_the_computers_a_phone_arms() {
+    let p = lock_on_leave::config_payload(&["b".into(), "a".into(), "a".into()]);
+    assert_eq!(p["armedFor"], json!(["a", "b"]), "sorted and deduplicated");
+    assert!(lock_on_leave::is_armed_for(&p, "a"));
+    assert!(!lock_on_leave::is_armed_for(&p, "c"));
+    assert!(!lock_on_leave::is_armed_for(&obj(json!({})), "a"));
+}
+
+#[test]
+fn hotspot_payload_carries_the_ssid_only_when_on() {
+    use gossip_core::features::hotspot;
+    assert_eq!(hotspot::state_payload(true, Some("Net"))["ssid"], "Net");
+    assert!(!hotspot::state_payload(false, Some("Net")).contains_key("ssid"));
+    let mut h = HotspotStates::new();
+    assert!(h.on_update("p", &hotspot::state_payload(true, None)));
+    h.forget("p");
+    assert!(h.state_of("p").is_none());
+}
+
+#[test]
+fn beacon_key_slot_round_trips_and_refuses_the_wrong_length() {
+    use gossip_core::crypto::beacon;
+    let key = [7u8; 32];
+    assert_eq!(
+        beacon::parse_key_slot(&beacon::key_slot_payload(&key)),
+        Some(key)
+    );
+    assert_eq!(beacon::parse_key_slot(&obj(json!({"key": "AAAA"}))), None);
+    assert_eq!(beacon::parse_key_slot(&obj(json!({}))), None);
+    assert!(
+        beacon::KEY_SLOT.starts_with("direct."),
+        "never flooded through the mesh"
+    );
+}
+
+#[test]
+fn media_controller_forgets_a_device_that_clears_its_session() {
+    let mut m = MediaController::new();
+    m.on_now_playing("a", &obj(json!({"title": "A", "artist": "x"})));
+    m.on_now_playing("b", &obj(json!({"title": "B", "artist": "y"})));
+    assert_eq!(m.effective_device(), Some("b"));
+    m.forget("b");
+    assert_eq!(m.state_of("b"), None);
+    assert_eq!(
+        m.effective_device(),
+        Some("a"),
+        "falls back to the remaining reporter"
+    );
+    m.forget("a");
+    assert_eq!(m.effective_device(), None);
+    assert!(
+        m.command(media::Action::Play, None, "id").is_none(),
+        "nothing to control"
+    );
 }

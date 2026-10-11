@@ -3,26 +3,21 @@ import Security
 @testable import Gossip
 
 final class KeychainBlobStoreTests: XCTestCase {
-    private var dir: URL!
     private var service: String!
     private let account = "test-blob"
 
     override func setUpWithError() throws {
-        dir = FileManager.default.temporaryDirectory.appendingPathComponent("kb-\(UUID().uuidString)")
-        PrivateFile.ensureDirectory(dir)
+        // A headless runner has no one to answer a Keychain access prompt, and the call would block until the job times out.
+        if ProcessInfo.processInfo.environment["CI"] != nil { throw XCTSkip("no interactive Keychain on CI") }
         service = "dev.vmd1.gossip.tests.\(UUID().uuidString)"
         // Keychain access can be unavailable (headless runner, locked keychain): skip rather than fail.
-        let probe = KeychainBlobStore(service: service, account: account, legacyFile: dir.appendingPathComponent("probe.json"))
-        guard probe.write(Data("probe".utf8)), !FileManager.default.fileExists(atPath: dir.appendingPathComponent("probe.json").path) else {
+        guard KeychainBlobStore(service: service, account: account).write(Data("probe".utf8)) else {
             throw XCTSkip("Keychain not usable in this environment")
         }
         deleteItem()
     }
 
-    override func tearDown() {
-        deleteItem()
-        try? FileManager.default.removeItem(at: dir)
-    }
+    override func tearDown() { deleteItem() }
 
     private func deleteItem() {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword,
@@ -30,43 +25,36 @@ final class KeychainBlobStoreTests: XCTestCase {
                        kSecAttrAccount as String: account] as CFDictionary)
     }
 
-    func testWriteThenReadRoundTripsAndLeavesNoFile() {
-        let legacy = dir.appendingPathComponent("blob.json")
-        let store = KeychainBlobStore(service: service, account: account, legacyFile: legacy)
+    func testWriteThenReadRoundTrips() {
+        let store = KeychainBlobStore(service: service, account: account)
+        XCTAssertNil(store.read())
         XCTAssertTrue(store.write(Data("secret".utf8)))
         XCTAssertEqual(store.read(), Data("secret".utf8))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+        XCTAssertEqual(KeychainBlobStore(service: service, account: account).read(), Data("secret".utf8))
     }
 
-    func testLegacyFileIsMigratedIntoKeychainAndRemoved() throws {
-        let legacy = dir.appendingPathComponent("blob.json")
-        try Data("old-plaintext".utf8).write(to: legacy)
-        let store = KeychainBlobStore(service: service, account: account, legacyFile: legacy)
-
-        XCTAssertEqual(store.read(), Data("old-plaintext".utf8))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path), "plaintext copy must be deleted after migration")
-        // A fresh instance now reads it from the Keychain alone.
-        XCTAssertEqual(KeychainBlobStore(service: service, account: account, legacyFile: legacy).read(), Data("old-plaintext".utf8))
-    }
-
-    func testStaleLegacyFileIsRemovedWhenKeychainItemExists() throws {
-        let legacy = dir.appendingPathComponent("blob.json")
-        let store = KeychainBlobStore(service: service, account: account, legacyFile: legacy)
-        XCTAssertTrue(store.write(Data("current".utf8)))
-        try Data("stale".utf8).write(to: legacy)
-
-        XCTAssertEqual(store.read(), Data("current".utf8))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+    /// Changing an item's access list can make macOS show a prompt that takes about a minute to give up on, so this one
+    /// runs only when asked for (`GOSSIP_KEYCHAIN_ACL_TEST=1`).
+    func testAnItemWithTheOldAccessListIsUpgradedOnceAndStaysReadable() throws {
+        guard ProcessInfo.processInfo.environment["GOSSIP_KEYCHAIN_ACL_TEST"] != nil else { throw XCTSkip("set GOSSIP_KEYCHAIN_ACL_TEST=1 to run") }
+        // An item added the plain way, as earlier builds did, carries a partition list tied to one build's code hash.
+        XCTAssertEqual(SecItemAdd([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service as Any,
+                                   kSecAttrAccount as String: account, kSecValueData as String: Data("old".utf8)] as CFDictionary, nil), errSecSuccess)
+        let defaults = UserDefaults(suiteName: "kb-\(UUID().uuidString)")!
+        let store = KeychainBlobStore(service: service, account: account, defaults: defaults)
+        XCTAssertEqual(store.read(), Data("old".utf8))
+        XCTAssertTrue(defaults.bool(forKey: "keychain.accessUpgraded.\(service!).\(account)"))
+        XCTAssertEqual(KeychainBlobStore(service: service, account: account, defaults: defaults).read(), Data("old".utf8))
+        XCTAssertTrue(store.write(Data("new".utf8)))
+        XCTAssertEqual(store.read(), Data("new".utf8))
     }
 
     func testIdentityPersistsThroughKeychainBlob() {
-        let blob = KeychainBlobStore(service: service, account: account, legacyFile: dir.appendingPathComponent("identity.json"))
-        let first = IdentityKeyStore(blob: blob)
+        let first = IdentityKeyStore(blob: KeychainBlobStore(service: service, account: account))
         let id = first.deviceId
         let key = first.signingKey.rawRepresentation
-        let second = IdentityKeyStore(blob: KeychainBlobStore(service: service, account: account, legacyFile: dir.appendingPathComponent("identity.json")))
+        let second = IdentityKeyStore(blob: KeychainBlobStore(service: service, account: account))
         XCTAssertEqual(second.deviceId, id)
         XCTAssertEqual(second.signingKey.rawRepresentation, key)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("identity.json").path))
     }
 }

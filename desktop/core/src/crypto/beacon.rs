@@ -37,3 +37,22 @@ pub fn acceptable_tags(key: &[u8], unix_seconds: u64) -> [[u8; TAG_LEN]; 3] {
 pub fn seconds_until_next_window(unix_seconds: u64) -> u64 {
     WINDOW_SECONDS - unix_seconds % WINDOW_SECONDS
 }
+
+/// The direct-only state slot a device publishes its BLE beacon key in (`{"key": base64 of 32 bytes}`). It is a secret
+/// shared with directly connected trusted devices only, so the name carries the `direct.` prefix (see
+/// `crate::state_sync`) and it is never flooded through the mesh.
+pub const KEY_SLOT: &str = "direct.ble.beacon_key";
+
+pub fn key_slot_payload(key: &[u8; 32]) -> serde_json::Map<String, serde_json::Value> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    let mut m = serde_json::Map::new();
+    m.insert("key".into(), B64.encode(key).into());
+    m
+}
+
+/// The beacon key in a slot value, if it is exactly 32 bytes of base64.
+pub fn parse_key_slot(payload: &serde_json::Map<String, serde_json::Value>) -> Option<[u8; 32]> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    let text = payload.get("key")?.as_str()?;
+    B64.decode(text).ok()?.try_into().ok()
+}

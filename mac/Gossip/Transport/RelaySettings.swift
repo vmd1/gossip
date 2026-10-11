@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import GossipCoreKit
 
 /// This Mac's relay preferences (`UserDefaults`, never sent over the wire). Off by default: until the user turns it on,
 /// the app opens no relay socket at all.
@@ -9,24 +10,64 @@ final class RelaySettings: ObservableObject {
     private let defaults: UserDefaults
     private static let enabledKey = "relay.enabled"
     private static let customURLKey = "relay.customURL"
+    private static let changedAtKey = "relay.changedAt"
 
     @Published private(set) var enabled: Bool
     @Published private(set) var customURL: String
+    /// When the user last edited these settings (ms since the epoch; 0 = never). The newest edit wins across the mesh
+    /// (`desktop/core/src/features/relay_config.rs`); adopting a peer's choice keeps the peer's timestamp.
+    private(set) var changedAt: Int64
+    /// Called after a local edit or an adoption, so the transport can publish the `relay.config` slot.
+    var onChange: ((GossipCoreKit.RelayConfig) -> Void)?
+    var now: () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         enabled = defaults.bool(forKey: Self.enabledKey)
         customURL = defaults.string(forKey: Self.customURLKey) ?? ""
+        changedAt = Int64(defaults.object(forKey: Self.changedAtKey) as? Int ?? 0)
     }
 
+    /// What the mesh shares: the on/off choice and the custom address (nil when unset).
+    var config: GossipCoreKit.RelayConfig {
+        GossipCoreKit.RelayConfig(enabled: enabled, customUrl: customURL.isEmpty ? nil : customURL, changedAt: changedAt)
+    }
+
+    /// A user edit: stamps the change so it propagates, then publishes it.
     func setEnabled(_ value: Bool) {
+        let changed = value != enabled
         defaults.set(value, forKey: Self.enabledKey)
         enabled = value
+        if changed { stampAndPublish() }
     }
 
     func setCustomURL(_ value: String) {
+        let changed = value != customURL
         defaults.set(value, forKey: Self.customURLKey)
         customURL = value
+        if changed { stampAndPublish() }
+    }
+
+    private func stampAndPublish() {
+        changedAt = relayConfigNextChangedAt(nowMs: now(), current: changedAt)
+        defaults.set(Int(changedAt), forKey: Self.changedAtKey)
+        onChange?(config)
+    }
+
+    /// Adopts a newer choice from a paired device. Keeps the peer's timestamp (so re-applying it, or hearing it echoed
+    /// back, changes nothing) and never bumps `changedAt` itself. Returns whether anything changed.
+    @discardableResult
+    func adopt(_ incoming: GossipCoreKit.RelayConfig) -> Bool {
+        guard relayConfigSupersedes(candidate: incoming, current: config) else { return false }
+        let url = incoming.customUrl ?? ""
+        defaults.set(incoming.enabled, forKey: Self.enabledKey)
+        defaults.set(url, forKey: Self.customURLKey)
+        defaults.set(Int(incoming.changedAt), forKey: Self.changedAtKey)
+        enabled = incoming.enabled
+        customURL = url
+        changedAt = incoming.changedAt
+        onChange?(config)
+        return true
     }
 
     /// What the engine should be configured with. `nil` origin only when the custom address is invalid (a typo must not
@@ -59,9 +100,7 @@ final class RelayTopicStore {
     init(blob: SecretBlobStore) { self.blob = blob }
 
     convenience init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
-        self.init(blob: ProductionBlobStore.make(account: "relay-topic", legacyFile: dir.appendingPathComponent("relay-topic.json")))
+        self.init(blob: ProductionBlobStore.make(account: "relay-topic"))
     }
 
     func load() -> (secret: Data, epoch: UInt64)? {

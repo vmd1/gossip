@@ -1181,7 +1181,7 @@ impl<E: Env> Core<E> {
             "trust.revoke" => return self.handle_revoke(envelope, out),
             "mesh.topic" => return self.handle_mesh_topic(conn, envelope, out),
             "state.update" | "state.digest" | "state.request" => {
-                return self.handle_state_message(envelope, out)
+                return self.handle_state_message(conn, envelope, out)
             }
             _ => {}
         }

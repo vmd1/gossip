@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   test:
-    # macOS so the interop tests can build and run the Mac app's real Noise, envelope and hotspot sources
+    # macOS so the interop tests can build and run the Mac app's real envelope sources
     # (`desktop/scripts/build-swift-interop.sh`); the portable tests run everywhere.
     runs-on: macos-15
     timeout-minutes: 25

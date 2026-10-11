@@ -53,6 +53,7 @@ class HotspotGattClient(
             return Result.Failed("Provider not trusted or missing a signing key (may need to re-pair)")
         }
         val sharedSecretKey = HotspotGattProtocol.deriveSharedSecretKey(identityKeyStore.x25519KeyPair.privateKey, provider.publicKey)
+            ?: return Result.Failed("Provider key is not usable (may need to re-pair)")
 
         val outcome = withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { continuation ->

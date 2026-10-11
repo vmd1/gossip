@@ -1,67 +1,42 @@
 package dev.vmd1.gossip.features.clipboard
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.gossip_ffi.ClipboardGuard
 
+/** The loop suppression and content policy are the core's `ClipboardGuard`; these check they behave across the bindings. */
 class ClipboardSyncManagerTest {
-
     @Test
-    fun `sends when value differs from last remote-set value`() {
-        assertTrue(ClipboardSyncManager.shouldSend(newValue = "hello", lastRemoteSetValue = "goodbye"))
+    fun `a local copy is published once and an echo of a peer's value is suppressed`() {
+        val g = ClipboardGuard()
+        assertTrue(g.outgoingText("me", "hello", false)!!.contains("\"text\":\"hello\""))
+        assertNull("the same value is not published again", g.outgoingText("me", "hello", false))
+        assertEquals("from-peer", g.incomingText("""{"text":"from-peer","sourceDeviceId":"peer"}"""))
+        assertNull("our own write echoed back by the next poll", g.outgoingText("me", "from-peer", false))
+        assertNotNull(g.outgoingText("me", "new local", false))
+        assertNull("sensitive content is never published", g.outgoingText("me", "secret", true))
     }
 
     @Test
-    fun `sends when there is no last remote-set value yet`() {
-        assertTrue(ClipboardSyncManager.shouldSend(newValue = "hello", lastRemoteSetValue = null))
+    fun `images are suppressed like text`() {
+        val png = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10) +
+            ByteArray(4) + "IHDR".toByteArray() + byteArrayOf(0, 0, 0, 4, 0, 0, 0, 4) + ByteArray(8)
+        val g = ClipboardGuard()
+        assertNotNull(g.outgoingImage("me", png, false))
+        assertNull(g.outgoingImage("me", png, false))
+        assertNull(g.outgoingImage("me", png, true))
     }
 
     @Test
-    fun `suppresses send when value matches last remote-set value`() {
-        assertFalse(ClipboardSyncManager.shouldSend(newValue = "hello", lastRemoteSetValue = "hello"))
-    }
-
-    @Test
-    fun `suppresses send when value matches last sent value (periodic resync of a locally-owned value)`() {
-        // Regression test for #29: without checking lastSentValue too, a resync tick would
-        // re-broadcast a locally-originated clipboard value forever, since lastRemoteSetValue
-        // (only set on receiving a peer's update) never matches it.
-        assertFalse(
-            ClipboardSyncManager.shouldSend(newValue = "hello", lastRemoteSetValue = null, lastSentValue = "hello")
-        )
-    }
-
-    @Test
-    fun `sends when value differs from both last remote-set and last sent value`() {
-        assertTrue(
-            ClipboardSyncManager.shouldSend(newValue = "hello", lastRemoteSetValue = "goodbye", lastSentValue = "earlier")
-        )
-    }
-
-    @Test
-    fun `sends image when data differs from last remote-set image data`() {
-        assertTrue(ClipboardSyncManager.shouldSendImage(byteArrayOf(1, 2), byteArrayOf(3, 4)))
-    }
-
-    @Test
-    fun `sends image when there is no last remote-set image data yet`() {
-        assertTrue(ClipboardSyncManager.shouldSendImage(byteArrayOf(1), null))
-    }
-
-    @Test
-    fun `suppresses image send when data matches last remote-set image data`() {
-        val data = byteArrayOf(1, 2, 3)
-        assertFalse(ClipboardSyncManager.shouldSendImage(data, data.copyOf()))
-    }
-
-    @Test
-    fun `suppresses image send when data matches last sent image data`() {
-        val data = byteArrayOf(1, 2, 3)
-        assertFalse(ClipboardSyncManager.shouldSendImage(data, null, data.copyOf()))
-    }
-
-    @Test
-    fun `sends image when data differs from both last remote-set and last sent image data`() {
-        assertTrue(ClipboardSyncManager.shouldSendImage(byteArrayOf(9), byteArrayOf(1), byteArrayOf(2)))
+    fun `size limits come from the core`() {
+        assertTrue(ClipboardPolicy.textAllowed("a".repeat(ClipboardPolicy.MAX_TEXT_BYTES)))
+        assertFalse(ClipboardPolicy.textAllowed("a".repeat(ClipboardPolicy.MAX_TEXT_BYTES + 1)))
+        assertFalse(ClipboardPolicy.imageBytesAllowed(0))
+        assertTrue(ClipboardPolicy.imageBytesAllowed(ClipboardPolicy.MAX_IMAGE_BYTES))
+        assertFalse(ClipboardPolicy.imageBytesAllowed(ClipboardPolicy.MAX_IMAGE_BYTES + 1))
     }
 }

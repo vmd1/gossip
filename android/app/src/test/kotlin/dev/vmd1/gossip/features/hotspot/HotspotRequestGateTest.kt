@@ -1,37 +1,33 @@
 package dev.vmd1.gossip.features.hotspot
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/** The gate, chunking and signed payloads are the core's (tested there); these check the Android wrappers reach it. */
 class HotspotRequestGateTest {
     @Test
-    fun `a nonce works once and the set is bounded`() {
-        val gate = HotspotRequestGate(maxNonces = 3)
+    fun `a nonce works once`() {
+        val gate = HotspotRequestGate()
         assertTrue(gate.firstUse("a"))
         assertFalse(gate.firstUse("a"))
-        gate.firstUse("b"); gate.firstUse("c"); gate.firstUse("d") // evicts "a"
-        assertTrue(gate.firstUse("a"))
+        assertTrue(gate.firstUse("b"))
     }
 
     @Test
     fun `each address gets a request budget per window`() {
         var t = 0L
-        val gate = HotspotRequestGate(now = { t }, maxPerWindow = 3, windowMs = 1000)
-        repeat(3) { assertTrue(gate.allowRate("aa")) }
-        assertFalse(gate.allowRate("aa"))
+        val gate = HotspotRequestGate(now = { t })
+        var allowed = 0
+        repeat(20) { if (gate.allowRate("aa")) allowed++ }
+        assertTrue("some, but not all, are allowed", allowed in 1..19)
         assertTrue(gate.allowRate("bb")) // other addresses are independent
-        t = 1500
+        t = 10 * 60_000
         assertTrue(gate.allowRate("aa")) // the window moved on
-    }
-
-    @Test
-    fun `address tracking is bounded`() {
-        val gate = HotspotRequestGate(maxTrackedAddresses = 2)
-        assertTrue(gate.allowRate("a")); assertTrue(gate.allowRate("b"))
-        assertFalse(gate.allowRate("c")) // a flood of fresh addresses can't grow the table
     }
 
     @Test
@@ -39,23 +35,23 @@ class HotspotRequestGateTest {
         val now = 1_000_000_000L
         fun req(t: Long) = HotspotGattProtocol.ToggleRequestPayload("id", true, "n", t, "s")
         assertTrue(req(now).isFresh(now))
-        assertTrue(req(now - 60_000).isFresh(now))
         assertFalse(req(now - HotspotGattProtocol.REQUEST_FRESHNESS_MS - 1).isFresh(now))
-        assertFalse(req(now + HotspotGattProtocol.REQUEST_FRESHNESS_MS + 1).isFresh(now))
         assertFalse(req(0).isFresh(now)) // an old client that sends no timestamp
     }
 
     @Test
-    fun `reassembly drops oversized messages and recovers for the next one`() {
-        val r = HotspotGattProtocol.ChunkReassembler(maxBytes = 40)
-        val big = ByteArray(100) { 1 }
-        val chunks = HotspotGattProtocol.encodeChunks(big)
-        var result: ByteArray? = byteArrayOf(9)
-        for (c in chunks) result = r.feed(c)
-        assertNull(result) // discarded, not delivered
-        val ok = ByteArray(30) { 2 }
+    fun `chunks reassemble and a signed request round trips and verifies`() {
+        val message = ByteArray(100) { it.toByte() }
+        val r = HotspotGattProtocol.ChunkReassembler()
         var out: ByteArray? = null
-        for (c in HotspotGattProtocol.encodeChunks(ok)) out = r.feed(c)
-        assertArrayEquals(ok, out)
+        for (c in HotspotGattProtocol.encodeChunks(message)) out = r.feed(c)
+        assertArrayEquals(message, out)
+
+        val seed = ByteArray(32) { 7 }
+        val request = HotspotGattProtocol.ToggleRequestPayload.create("dev", true, seed)
+        val decoded = HotspotGattProtocol.decodeRequest(HotspotGattProtocol.encodeRequest(request))
+        assertEquals(request, decoded)
+        assertNull(HotspotGattProtocol.decodeRequest(byteArrayOf(1, 2, 3)))
+        assertNotNull(decoded)
     }
 }

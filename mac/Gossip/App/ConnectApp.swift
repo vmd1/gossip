@@ -20,13 +20,14 @@ struct ConnectApp: App {
     @StateObject private var bleProximityMonitor: BLEProximityMonitor
     @StateObject private var hotspotStateManager: HotspotStateManager
     private let lockOnLeaveManager: LockOnLeaveManager
+    /// Shares this Mac's BLE beacon key (a direct-only state slot) and stores peers'; held for its handlers.
+    private let beaconKeyManager: BeaconKeyManager
     @StateObject private var ringManager: RingManager
     @StateObject private var batterySyncManager: BatterySyncManager
-    private let batteryResyncSubscriptions = SubscriptionBox()
     private let deviceMirroringWindowBox = DeviceMirroringWindowBox()
 
-    /// Holds the `connectionState` subscription driving `dndSyncManager.reportInitialSyncState()`
-    /// (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
+    /// Holds the `connectionState` subscription that starts and stops clipboard watching and refreshes the notification
+    /// authorization (see `init()`). Must live somewhere with the app's own lifetime, not a SwiftUI view's —
     /// `MenuBarView`'s content (and any `.onChange` on it) isn't guaranteed to exist until the
     /// user opens the tray at least once, the same bug `transport.start()`/`onOpenURLs` already
     /// hit twice in this codebase. A `State` class box because `ConnectApp` itself is a struct.
@@ -37,9 +38,7 @@ struct ConnectApp: App {
     // debug URL hook itself once real UI testing supersedes it.
     private final class HotspotClientBox { var client: HotspotGattClient? }
     private let debugHotspotClientBox = HotspotClientBox()
-    private let dndResyncSubscriptions = SubscriptionBox()
     private let fallbackDialSubscriptions = SubscriptionBox()
-    private let rosterResyncSubscriptions = SubscriptionBox()
 
     /// Same rationale as `SubscriptionBox` above: `OnboardingWindow`/`PairingWindow` are
     /// local values with nothing else keeping them alive once `init()`/a button closure
@@ -68,7 +67,7 @@ struct ConnectApp: App {
         dndSyncManager = DNDSyncManager(transportManager: transport)
         _clipboardSyncManager = StateObject(wrappedValue: ClipboardSyncManager(transportManager: transport))
         rosterGossipManager = RosterGossipManager(transportManager: transport)
-        let beaconKeys = BeaconKeyManager(transportManager: transport)
+        beaconKeyManager = BeaconKeyManager(transportManager: transport)
         let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
         _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
         _hotspotStateManager = StateObject(wrappedValue: HotspotStateManager(transportManager: transport))
@@ -193,46 +192,14 @@ struct ConnectApp: App {
         // on *every* connect, including the very first one after a fresh launch — which is
         // exactly the case most likely to happen before the user has ever opened the tray.
         let clipboard = clipboardSyncManager
-        subscriptions.cancellable = transport.$connectionState.sink { [dndSyncManager, clipboard, notificationMirror, battery] state in
+        subscriptions.cancellable = transport.$connectionState.sink { [clipboard, notificationMirror] state in
             if case .connected = state {
                 clipboard.start()
-                // Same reasoning as dndSyncManager.reportInitialSyncState: a peer that reconnects
-                // shouldn't wait for the next battery change to learn this Mac's level.
-                battery.reportInitialSyncState()
                 notificationMirror.refreshAuthorizationStatus()
-                dndSyncManager.reportInitialSyncState()
             } else {
                 clipboard.stop()
             }
         }
-
-        // Self-healing backstop for DND sync, on top of the event-driven paths above
-        // (a local change, or a fresh connect): periodically re-send this Mac's current
-        // state as another `isInitialSync` OR-merge report while connected. Event-driven
-        // sync alone has no recovery if a single message is ever dropped, sent while
-        // transiently disconnected, or missed by a race — the two devices then stay
-        // silently mismatched indefinitely, which is exactly the failure mode several
-        // bugs in this DND feature turned out to be. Reusing the OR-merge (rather than a
-        // plain mirror) keeps this safe to call repeatedly: it only acts on a genuine
-        // disagreement, so healthy periods are no-ops. Matches Android's
-        // `SyncForegroundService.runDndResyncLoop`.
-        dndResyncSubscriptions.cancellable = Timer.publish(every: 60, on: .main, in: .common)
-            .autoconnect()
-            .sink { [dndSyncManager, transport] _ in
-                if case .connected = transport.connectionState {
-                    dndSyncManager.reportInitialSyncState()
-                }
-            }
-
-        // Self-healing backstop for `battery.update` (see BatterySyncManager): re-sends the current
-        // reading every 60s while connected, on top of the change-driven and on-connect sends.
-        batteryResyncSubscriptions.cancellable = Timer.publish(every: 60, on: .main, in: .common)
-            .autoconnect()
-            .sink { [transport, battery] _ in
-                if case .connected = transport.connectionState {
-                    battery.reportInitialSyncState()
-                }
-            }
 
         // Mac normally only ever *discovers* peers (Bonjour browse) — it has no equivalent
         // to Android's fallback dial loop, so a Mac that isn't on the paired phone's LAN/mDNS
@@ -258,14 +225,6 @@ struct ConnectApp: App {
                     else { continue }
                     transport.connect(toFallbackHost: host, remoteStaticKey: staticKey, deviceId: target.deviceId)
                 }
-            }
-
-        // Self-healing backstop for the beacon keys, on top of the event-driven path (a fresh connection). The roster's
-        // own periodic resync is scheduled by the Rust engine (`TransportManager` answers its `trust.roster_update`).
-        rosterResyncSubscriptions.cancellable = Timer.publish(every: 300, on: .main, in: .common)
-            .autoconnect()
-            .sink { _ in
-                beaconKeys.periodicResync()
             }
     }
 
