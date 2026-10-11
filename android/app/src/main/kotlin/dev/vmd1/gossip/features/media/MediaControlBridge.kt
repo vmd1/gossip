@@ -80,6 +80,7 @@ data class NowPlayingSnapshot(
     val packageName: String
 ) {
     fun toPayload(): JsonObject = buildJsonObject {
+        put("active", true)
         put("title", title)
         put("artist", artist)
         artBase64?.let { put("artBase64", it) }
@@ -88,6 +89,18 @@ data class NowPlayingSnapshot(
         put("durationMs", durationMs)
         put("packageName", packageName)
     }
+}
+
+/** The `media.nowplaying` payload for "no media session": receivers drop whatever they were showing for this device.
+ *  The other fields stay present (and empty) so a receiver from before `active` existed still parses it. */
+fun inactiveNowPlayingPayload(): JsonObject = buildJsonObject {
+    put("active", false)
+    put("title", "")
+    put("artist", "")
+    put("isPlaying", false)
+    put("positionMs", 0L)
+    put("durationMs", 0L)
+    put("packageName", "")
 }
 
 /**
@@ -207,12 +220,14 @@ class MediaControlBridge(
      *  `RosterGossipManager.periodicResync` are already called for the same reason
      *  (this project's `CLAUDE.md` convention: anything configuring state on a
      *  recipient needs a self-healing resync, not just a one-shot send-on-change). A
-     *  no-op — not an error — when nothing is currently playing. */
+     *  also sent, as `active: false`, when nothing is playing. */
     fun resyncNowPlaying() = publishNowPlaying()
 
     private fun publishNowPlaying() {
-        val controller = activeController ?: return
-        val snapshot = snapshotFrom(controller) ?: return
+        // No session (it ended, or never existed) is state too: tell the Macs so they stop showing the last track.
+        val controller = activeController
+        val snapshot = controller?.let { snapshotFrom(it) }
+        val payload = snapshot?.toPayload() ?: inactiveNowPlayingPayload()
         // Broadcast (mesh support): every trusted Mac should see this device's
         // now-playing state, not just whichever single peer used to be tracked — each
         // Mac keys its own now-playing state per sender (senderId), so multiple phones'
@@ -221,7 +236,7 @@ class MediaControlBridge(
             type = MediaMessageType.NOWPLAYING,
             senderId = identityKeyStore.deviceId,
             broadcast = true,
-            payload = snapshot.toPayload()
+            payload = payload
         )
         scope.launch {
             runCatching { transportManager.send(envelope) }

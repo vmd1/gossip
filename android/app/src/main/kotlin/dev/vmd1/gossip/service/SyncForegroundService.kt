@@ -459,6 +459,7 @@ class SyncForegroundService : Service() {
                 // time or never — mediaControlBridge.start() only ever published
                 // once, at service startup, with no reconnect-triggered resend.
                 mediaControlBridge.resyncNowPlaying()
+                dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.resyncActive()
                 // Same reasoning as dndSyncManager.reportInitialSyncState above: a
                 // peer that reconnects (or missed the original event-driven report
                 // to any race) shouldn't have to wait for this phone's *next*
@@ -475,6 +476,7 @@ class SyncForegroundService : Service() {
         runDndResyncLoop()
         runRosterResyncLoop()
         runMediaResyncLoop()
+        runNotificationResyncLoop()
         runHotspotStateResyncLoop()
         runBatteryResyncLoop()
     }
@@ -636,6 +638,20 @@ class SyncForegroundService : Service() {
      *  [runDndResyncLoop] — a no-op both when nothing is playing and when a peer
      *  already has this exact snapshot, since it's the same publish a real change
      *  would trigger. */
+    /** Self-healing backstop for `notification.removed`, which is a one-shot broadcast: every minute the phone lists
+     *  the notifications it is mirroring (`notification.sync`) so a receiver that missed a removal drops its copy. A
+     *  no-op on a tablet, where the listener never forwards. */
+    private fun runNotificationResyncLoop() {
+        serviceScope.launch {
+            while (isActive) {
+                delay(DND_RESYNC_INTERVAL_MS)
+                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
+                    dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.resyncActive()
+                }
+            }
+        }
+    }
+
     private fun runMediaResyncLoop() {
         serviceScope.launch {
             while (isActive) {

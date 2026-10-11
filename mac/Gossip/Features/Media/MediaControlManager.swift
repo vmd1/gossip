@@ -48,16 +48,49 @@ final class MediaControlManager: ObservableObject {
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
 
+    /// When each device last reported (main queue). A phone resends its state every 60 s while connected, so one that
+    /// has been silent for `staleAfter` is gone (or stopped reporting) and its card is dropped rather than shown stale.
+    private var lastReport: [String: Date] = [:]
+    private var expiryTimer: Timer?
+    static let staleAfter: TimeInterval = 150
+
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared) {
         self.transportManager = transportManager
         self.identity = identity
         transportManager.router.register(prefix: MediaMessageType.nowPlaying) { [weak self] envelope in
-            guard let state = Self.parseNowPlaying(envelope.payload) else { return }
+            let inactive = Self.isInactive(envelope.payload)
+            let state = inactive ? nil : Self.parseNowPlaying(envelope.payload)
+            guard inactive || state != nil else { return }
             DispatchQueue.main.async {
-                self?.nowPlayingByDevice[envelope.senderId] = state
-                self?.mostRecentDeviceId = envelope.senderId
+                guard let self else { return }
+                if let state {
+                    self.nowPlayingByDevice[envelope.senderId] = state
+                    self.mostRecentDeviceId = envelope.senderId
+                    self.lastReport[envelope.senderId] = Date()
+                } else {
+                    // `active: false`: the phone has no media session any more.
+                    self.drop(envelope.senderId)
+                }
             }
         }
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.expireStale() }
+        RunLoop.main.add(timer, forMode: .common)
+        expiryTimer = timer
+    }
+
+    private func drop(_ deviceId: String) {
+        nowPlayingByDevice.removeValue(forKey: deviceId)
+        lastReport.removeValue(forKey: deviceId)
+        if mostRecentDeviceId == deviceId { mostRecentDeviceId = lastReport.max(by: { $0.value < $1.value })?.key }
+    }
+
+    private func expireStale(now: Date = Date()) {
+        for deviceId in Self.staleDevices(lastReport: lastReport, now: now) { drop(deviceId) }
+    }
+
+    /// Devices whose last report is older than `staleAfter`.
+    static func staleDevices(lastReport: [String: Date], now: Date) -> [String] {
+        lastReport.filter { now.timeIntervalSince($0.value) > staleAfter }.keys.sorted()
     }
 
     /// The now-playing state currently shown/controlled by the menu bar UI.
@@ -74,6 +107,11 @@ final class MediaControlManager: ObservableObject {
     }
 
     // MARK: - Parsing (pure, unit-testable without a live transport)
+
+    /// `active: false` means the phone has no media session (absent means active, for phones from before the field).
+    static func isInactive(_ payload: JSONValue) -> Bool {
+        payload["active"].flatMap(Self.boolValue) == false
+    }
 
     static func parseNowPlaying(_ payload: JSONValue) -> NowPlayingState? {
         guard let title = payload["title"]?.stringValue,

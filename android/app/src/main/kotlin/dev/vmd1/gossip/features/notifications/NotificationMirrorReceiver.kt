@@ -64,7 +64,10 @@ class NotificationMirrorReceiver(
         ensureChannel()
         messageRouter.register(MessageType.NOTIFICATION_POSTED, EnvelopeHandler { handlePosted(it) })
         messageRouter.register(MessageType.NOTIFICATION_REMOVED, EnvelopeHandler { handleRemoved(it) })
+        messageRouter.register(MessageType.NOTIFICATION_SYNC, EnvelopeHandler { handleSync(it) })
     }
+
+    private val book = MirrorBook()
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -91,6 +94,8 @@ class NotificationMirrorReceiver(
             Log.w(TAG, "Failed to decode notification.posted payload", e)
             return
         }
+        val tag = localTag(envelope.senderId, payload.id)
+        if (book.isStale(tag, payload.timestamp)) return
         postMirroredNotification(sourceDeviceId = envelope.senderId, payload = payload)
     }
 
@@ -102,7 +107,25 @@ class NotificationMirrorReceiver(
             Log.w(TAG, "Failed to decode notification.removed payload", e)
             return
         }
-        NotificationManagerCompat.from(context).cancel(localTag(envelope.senderId, payload.id), MIRROR_NOTIFICATION_ID)
+        val tag = localTag(envelope.senderId, payload.id)
+        book.recordRemoval(tag, envelope.ts)
+        NotificationManagerCompat.from(context).cancel(tag, MIRROR_NOTIFICATION_ID)
+    }
+
+    /** `notification.sync`: the sender's list of notifications it is still mirroring. Any mirrored copy from that
+     *  sender that is not on the list, and has been here for more than [SYNC_GRACE_MS], was a lost `removed`, so drop
+     *  it. Applying the same list twice changes nothing. */
+    private fun handleSync(envelope: Envelope) {
+        if (envelope.senderId == identityKeyStore.deviceId) return
+        val payload = try {
+            NotificationSyncPayload.fromPayload(envelope.payload)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to decode notification.sync payload", e)
+            return
+        }
+        val live = payload.ids.map { localTag(envelope.senderId, it) }.toSet()
+        val stale = book.applySync("${envelope.senderId}|", live, System.currentTimeMillis())
+        for (tag in stale) NotificationManagerCompat.from(context).cancel(tag, MIRROR_NOTIFICATION_ID)
     }
 
     private fun postMirroredNotification(sourceDeviceId: String, payload: NotificationPostedPayload) {
@@ -141,8 +164,11 @@ class NotificationMirrorReceiver(
             builder.addAction(replyAction)
         }
 
+        // The removal may have arrived while the icon was being decoded.
+        if (book.isStale(tag, payload.timestamp)) return
         runCatching {
             NotificationManagerCompat.from(context).notify(tag, MIRROR_NOTIFICATION_ID, builder.build())
+            book.recordShown(tag, System.currentTimeMillis())
         }.onFailure { Log.w(TAG, "Failed to post mirrored notification: ${it.message}") }
     }
 
