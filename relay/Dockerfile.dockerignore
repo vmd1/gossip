@@ -1,0 +1,8 @@
+# The build context is the repository root (the image also carries site/), so list what is allowed instead of what is not.
+*
+!relay/package.json
+!relay/package-lock.json
+!relay/tsconfig.json
+!relay/src
+!relay/scripts
+!site

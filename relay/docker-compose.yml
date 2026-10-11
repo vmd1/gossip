@@ -1,7 +1,9 @@
 # Local/self-hosted run: `docker compose up --build`. Put a TLS-terminating proxy in front for wss://.
 services:
   relay:
-    build: .
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
     image: gossip-relay:local
     ports:
       - "8080:8080"

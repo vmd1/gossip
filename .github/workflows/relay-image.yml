@@ -9,10 +9,12 @@ on:
     tags: ["v*"]
     paths:
       - "relay/**"
+      - "site/**"
       - ".github/workflows/relay-image.yml"
   pull_request:
     paths:
       - "relay/**"
+      - "site/**"
       - ".github/workflows/relay-image.yml"
   workflow_dispatch:
 
@@ -84,7 +86,8 @@ jobs:
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          context: relay
+          context: .
+          file: relay/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
