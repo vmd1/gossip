@@ -203,6 +203,12 @@ export class Relay {
       res.end(this.killed ? "disabled" : "ok");
       return;
     }
+    const abuse = this.config.abuseContact;
+    if (abuse && (url === "/abuse" || url === "/.well-known/security.txt")) {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end(url === "/abuse" ? `Report abuse of this relay to ${abuse}\n` : `Contact: mailto:${abuse}\n`);
+      return;
+    }
     if (url === "/metrics" && (onMetricsPort || this.config.metricsOnPublicPort)) {
       const token = this.config.metricsToken;
       if (token && req.headers.authorization !== `Bearer ${token}`) {

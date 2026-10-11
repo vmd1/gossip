@@ -54,4 +54,4 @@ The relay is untrusted for content and trusted only for availability and for not
 - IP-based limits are only as good as the trusted-proxy configuration: enable `TRUSTED_PROXY` only behind a proxy that overwrites the forwarded header, otherwise all clients share the proxy's IP (or an attacker spoofs it).
 - All state is in memory: a restart resets rate-limit windows, quotas, known keys (new PoW is required again) and verifiers (a topic is re-registered by the next joiner). Acceptable for v1; a restarting attacker-visible window exists for squatting an unclaimed topic, mitigated by topic ids being secret.
 - Single instance: no horizontal scaling; per-IP limits are per instance.
-- Required before launch (see plan): TLS proxy with its own limits, alerts on every reject reason, spending cap and abuse contact, load tests that exercise each limit including shedding, staged rollout.
+- Required before launch (see plan): TLS proxy with its own limits, alerts on every reject reason, spending cap and abuse contact (set `ABUSE_CONTACT`; the relay serves it at `/abuse` and `/.well-known/security.txt`), load tests that exercise each limit including shedding, staged rollout.

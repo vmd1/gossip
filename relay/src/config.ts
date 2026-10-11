@@ -56,6 +56,8 @@ export interface RelayConfig {
   trustedProxy: boolean;
   trustedProxyHeader: string;
   trustedProxyHops: number;
+  /** Where to report abuse; served at /.well-known/security.txt and /abuse. Empty disables both. */
+  abuseContact: string;
   killSwitch: boolean;
   killSwitchFile: string;
   banFile: string;
@@ -141,6 +143,7 @@ export function loadConfig(env: Env = process.env): RelayConfig {
     trustedProxy: bool(env, "TRUSTED_PROXY", false),
     trustedProxyHeader: str(env, "TRUSTED_PROXY_HEADER", "x-forwarded-for").toLowerCase(),
     trustedProxyHops: num(env, "TRUSTED_PROXY_HOPS", 1),
+    abuseContact: str(env, "ABUSE_CONTACT", ""),
     killSwitch: bool(env, "KILL_SWITCH", false),
     killSwitchFile: str(env, "KILL_SWITCH_FILE", ""),
     banFile: str(env, "BAN_FILE", ""),

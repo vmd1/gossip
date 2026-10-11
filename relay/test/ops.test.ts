@@ -81,6 +81,15 @@ describe("health and metrics", () => {
     expect((await get(`http://127.0.0.1:${relay.port}/metrics`)).status).toBe(404);
   });
 
+  it("serves the abuse contact only when configured", async () => {
+    relay = await startRelay();
+    expect((await get(`http://127.0.0.1:${relay.port}/abuse`)).status).toBe(404);
+    await relay.close();
+    relay = await startRelay({ ABUSE_CONTACT: "abuse@example.test" });
+    expect(await get(`http://127.0.0.1:${relay.port}/abuse`)).toEqual({ status: 200, body: "Report abuse of this relay to abuse@example.test\n" });
+    expect((await get(`http://127.0.0.1:${relay.port}/.well-known/security.txt`)).body).toBe("Contact: mailto:abuse@example.test\n");
+  });
+
   it("metrics on a separate ops port", async () => {
     const mp = await freePort();
     relay = await startRelay({ METRICS_PORT: String(mp) });

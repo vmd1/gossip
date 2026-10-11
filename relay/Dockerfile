@@ -23,6 +23,7 @@ COPY --from=build /app/dist ./dist
 ENV PORT=8080
 ENV RELAY_PATH=/connect
 ENV RELAY_ORIGIN=wss://relay.example.invalid
+ENV ABUSE_CONTACT=
 EXPOSE 8080
 USER node
 
