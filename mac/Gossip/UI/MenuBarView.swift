@@ -510,6 +510,9 @@ struct PairingSheetView: View {
 
     /// The safety code typed by the user; Confirm stays disabled until it matches (see `PairingCode.entryMatches`).
     @State private var enteredCode = ""
+    @State private var codeToJoin = ""
+    @State private var enteringCode = false
+    @State private var copied = false
 
     private var failureReason: String? {
         if case .failed(let reason) = pairingViewModel.state { return reason }
@@ -538,6 +541,38 @@ struct PairingSheetView: View {
                 Text("Waiting for phone to connect…")
                     .foregroundStyle(.secondary)
                 ProgressView()
+                if let link = pairingViewModel.pairingLink {
+                    Button(copied ? "Copied. Paste it on the other device" : "Can't scan? Copy a pairing code") {
+                        copyPairingCode(link)
+                        copied = true
+                    }
+                    .buttonStyle(.link)
+                }
+                Divider()
+                if enteringCode {
+                    Text("Paste the pairing code from the other device")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("gossip-pair:…", text: $codeToJoin, axis: .vertical)
+                        .lineLimit(1...4)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Pair") { pairingViewModel.join(withCode: codeToJoin); codeToJoin = "" }
+                        .disabled(codeToJoin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } else {
+                    Button("Enter a code from another device instead") { enteringCode = true }
+                        .buttonStyle(.link)
+                }
+            case .joining(let code):
+                Text("Enter this code on the other device")
+                    .font(.headline)
+                Text(code)
+                    .font(.system(size: 40, design: .monospaced))
+                Text("Then confirm there. This Mac is looking for it on your network.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                ProgressView()
+                Button("Cancel") { pairingViewModel.reset(); onDismiss() }
             case .confirmingTrust(let deviceName, let code):
                 Text("Trust this device?")
                     .font(.headline)
@@ -595,4 +630,13 @@ struct PairingSheetView: View {
         .padding(24)
         .frame(width: 320)
     }
+}
+
+/// Puts a pairing code on the pasteboard marked concealed, so clipboard managers and Gossip's own clipboard sync
+/// leave it alone.
+func copyPairingCode(_ text: String) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
+    pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
 }

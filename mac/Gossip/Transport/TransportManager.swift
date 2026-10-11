@@ -485,7 +485,8 @@ final class TransportManager: ObservableObject {
             resolvePeerIPAddress(link)
             if let target = link.dialTarget { connectingTargets.remove(target) }
             do {
-                process(try bridge.dial(conn: link.conn, target: link.dialTarget ?? "", remoteStaticKey: remoteStaticKey.rawRepresentation))
+                process(try bridge.dial(conn: link.conn, target: link.dialTarget ?? "", remoteStaticKey: remoteStaticKey.rawRepresentation,
+                                        pairingToken: link.dialTarget.flatMap { pairingTokens[$0] }))
             } catch {
                 gossipError("Gossip: could not start the handshake with \(link.dialTarget ?? "peer"): \(error)")
                 dropLink(link.conn, notifyEngine: false)
@@ -518,6 +519,80 @@ final class TransportManager: ObservableObject {
     /// Caps on simultaneously pending (not yet handshaken) inbound connections, overall and per source IP.
     static let maxPendingInbound = 32
     static let maxPendingInboundPerHost = 4
+
+    // MARK: - Pairing by code (initiator role)
+
+    enum JoinError: Error, Equatable { case unreadable, notConfirmed }
+
+    private var provisionalDevices = Set<String>()
+    private var pairingTokens: [String: String] = [:]
+    private var joinWaiters: [String: (Bool) -> Void] = [:]
+    private var joinPeers: [String: HandshakePeerInfo] = [:]
+    static let joinTimeout: TimeInterval = 90
+
+    /// Pairs with the device that showed `payload` (a QR or a typed/pasted pairing code) without scanning: the same
+    /// flow as scanning. A provisional row is added so the engine will dial and verify the device, it is found
+    /// through Bonjour, and the pairing only counts once the other device sends its first message (which it does only
+    /// after its user confirmed the comparison code). On failure or timeout the row is dropped again.
+    func join(_ payload: PairingQRPayload, completion: @escaping (Result<Void, JoinError>) -> Void) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard let keyData = Data(base64Encoded: payload.responderPublicKey), keyData.count == 32,
+                  let signing = Data(base64Encoded: payload.responderSigningPublicKey), signing.count == 32,
+                  UUID(uuidString: payload.responderDeviceId) != nil, payload.pairingToken.count <= 64,
+                  self.joinWaiters[payload.responderDeviceId] == nil else {
+                DispatchQueue.main.async { completion(.failure(.unreadable)) }
+                return
+            }
+            let id = payload.responderDeviceId
+            let rowExisted = self.trustedDevices.isTrusted(deviceId: id)
+            if !rowExisted {
+                self.provisionalDevices.insert(id)
+                self.trustedDevices.addDevice(
+                    deviceId: id, publicKeyBase64: payload.responderPublicKey, deviceName: payload.responderDeviceName,
+                    deviceType: DeviceType(rawValue: payload.responderDeviceType) ?? .androidPhone,
+                    signingPublicKeyBase64: payload.responderSigningPublicKey
+                )
+                self.syncTrustToEngine()
+            }
+            self.pairingTokens[id] = payload.pairingToken
+
+            var finished = false
+            let finish: (Bool) -> Void = { [weak self] confirmed in
+                guard let self, !finished else { return }
+                finished = true
+                self.joinWaiters.removeValue(forKey: id)
+                self.pairingTokens.removeValue(forKey: id)
+                self.provisionalDevices.remove(id)
+                let peer = self.joinPeers.removeValue(forKey: id)
+                if confirmed {
+                    self.syncTrustToEngine()
+                    if let peer { self.newDevicePairedHandlers.forEach { $0(peer) } }
+                } else {
+                    if !rowExisted { self.trustedDevices.discard(deviceId: id) }
+                    self.syncTrustToEngine()
+                    self.process(self.bridge.disconnect(deviceId: id))
+                }
+                DispatchQueue.main.async { completion(confirmed ? .success(()) : .failure(.notConfirmed)) }
+            }
+            self.joinWaiters[id] = finish
+            self.queue.asyncAfter(deadline: .now() + Self.joinTimeout) { finish(false) }
+            self.discovery.redeliverPeers()
+        }
+    }
+
+    /// Abandons a pairing started with `join`: no half-added device is left behind.
+    func cancelJoin(deviceId: String) {
+        queue.async { [weak self] in self?.joinWaiters[deviceId]?(false) }
+    }
+
+    private func syncTrustToEngine() {
+        do {
+            process(try bridge.setTrust(json: trustedDevices.exportCoreSnapshot(), provisional: Array(provisionalDevices)))
+        } catch {
+            gossipError("Gossip: could not update the engine's trust table: \(error)")
+        }
+    }
 
     // MARK: - Pairing gate
 
@@ -683,6 +758,7 @@ final class TransportManager: ObservableObject {
                     linkByDevice[peer.deviceId] = conn
                 }
                 recomputeConnectionState(preferring: peer.deviceId)
+                if joinWaiters[peer.deviceId] != nil { joinPeers[peer.deviceId] = peer }
                 trustedConnectedHandlers.forEach { $0(peer) }
                 if newlyPaired { newDevicePairedHandlers.forEach { $0(peer) } }
 
@@ -710,6 +786,9 @@ final class TransportManager: ObservableObject {
                 DispatchQueue.main.async { [weak self] in self?.onUntrustedPromptCancelled?() }
 
             case .deliver(let envelope, let raw):
+                // The device we are pairing with only talks once its user has confirmed, so its first message is the
+                // proof the pairing went through (see `join`).
+                joinWaiters[envelope.senderId]?(true)
                 router.route(envelope)
                 DispatchQueue.main.async { [weak self] in
                     self?.onReceive?(envelope)

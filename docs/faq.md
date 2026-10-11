@@ -24,7 +24,7 @@
   - nothing is sent to the project's authors
 - **Is the connection encrypted?**
   - yes: devices authenticate and encrypt every session with the Noise `IK` handshake (see [architecture](architecture.md))
-  - pairing happens by scanning a QR code, which carries the public key of the device showing it
+  - pairing happens by scanning a QR code (or pasting the same data as a pairing code), which carries the public key of the device showing it
   - Universal Control input uses its own encrypted channel straight to the device (see the [message types](../schema/message-types.md))
 - **What does "pair once, trust everywhere" mean?**
   - when you pair two devices, they share their trusted-device lists, so a third device that already trusts one of them learns about the other
