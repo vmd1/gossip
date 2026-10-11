@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gossip_core::features::{
-    battery, clipboard, display, dnd, hotspot, lock_on_leave, media, notifications, ring,
+    battery, clipboard, display, dnd, hotspot, lock_on_leave, media, notifications, relay_config, ring,
     Outgoing as CoreOutgoing,
 };
 use serde_json::{Map, Value};
@@ -763,4 +763,65 @@ pub fn beacon_key_parse(value_json: String) -> Option<Vec<u8>> {
 #[uniffi::export]
 pub fn ring_payload(action: String, ring_id: String) -> String {
     object_json(ring::Ring::ring_payload(&action, &ring_id))
+}
+
+// ---- Relay config ----------------------------------------------------------------------------------------------
+
+/// A device's relay choice, shared across the mesh in the `relay.config` slot (newest edit wins).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct RelayConfig {
+    pub enabled: bool,
+    pub custom_url: Option<String>,
+    /// Milliseconds since the epoch of the user's last edit; 0 when never edited.
+    pub changed_at: i64,
+}
+
+impl From<RelayConfig> for relay_config::RelayConfig {
+    fn from(c: RelayConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            custom_url: c.custom_url,
+            changed_at: c.changed_at,
+        }
+    }
+}
+
+impl From<relay_config::RelayConfig> for RelayConfig {
+    fn from(c: relay_config::RelayConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            custom_url: c.custom_url,
+            changed_at: c.changed_at,
+        }
+    }
+}
+
+#[uniffi::export]
+pub fn relay_config_slot() -> String {
+    relay_config::SLOT.to_owned()
+}
+
+/// The `relay.config` slot value for this config.
+#[uniffi::export]
+pub fn relay_config_payload(config: RelayConfig) -> String {
+    object_json(relay_config::RelayConfig::from(config).payload())
+}
+
+/// A peer's slot value as a config; `None` when it is malformed or was never edited.
+#[uniffi::export]
+pub fn relay_config_parse(value_json: String) -> Option<RelayConfig> {
+    let map = payload(&value_json).ok()?;
+    relay_config::RelayConfig::parse(&map).map(Into::into)
+}
+
+/// Whether `candidate` should replace `current` (newer edit, ties broken by content).
+#[uniffi::export]
+pub fn relay_config_supersedes(candidate: RelayConfig, current: RelayConfig) -> bool {
+    relay_config::RelayConfig::from(candidate).supersedes(&relay_config::RelayConfig::from(current))
+}
+
+/// The `changedAt` to stamp on a local edit made now.
+#[uniffi::export]
+pub fn relay_config_next_changed_at(now_ms: i64, current: i64) -> i64 {
+    relay_config::next_changed_at(now_ms, current)
 }

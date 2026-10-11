@@ -6,28 +6,80 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import uniffi.gossip_ffi.RelayConfig
+import uniffi.gossip_ffi.relayConfigNextChangedAt
+import uniffi.gossip_ffi.relayConfigSupersedes
 
 /**
  * This device's relay preferences (plain [SharedPreferences], never sent over the wire). Off by default: until the user
  * turns it on, the app opens no relay socket at all. Mirrors the Mac's `RelaySettings`.
  */
-class RelaySettings(private val prefs: SharedPreferences) {
+class RelaySettings(private val prefs: SharedPreferences, private val now: () -> Long = System::currentTimeMillis) {
     private val _enabled = MutableStateFlow(prefs.getBoolean(KEY_ENABLED, false))
     private val _customUrl = MutableStateFlow(prefs.getString(KEY_CUSTOM_URL, "") ?: "")
 
     val enabled: StateFlow<Boolean> = _enabled
     val customUrl: StateFlow<String> = _customUrl
 
-    @Synchronized
+    /**
+     * When the user last edited these settings (ms since the epoch; 0 = never). The newest edit wins across the mesh
+     * (`desktop/core/src/features/relay_config.rs`); adopting a peer's choice keeps the peer's timestamp.
+     */
+    @Volatile var changedAt: Long = prefs.getLong(KEY_CHANGED_AT, 0L)
+        private set
+
+    /** Called after a local edit or an adoption, so the transport can publish the `relay.config` slot. */
+    @Volatile var onChange: ((RelayConfig) -> Unit)? = null
+
+    /** What the mesh shares: the on/off choice and the custom address (null when unset). */
+    val config: RelayConfig
+        get() = RelayConfig(_enabled.value, _customUrl.value.ifEmpty { null }, changedAt)
+
+    /** A user edit: stamps the change so it propagates, then publishes it. */
     fun setEnabled(value: Boolean) {
-        prefs.edit().putBoolean(KEY_ENABLED, value).apply()
-        _enabled.value = value
+        val cb = synchronized(this) {
+            if (value == _enabled.value) return
+            prefs.edit().putBoolean(KEY_ENABLED, value).apply()
+            _enabled.value = value
+            stamp()
+        }
+        cb()
     }
 
-    @Synchronized
     fun setCustomUrl(value: String) {
-        prefs.edit().putString(KEY_CUSTOM_URL, value).apply()
-        _customUrl.value = value
+        val cb = synchronized(this) {
+            if (value == _customUrl.value) return
+            prefs.edit().putString(KEY_CUSTOM_URL, value).apply()
+            _customUrl.value = value
+            stamp()
+        }
+        cb()
+    }
+
+    private fun stamp(): () -> Unit {
+        changedAt = relayConfigNextChangedAt(now(), changedAt)
+        prefs.edit().putLong(KEY_CHANGED_AT, changedAt).apply()
+        val snapshot = config
+        return { onChange?.invoke(snapshot) }
+    }
+
+    /**
+     * Adopts a newer choice from a paired device. Keeps the peer's timestamp (so re-applying it, or hearing it echoed back,
+     * changes nothing) and never bumps [changedAt] itself. Returns whether anything changed.
+     */
+    fun adopt(incoming: RelayConfig): Boolean {
+        val snapshot = synchronized(this) {
+            if (!relayConfigSupersedes(incoming, config)) return false
+            val url = incoming.customUrl ?: ""
+            prefs.edit().putBoolean(KEY_ENABLED, incoming.enabled).putString(KEY_CUSTOM_URL, url)
+                .putLong(KEY_CHANGED_AT, incoming.changedAt).apply()
+            changedAt = incoming.changedAt
+            _customUrl.value = url
+            _enabled.value = incoming.enabled
+            config
+        }
+        onChange?.invoke(snapshot)
+        return true
     }
 
     /**
@@ -48,6 +100,7 @@ class RelaySettings(private val prefs: SharedPreferences) {
         private const val PREFS_NAME = "relay_settings"
         private const val KEY_ENABLED = "relay_enabled"
         private const val KEY_CUSTOM_URL = "relay_custom_url"
+        private const val KEY_CHANGED_AT = "relay_changed_at"
 
         @Volatile private var instance: RelaySettings? = null
 

@@ -2,6 +2,7 @@ import Foundation
 import Network
 import CryptoKit
 import Combine
+import GossipCoreKit
 
 /// Everything needed to identify + greet a peer during the Noise_IK handshake.
 struct HandshakePeerInfo {
@@ -221,6 +222,29 @@ final class TransportManager: ObservableObject {
         queue.setSpecific(key: Self.queueKey, value: ())
         observeFeatureSettings()
         observeRelaySettings()
+        shareRelaySettings()
+    }
+
+    /// Relay settings follow the mesh: this device's choice is the `relay.config` slot and a paired device's newer edit is
+    /// adopted (`RelaySettings.adopt`; the newest edit wins, see `desktop/core/src/features/relay_config.rs`).
+    private func shareRelaySettings() {
+        let slot = GossipCoreKit.relayConfigSlot()
+        relaySettings.onChange = { [weak self] config in
+            self?.setState(slot: slot, valueJSON: GossipCoreKit.relayConfigPayload(config: config))
+        }
+        if relaySettings.changedAt > 0 {
+            setState(slot: slot, valueJSON: GossipCoreKit.relayConfigPayload(config: relaySettings.config))
+        }
+        addOnStateChanged { [weak self] change in
+            guard let self, change.slot == slot, let json = change.valueJSON,
+                  var incoming = GossipCoreKit.relayConfigParse(valueJson: json) else { return }
+            // A malformed custom address from a peer must not become this device's relay.
+            if let url = incoming.customUrl {
+                guard case .success(let origin) = RelayEndpointPolicy.normalizeOrigin(url) else { return }
+                incoming.customUrl = origin
+            }
+            self.relaySettings.adopt(incoming)
+        }
     }
 
     private func observeRelaySettings() {

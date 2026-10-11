@@ -111,6 +111,7 @@ class SyncForegroundService : Service() {
         // The relay is opt-in (Settings > Relay): push the user's choice to the engine now and on every change. With the
         // custom address (if set) wins, then the relay the directory names, then the built-in default.
         val relaySettings = dev.vmd1.gossip.transport.RelaySettings.getInstance(applicationContext)
+        shareRelaySettings(relaySettings)
         kotlinx.coroutines.flow.combine(relaySettings.enabled, relaySettings.customUrl, relayDirectory.state) { _, _, directory ->
             relayDirectory.wanted = relaySettings.enabled.value // polled only while the relay is on
             relaySettings.configuration(directory.cachedOrigin, directory.isFresh, directory.awaitingFirstAnswer)
@@ -554,6 +555,31 @@ class SyncForegroundService : Service() {
         transportManager.listen()
         mediaControlBridge.start()
         return START_STICKY
+    }
+
+    /**
+     * Relay settings follow the mesh: this device's choice is the `relay.config` slot and a paired device's newer edit is
+     * adopted ([dev.vmd1.gossip.transport.RelaySettings.adopt]; the newest edit wins, see
+     * `desktop/core/src/features/relay_config.rs`).
+     */
+    private fun shareRelaySettings(settings: dev.vmd1.gossip.transport.RelaySettings) {
+        val slot = uniffi.gossip_ffi.relayConfigSlot()
+        fun publish(config: uniffi.gossip_ffi.RelayConfig) = transportManager.setState(
+            slot, kotlinx.serialization.json.Json.parseToJsonElement(uniffi.gossip_ffi.relayConfigPayload(config))
+        )
+        settings.onChange = { publish(it) }
+        if (settings.changedAt > 0) publish(settings.config)
+        serviceScope.launch {
+            transportManager.stateChanges.collect { change ->
+                if (change.slot != slot) return@collect
+                val parsed = change.value?.toString()?.let { uniffi.gossip_ffi.relayConfigParse(it) } ?: return@collect
+                // A malformed custom address from a peer must not become this device's relay.
+                val url = parsed.customUrl
+                val normalized = if (url == null) null else (dev.vmd1.gossip.transport.RelayEndpointPolicy.normalizeOrigin(url)
+                    as? dev.vmd1.gossip.transport.RelayEndpointPolicy.Result.Ok)?.origin ?: return@collect
+                settings.adopt(parsed.copy(customUrl = normalized))
+            }
+        }
     }
 
     override fun onDestroy() {

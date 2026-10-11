@@ -1,5 +1,6 @@
 import XCTest
 @testable import Gossip
+import GossipCoreKit
 
 final class RelayEndpointPolicyTests: XCTestCase {
     private func origin(_ text: String, insecure: Bool = false) -> String? {
@@ -80,6 +81,33 @@ final class RelayEndpointPolicyTests: XCTestCase {
         let reloaded = RelaySettings(defaults: defaults)
         XCTAssertTrue(reloaded.enabled)
         XCTAssertEqual(reloaded.customURL, "ws://bad.example.com")
+    }
+
+    func testRelaySettingsFollowTheNewestEditAcrossTheMesh() {
+        let settings = RelaySettings(defaults: UserDefaults(suiteName: "RelaySync-\(UUID().uuidString)")!)
+        var published: [GossipCoreKit.RelayConfig] = []
+        settings.onChange = { published.append($0) }
+        settings.now = { 1_000 }
+        XCTAssertEqual(settings.changedAt, 0, "never edited")
+        // A peer's choice is adopted by a device that was never edited, keeping the peer's timestamp.
+        let theirs = GossipCoreKit.RelayConfig(enabled: true, customUrl: "wss://eu.example.com", changedAt: 500)
+        XCTAssertTrue(settings.adopt(theirs))
+        XCTAssertTrue(settings.enabled)
+        XCTAssertEqual(settings.customURL, "wss://eu.example.com")
+        XCTAssertEqual(settings.changedAt, 500)
+        // Applying it again, or an older choice, changes nothing.
+        XCTAssertFalse(settings.adopt(theirs))
+        XCTAssertFalse(settings.adopt(GossipCoreKit.RelayConfig(enabled: false, customUrl: nil, changedAt: 400)))
+        XCTAssertTrue(settings.enabled)
+        // A local edit is stamped and published, and beats what was adopted.
+        settings.setEnabled(false)
+        XCTAssertEqual(settings.changedAt, 1_000)
+        XCTAssertEqual(published.last?.enabled, false)
+        XCTAssertFalse(settings.adopt(theirs), "the older peer choice no longer wins")
+        // Setting the same value is not an edit.
+        let before = published.count
+        settings.setEnabled(false)
+        XCTAssertEqual(published.count, before)
     }
 
     func testTopicStoreRoundTripsAndRejectsBadData() {

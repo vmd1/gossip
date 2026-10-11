@@ -56,6 +56,7 @@ What is **not** state and stays a message: one-shot events (`device.ring`, `noti
 | `hotspot.state` | mesh | Android phones | `enabled`, `ssid?` | hotspot icon / "Request Hotspot" |
 | `control.display` | mesh | devices with a display | `width`, `height`, `rotation` | Mac Universal Control layout |
 | `lock_on_leave.config` | mesh | Android phones | `armedFor`: computer ids | the computers' per-phone `lockOnLeaveEnabled` |
+| `relay.config` | mesh | every device (once edited) | `enabled`, `customUrl`, `changedAt` | the relay settings; the newest `changedAt` wins (`relay_config.rs`) |
 | `clipboard.text` | mesh | every device | `text`, `sourceDeviceId` | clipboard writers (images stay `clipboard.update` messages) |
 | `direct.ble.beacon_key` | **direct only** | every device | `key` | trust row `beaconKey` |
 
