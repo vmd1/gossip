@@ -53,6 +53,8 @@ final class TrustedDevicesStoreTests: XCTestCase {
         let reloaded = TrustedDevicesStore(fileURL: url)
         XCTAssertTrue(reloaded.isTrusted(deviceId: "device-1"))
         XCTAssertEqual(reloaded.device(for: "device-1")?.deviceName, "Pixel 9")
+        // The list the menu shows is what was loaded, not empty until the first change.
+        XCTAssertEqual(reloaded.devices.map(\.deviceId), ["device-1"])
     }
 
     func testMultipleDevicesSupported() {

@@ -115,6 +115,9 @@ final class TrustedDevicesStore: ObservableObject {
         self.devicesBlob = devicesBlob
         self.revokedBlob = revokedBlob
         load()
+        // What the UI observes must start as what was loaded, not empty until the first change: with nothing to
+        // publish it, the menu showed "No trusted devices yet." for every device that was not reconnecting.
+        devices = queue.sync { storage }
     }
 
     /// File-backed store at `fileURL` (tombstones in a sibling `-revoked.json`); used by tests.
