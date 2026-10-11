@@ -1,4 +1,4 @@
-// Line-oriented harness around the Mac app's real NoiseSession / Envelope / EnvelopeSigning sources, so the Rust
+// Line-oriented harness around the Mac app's real Envelope / EnvelopeSigning / hotspot sources, so the Rust
 // core can be tested against the code that actually ships. Built by desktop/scripts/build-swift-interop.sh.
 import Foundation
 import CryptoKit
@@ -10,29 +10,11 @@ func unhex(_ s: String) -> Data {
 }
 func hex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
 
-var session: NoiseSession?
-
 while let line = readLine() {
     let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
     let cmd = parts[0]
     do {
         switch cmd {
-        case "INIT":  // INIT <secretHex> <remotePubHex>
-            let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: unhex(parts[1]))
-            let remote = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: unhex(parts[2]))
-            session = NoiseSession(role: .initiator, localStaticKey: key, remoteStaticKey: remote)
-            print("OK")
-        case "RESP":  // RESP <secretHex>
-            let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: unhex(parts[1]))
-            session = NoiseSession(role: .responder, localStaticKey: key, remoteStaticKey: nil)
-            print("OK")
-        case "M1": print(hex(try session!.createMessage1(payload: unhex(parts.count > 1 ? parts[1] : ""))))
-        case "R1": print(hex(try session!.consumeMessage1(unhex(parts[1]))))
-        case "M2": print(hex(try session!.createMessage2(payload: unhex(parts.count > 1 ? parts[1] : ""))))
-        case "R2": print(hex(try session!.consumeMessage2(unhex(parts[1]))))
-        case "ENC": print(hex(try session!.encrypt(unhex(parts.count > 1 ? parts[1] : ""))))
-        case "DEC": print(hex(try session!.decrypt(unhex(parts[1]))))
-        case "PEER": print(hex(session!.peerStaticKey!.rawRepresentation))
         case "SIGN":  // SIGN <seedHex> <envelope json>
             let key = try Curve25519.Signing.PrivateKey(rawRepresentation: unhex(parts[1]))
             let env = try Envelope.decode(Data(parts[2].utf8))

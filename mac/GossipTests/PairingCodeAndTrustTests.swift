@@ -1,24 +1,8 @@
 import XCTest
 @testable import Gossip
 
-final class HandshakeIdentityTests: XCTestCase {
-    private let key = Data((0..<32).map { UInt8($0) }).base64EncodedString()
+final class PairingCodeAndTrustTests: XCTestCase {
     private let id = "11111111-1111-1111-1111-111111111111"
-
-    func testRoundTripsWithAndWithoutToken() throws {
-        let with = HandshakeIdentity(deviceId: id, deviceName: "Mac", deviceType: "mac", signingPublicKey: key, pairingToken: "tok")
-        XCTAssertEqual(try HandshakeIdentity.decode(try with.encoded()), with)
-        let without = HandshakeIdentity(deviceId: id, deviceName: "Mac", deviceType: "mac", signingPublicKey: key, pairingToken: nil)
-        XCTAssertNil(try HandshakeIdentity.decode(try without.encoded()).pairingToken)
-    }
-
-    func testRejectsMalformedIdentity() throws {
-        let badId = HandshakeIdentity(deviceId: "nope", deviceName: "m", deviceType: "mac", signingPublicKey: key, pairingToken: nil)
-        XCTAssertThrowsError(try HandshakeIdentity.decode(try badId.encoded()))
-        let badKey = HandshakeIdentity(deviceId: id, deviceName: "m", deviceType: "mac", signingPublicKey: "AAAA", pairingToken: nil)
-        XCTAssertThrowsError(try HandshakeIdentity.decode(try badKey.encoded()))
-    }
-
     func testPairingCodeMatchesAndroidVectorAndIgnoresOrder() {
         let a = Data((0..<32).map { UInt8($0) })
         let b = Data((32..<64).map { UInt8($0) })
