@@ -51,6 +51,19 @@ Once a transport frame's ciphertext is decrypted via the established Noise sessi
 
 A responder sends `handshake.ack` before an untrusted initiator has been confirmed by the user, so the initiator may send transport frames (roster, initial syncs) during that window. Noise transport nonces are implicit counters, so a responder must never discard those frames undecrypted: it holds them (bounded, 256 frames; closes the connection if exceeded) and decrypts/routes them in arrival order once the peer is confirmed and promoted, or drops them with the connection if the user declines. Mac implements this (`PendingFrameQueue`); Android's responder doesn't read transport frames until after confirmation, so TCP buffers them.
 
+## Pairing by code
+
+A device that cannot scan a QR can be paired with a short code instead (`pair.code.*` in `schema/message-types.md`). It is the one place two devices connect **without knowing each other's key**, so it does not use Noise_IK: the first frame on the connection is a plaintext `pair.code.a` envelope instead of `handshake.hello`, and the engine routes on that type. The new device (the *shower*) shows the code and advertises `pair=1`; the user types it into an already-paired device (the *enterer*), which finds the shower, runs SPAKE2 with the code as the password, and each side then sends its identity sealed under a key only the correct code yields. Four frames, one round trip and a confirmation:
+
+```
+enterer -> shower   pair.code.a      {pake}
+shower  -> enterer  pair.code.b      {pake}
+enterer -> shower   pair.code.proof  {box}    shower opens it: the code was right
+shower  -> enterer  pair.code.done   {box}    enterer opens it: the shower had the same code
+```
+
+Limits that keep a 40-bit code safe: each guess needs a live run against the shower, which allows 5 wrong guesses and then refuses everything until the user starts again for a new code; a code lives 5 minutes; a shower runs at most 3 exchanges at once; and an enterer that is not on a direct link cannot start one. See `docs/relay-threat-model.md` for why this is never offered over the relay.
+
 ## Relay transport
 
 When two trusted devices have no LAN path, they can reach each other through a topic-hub relay (`relay/`, design and abuse model in `docs/plans/relay.md` and `docs/relay-threat-model.md`). The relay is an untrusted router: it forwards opaque frames between members of one topic and sees only metadata. Everything below the framing in this document is unchanged; a relayed peer is just another connection whose bytes travel inside relay frames. The client lives in `desktop/core/src/relay.rs`; the relay's behavior is pinned by `schema/conformance/relay-vectors.json`.

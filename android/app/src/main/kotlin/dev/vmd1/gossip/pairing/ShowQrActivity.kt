@@ -108,6 +108,11 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit, onCance
                 val bitmap = remember(current.payload) { QRCodeGenerator.bitmap(current.payload) }
                 Text("Scan this on another device to pair", style = MaterialTheme.typography.titleMedium)
                 Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Pairing QR code")
+                val context = androidx.compose.ui.platform.LocalContext.current
+                androidx.compose.material3.TextButton(onClick = {
+                    context.startActivity(android.content.Intent(context, CodePairActivity::class.java))
+                    onCancel()
+                }) { Text("No camera? Pair with a code") }
                 androidx.compose.material3.OutlinedButton(onClick = onCancel) { Text("Cancel") }
             }
             is ShowQrUiState.ConfirmingTrust -> {

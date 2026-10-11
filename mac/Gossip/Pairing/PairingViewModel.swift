@@ -10,6 +10,12 @@ final class PairingViewModel: ObservableObject {
         case idle
         case showingQR
         case waitingForPhone
+        /// This is the new device: `code` is what the user types into a device that is already paired.
+        case showingCode(code: String, attemptsLeft: Int?)
+        /// This device is already paired: the user types the code the new device shows.
+        case enteringCode
+        /// A code was typed here; looking for the device showing it.
+        case searching
         case confirmingTrust(deviceName: String, code: String)
         case paired(deviceName: String)
         case failed(String)
@@ -47,6 +53,24 @@ final class PairingViewModel: ObservableObject {
             self.pendingConfirmation = nil
             self.state = .failed("The other device disconnected before pairing finished")
         }
+        transportManager?.onCodePairingEvent = { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .succeeded(let peer):
+                self.state = .paired(deviceName: peer.deviceName)
+                NotificationCenter.default.post(name: .gossipDevicePaired, object: nil)
+            case .wrongCode(let left):
+                if case .showingCode(let code, _) = self.state { self.state = .showingCode(code: code, attemptsLeft: left) }
+            case .tooManyAttempts:
+                self.state = .failed("Too many wrong codes. Start again to get a new code.")
+            case .expired:
+                self.state = .failed("The code expired. Start again to get a new one.")
+            case .rejected:
+                self.state = .failed("That code didn't work. Check it against the other device and try again.")
+            case .noDeviceFound:
+                self.state = .failed("No device on this network is showing a code. Open the pairing code screen on the new device first.")
+            }
+        }
         transportManager?.addOnTrustedConnected { [weak self] peer in
             DispatchQueue.main.async {
                 // Every reconnect of a trusted device lands here too; only a pairing that is actually in progress counts.
@@ -74,6 +98,28 @@ final class PairingViewModel: ObservableObject {
         state = .waitingForPhone
     }
 
+    /// This Mac is the new device: shows a code to type into a device that is already paired.
+    func showCode() {
+        transportManager?.disarmPairing()
+        qrImage = nil
+        transportManager?.start()
+        guard let code = transportManager?.startCodePairing() else { return }
+        state = .showingCode(code: code, attemptsLeft: nil)
+    }
+
+    /// This Mac is already paired: lets the user type the code the new device shows.
+    func beginEnteringCode() {
+        transportManager?.disarmPairing()
+        qrImage = nil
+        transportManager?.start()
+        state = .enteringCode
+    }
+
+    func submitCode(_ text: String) {
+        state = .searching
+        transportManager?.enterCode(text)
+    }
+
     /// User taps "Confirm" in response to `.confirmingTrust`.
     func confirmTrust() {
         pendingConfirmation?(true)
@@ -90,6 +136,7 @@ final class PairingViewModel: ObservableObject {
     }
 
     func reset() {
+        transportManager?.stopCodePairing()
         transportManager?.disarmPairing()
         currentPayload = nil
         qrImage = nil

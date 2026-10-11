@@ -99,6 +99,13 @@ do {
     for case .topicChanged(let secret, let epoch) in net.nodes[mac].events + net.nodes[phone].events { if epoch == 1 { topicSecret = secret } }
     check(topicSecret?.count == 32, "TopicChanged carries a 32-byte secret to persist")
     check(net.nodes[mac].core.relayStatus() == "disabled", "relay is off by default")
+    let shownCode = net.nodes[phone].core.startCodePairing()
+    check(shownCode.count == 9 && shownCode.contains("-"), "a shown code looks like ABCD-EFGH")
+    check(net.nodes[phone].core.codePairingActive(), "a code is active once shown")
+    check(net.nodes[mac].core.isValidPairingCode(code: shownCode.lowercased()), "a typed code is accepted in any case")
+    check(!net.nodes[mac].core.isValidPairingCode(code: "ABC"), "a short code is refused")
+    net.nodes[phone].core.stopCodePairing()
+    check(!net.nodes[phone].core.codePairingActive(), "stopping the code deactivates it")
     var connectURL: String?
     for case .relayConnect(let url) in net.nodes[mac].core.relayConfigure(enabled: true, origin: "wss://relay.example.test") { connectURL = url }
     check(connectURL == "wss://relay.example.test/connect", "enabling the relay asks the shell to connect")

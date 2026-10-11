@@ -154,6 +154,22 @@ pub enum Action {
         task: String,
         peer: Option<String>,
     },
+    /// Pairing by code finished: `peer` is now trusted (a `TrustChanged` precedes it).
+    CodePairingSucceeded {
+        peer: PeerInfo,
+    },
+    /// The device showing the code was given a wrong one.
+    CodePairingWrongCode {
+        attempts_left: u32,
+    },
+    /// The device showing the code has used up its attempts; it must start again for a new code.
+    CodePairingTooManyAttempts,
+    /// The code was not used in time.
+    CodePairingExpired,
+    /// This device typed a code and the other device did not accept it (wrong code, or it went away).
+    CodePairingRejected {
+        device_id: Option<String>,
+    },
     /// Open a WebSocket to the relay at `url`, then call `relay_socket_opened` (or `relay_socket_closed` if it fails).
     RelayConnect {
         url: String,
@@ -223,6 +239,19 @@ impl From<engine::Action> for Action {
                     snapshot_json: serde_json::to_string(&snapshot).expect("snapshot serialises"),
                 },
                 E::DeviceRevoked { device_id } => Action::DeviceRevoked { device_id },
+                E::CodePairing(c) => match c {
+                    engine::CodePairingEvent::Succeeded { peer } => {
+                        Action::CodePairingSucceeded { peer: peer.into() }
+                    }
+                    engine::CodePairingEvent::WrongCode { attempts_left } => {
+                        Action::CodePairingWrongCode { attempts_left }
+                    }
+                    engine::CodePairingEvent::TooManyAttempts => Action::CodePairingTooManyAttempts,
+                    engine::CodePairingEvent::Expired => Action::CodePairingExpired,
+                    engine::CodePairingEvent::Rejected { device_id } => {
+                        Action::CodePairingRejected { device_id }
+                    }
+                },
                 E::ReconcileDue(due) => Action::ReconcileDue {
                     task: due.task.to_owned(),
                     peer: due.peer,

@@ -6,6 +6,8 @@ struct DiscoveredPeer: Equatable {
     let deviceId: String
     let publicKeyFingerprint: String
     let endpoint: NWEndpoint
+    /// The device is showing a pairing code (Bonjour TXT `pair=1`) and will accept one typed on another device.
+    var pairing: Bool = false
 }
 
 /// Advertises this Mac on the local network via Bonjour (`_gossip._tcp`) and
@@ -36,11 +38,8 @@ final class LocalDiscovery {
         params.includePeerToPeer = true
 
         let listener = try NWListener(using: params, on: port ?? .any)
-        let txt = NWTXTRecord([
-            "deviceId": deviceId,
-            "fp": publicKeyFingerprint,
-        ])
-        listener.service = NWListener.Service(name: deviceName, type: Self.serviceType, txtRecord: txt)
+        advertised = (deviceId, deviceName, publicKeyFingerprint)
+        listener.service = NWListener.Service(name: deviceName, type: Self.serviceType, txtRecord: txtRecord(pairing: pairingMode))
 
         listener.newConnectionHandler = { [weak self] connection in
             DispatchQueue.main.async {
@@ -66,6 +65,26 @@ final class LocalDiscovery {
 
         listener.start(queue: queue)
         self.listener = listener
+    }
+
+    private var advertised: (deviceId: String, deviceName: String, fingerprint: String)?
+    private var pairingMode = false
+
+    private func txtRecord(pairing: Bool) -> NWTXTRecord {
+        var entries = ["deviceId": advertised?.deviceId ?? "", "fp": advertised?.fingerprint ?? ""]
+        if pairing { entries["pair"] = "1" }
+        return NWTXTRecord(entries)
+    }
+
+    /// Tells other devices this one is showing a pairing code (`pair=1` in the TXT record) so one that has the code typed
+    /// into it can find it. Takes effect on the running advertisement.
+    func setPairingMode(_ on: Bool) {
+        queue.async { [weak self] in
+            guard let self, self.pairingMode != on else { return }
+            self.pairingMode = on
+            guard let listener = self.listener, let advertised = self.advertised else { return }
+            listener.service = NWListener.Service(name: advertised.deviceName, type: Self.serviceType, txtRecord: self.txtRecord(pairing: on))
+        }
     }
 
     func stopAdvertising() {
@@ -133,7 +152,8 @@ final class LocalDiscovery {
                   let deviceId = txtRecord.getEntry(for: "deviceId").flatMap(Self.stringValue),
                   let fingerprint = txtRecord.getEntry(for: "fp").flatMap(Self.stringValue)
             else { continue }
-            updated[result.endpoint] = DiscoveredPeer(deviceId: deviceId, publicKeyFingerprint: fingerprint, endpoint: result.endpoint)
+            let pairing = txtRecord.getEntry(for: "pair").flatMap(Self.stringValue) == "1"
+            updated[result.endpoint] = DiscoveredPeer(deviceId: deviceId, publicKeyFingerprint: fingerprint, endpoint: result.endpoint, pairing: pairing)
         }
         discovered = updated
         let peers = Array(updated.values)

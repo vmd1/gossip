@@ -88,6 +88,13 @@ class BindingsSmokeTest {
         assertEquals(1uL, net.nodes[phone].core.topicEpoch())
         val minted = (net.nodes[mac].events + net.nodes[phone].events).filterIsInstance<Action.TopicChanged>().first { it.epoch == 1uL }
         assertEquals(32, minted.secret.size)
+        val shown = net.nodes[phone].core.startCodePairing()
+        assertEquals(9, shown.length)
+        assertTrue(net.nodes[phone].core.codePairingActive())
+        assertTrue(net.nodes[mac].core.isValidPairingCode(shown.lowercase()))
+        assertFalse(net.nodes[mac].core.isValidPairingCode("ABC"))
+        net.nodes[phone].core.stopCodePairing()
+        assertFalse(net.nodes[phone].core.codePairingActive())
         assertEquals("disabled", net.nodes[mac].core.relayStatus())
         val connect = net.nodes[mac].core.relayConfigure(true, "wss://relay.example.test").filterIsInstance<Action.RelayConnect>().single()
         assertEquals("wss://relay.example.test/connect", connect.url)

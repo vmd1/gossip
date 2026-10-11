@@ -152,6 +152,10 @@ class QRScanActivity : ComponentActivity() {
                     if (cameraGranted) "Point the camera at the other device's QR code" else "Camera permission is required to scan a QR code.",
                     style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center
                 )
+                androidx.compose.material3.TextButton(onClick = {
+                    startActivity(Intent(this@QRScanActivity, CodePairActivity::class.java))
+                    cancelAndClose()
+                }) { Text("Can't scan? Pair with a code") }
                 OutlinedButton(onClick = ::cancelAndClose) { Text("Cancel") }
             }
         }

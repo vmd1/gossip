@@ -76,6 +76,17 @@ class CoreBridge(
          *  message ([TransportManager] only hands it to [RelayTopicStore]); deliberately not a data class, so it has no
          *  `toString` that prints it. */
         class TopicChanged(val secret: ByteArray, val epoch: ULong) : BridgeAction()
+
+        /** Pairing by code: this device and [peer] now trust each other (a [TrustChanged] precedes it). */
+        class CodePairingSucceeded(val peer: HandshakePeerInfo) : BridgeAction()
+
+        /** The device showing the code was given a wrong one. */
+        class CodePairingWrongCode(val attemptsLeft: UInt) : BridgeAction()
+        object CodePairingTooManyAttempts : BridgeAction()
+        object CodePairingExpired : BridgeAction()
+
+        /** This device typed a code and the other device did not accept it. */
+        class CodePairingRejected(val deviceId: String?) : BridgeAction()
     }
 
     class BridgeException(message: String, val kind: Kind) : Exception(message) {
@@ -99,6 +110,20 @@ class CoreBridge(
 
     fun dial(conn: ULong, target: String, remoteStaticKey: ByteArray, pairingToken: String?): List<BridgeAction> =
         call { core.dial(conn, target, remoteStaticKey, pairingToken) }
+
+    // ---- Pairing by code --------------------------------------------------------------------------------------
+
+    /** Starts showing a code on this device; returns it formatted `ABCD-EFGH`. */
+    fun startCodePairing(): String = core.startCodePairing()
+
+    fun stopCodePairing() = core.stopCodePairing()
+
+    fun codePairingActive(): Boolean = core.codePairingActive()
+
+    fun isValidPairingCode(code: String): Boolean = core.isValidPairingCode(code)
+
+    /** A code was typed here; [conn] is a fresh connection to [target], which is showing a code. */
+    fun dialCode(conn: ULong, target: String, code: String): List<BridgeAction> = call { core.dialCode(conn, target, code) }
 
     fun bytesReceived(conn: ULong, bytes: ByteArray): List<BridgeAction> = convert(core.bytesReceived(conn, bytes))
 
@@ -205,6 +230,11 @@ class CoreBridge(
             is CoreAction.RelayDown -> BridgeAction.RelayDown
             is CoreAction.RelayError -> BridgeAction.RelayError(action.code)
             is CoreAction.TopicChanged -> BridgeAction.TopicChanged(action.secret, action.epoch)
+            is CoreAction.CodePairingSucceeded -> BridgeAction.CodePairingSucceeded(peerInfo(action.peer))
+            is CoreAction.CodePairingWrongCode -> BridgeAction.CodePairingWrongCode(action.attemptsLeft)
+            is CoreAction.CodePairingTooManyAttempts -> BridgeAction.CodePairingTooManyAttempts
+            is CoreAction.CodePairingExpired -> BridgeAction.CodePairingExpired
+            is CoreAction.CodePairingRejected -> BridgeAction.CodePairingRejected(action.deviceId)
         }
     }
 

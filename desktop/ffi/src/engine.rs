@@ -247,6 +247,39 @@ impl GossipCore {
         self.lock().disarm_pairing();
     }
 
+    // ---- Pairing by code ---------------------------------------------------------------------------------------
+
+    /// The new device calls this and shows the returned code (`ABCD-EFGH`). While it is active
+    /// (`code_pairing_active`) the shell should advertise that this device is in pairing mode.
+    pub fn start_code_pairing(&self) -> String {
+        self.lock().start_code_pairing()
+    }
+
+    pub fn stop_code_pairing(&self) {
+        self.lock().stop_code_pairing();
+    }
+
+    pub fn code_pairing_active(&self) -> bool {
+        self.lock().code_pairing_active()
+    }
+
+    /// The code was typed on this (already paired) device. `conn` is a fresh connection to `target`, a device found
+    /// advertising pairing mode; the first message comes back as a `Send`. Progress arrives as `CodePairing*`
+    /// actions; on success both devices trust each other and the connection is closed.
+    pub fn dial_code(
+        &self,
+        conn: u64,
+        target: String,
+        code: String,
+    ) -> Result<Vec<Action>, GossipError> {
+        Ok(actions(self.lock().dial_code(conn, &target, &code)?))
+    }
+
+    /// Whether `code` is a well-formed pairing code (so the UI can enable its Pair button).
+    pub fn is_valid_pairing_code(&self, code: String) -> bool {
+        gossip_core::crypto::code_pake::normalize_code(&code).is_some()
+    }
+
     /// The user answered a `PairingPrompt`.
     pub fn confirm_pairing(&self, conn: u64, accepted: bool) -> Vec<Action> {
         actions(self.lock().confirm_pairing(conn, accepted))

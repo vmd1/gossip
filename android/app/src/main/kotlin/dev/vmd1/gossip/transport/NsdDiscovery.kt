@@ -21,7 +21,9 @@ data class DiscoveredPeer(
     val host: String?,
     val port: Int,
     val deviceId: String?,
-    val publicKeyFingerprint: String?
+    val publicKeyFingerprint: String?,
+    /** The device is showing a pairing code (TXT `pair=1`) and will accept one typed on another device. */
+    val pairing: Boolean = false
 )
 
 sealed class DiscoveryEvent {
@@ -39,8 +41,24 @@ class NsdDiscovery(context: Context, private val deviceId: String, private val p
     private val nsdManager = context.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
     private var registrationListener: NsdManager.RegistrationListener? = null
 
+    private var advertisedName: String? = null
+    private var advertisedPort: Int? = null
+    private var pairingMode = false
+
+    /** Tells other devices this one is showing a pairing code (`pair=1` in the TXT record), by re-registering. */
+    @Synchronized
+    fun setPairingMode(on: Boolean) {
+        if (pairingMode == on) return
+        pairingMode = on
+        val name = advertisedName ?: return
+        val port = advertisedPort ?: return
+        startAdvertising(name, port)
+    }
+
     /** Advertises this device's sync service (call once the server socket is listening on [port]). */
     fun startAdvertising(deviceName: String, port: Int) {
+        advertisedName = deviceName
+        advertisedPort = port
         stopAdvertising()
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = "connect-$deviceId"
@@ -49,6 +67,7 @@ class NsdDiscovery(context: Context, private val deviceId: String, private val p
             setAttribute("deviceId", deviceId)
             setAttribute("fp", publicKeyFingerprint)
             setAttribute("name", deviceName)
+            if (pairingMode) setAttribute("pair", "1")
         }
         val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) {
@@ -130,7 +149,8 @@ class NsdDiscovery(context: Context, private val deviceId: String, private val p
                             host = info.host?.hostAddress,
                             port = info.port,
                             deviceId = attrs["deviceId"]?.let { String(it, Charsets.UTF_8) },
-                            publicKeyFingerprint = attrs["fp"]?.let { String(it, Charsets.UTF_8) }
+                            publicKeyFingerprint = attrs["fp"]?.let { String(it, Charsets.UTF_8) },
+                            pairing = attrs["pair"]?.let { String(it, Charsets.UTF_8) } == "1"
                         )
                         trySend(DiscoveryEvent.Found(peer))
                     }

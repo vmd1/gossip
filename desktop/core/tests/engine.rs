@@ -233,6 +233,7 @@ fn kinds(node: &Node) -> Vec<&'static str> {
             Event::ReconcileDue(_) => "reconcile",
             Event::TopicChanged { .. } => "topic",
             Event::RelayJoined { .. } | Event::RelayDown | Event::RelayError { .. } => "relay",
+            Event::CodePairing(_) => "code-pairing",
         })
         .collect()
 }
@@ -1037,4 +1038,238 @@ fn set_trust_replaces_the_table_including_tombstones() {
     assert!(!net.nodes[a].core.trust().is_trusted(&id_of(9)));
     assert_eq!(net.nodes[a].core.trust().revoked_at(&id_of(9)), Some(T0));
     let _ = TrustSnapshot::default();
+}
+
+// ---- Pairing by code ---------------------------------------------------------------------------------------------
+
+impl Net {
+    /// `enterer` opens a connection to `shower` and starts a code pairing on it.
+    fn open_code(
+        &mut self,
+        enterer: usize,
+        shower: usize,
+        code: &str,
+    ) -> Result<(ConnId, ConnId), CodePairingError> {
+        let (a, b) = (self.next_conn, self.next_conn + 1);
+        self.next_conn += 2;
+        self.links.insert((enterer, a), (shower, b));
+        self.links.insert((shower, b), (enterer, a));
+        let accept = self.nodes[shower].core.connection_accepted(b).unwrap();
+        self.pump(shower, accept);
+        let target = self.nodes[shower].core.device_id().to_owned();
+        let dial = self.nodes[enterer].core.dial_code(a, &target, code)?;
+        self.pump(enterer, dial);
+        Ok((a, b))
+    }
+
+    fn code_events(&self, node: usize) -> Vec<CodePairingEvent> {
+        self.nodes[node]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CodePairing(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn two_devices() -> (Net, usize, usize) {
+    let mut net = Net::new();
+    let existing = net.add(1, DeviceType::Mac);
+    let new = net.add(2, DeviceType::AndroidPhone);
+    (net, existing, new)
+}
+
+#[test]
+fn typing_the_shown_code_pairs_both_devices_and_they_then_connect() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    assert_eq!(shown.len(), 9, "ABCD-EFGH");
+    assert!(net.nodes[new].core.code_pairing_active());
+
+    // The user types it in lower case, without the dash.
+    let typed = shown.replace('-', "").to_lowercase();
+    net.open_code(existing, new, &typed).unwrap();
+
+    for (node, other) in [(existing, new), (new, existing)] {
+        let events = net.code_events(node);
+        let peer = match events.last() {
+            Some(CodePairingEvent::Succeeded { peer }) => peer,
+            other => panic!("expected success, got {other:?}"),
+        };
+        assert_eq!(peer.device_id, id_of(if other == new { 2 } else { 1 }));
+        assert!(net.nodes[node].core.trust().is_trusted(&peer.device_id));
+        assert_eq!(peer.noise_public_key, net.noise_pub(other));
+    }
+    assert!(
+        net.links.is_empty(),
+        "the pairing connection is closed afterwards"
+    );
+
+    // Now they are trusted, so the normal handshake works with no prompt.
+    net.open(existing, new, None);
+    assert!(net.nodes[existing].core.is_connected(&id_of(2)));
+    assert!(net.nodes[new].core.is_connected(&id_of(1)));
+}
+
+#[test]
+fn a_wrong_code_pairs_nothing_and_costs_an_attempt() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    let wrong = if shown.starts_with('A') {
+        "BBBBBBBB"
+    } else {
+        "AAAAAAAA"
+    };
+    net.open_code(existing, new, wrong).unwrap();
+    assert_eq!(
+        net.code_events(new),
+        vec![CodePairingEvent::WrongCode { attempts_left: 4 }]
+    );
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Rejected { .. }]
+    ));
+    assert!(!net.nodes[existing].core.trust().is_trusted(&id_of(2)));
+    assert!(!net.nodes[new].core.trust().is_trusted(&id_of(1)));
+    assert!(net.nodes[new].core.code_pairing_active(), "still usable");
+}
+
+#[test]
+fn five_wrong_codes_kill_the_code_even_for_the_right_one() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    let right = shown.replace('-', "");
+    let wrong = if right.starts_with('A') {
+        "BBBBBBBB"
+    } else {
+        "AAAAAAAA"
+    };
+    for _ in 0..5 {
+        net.open_code(existing, new, wrong).unwrap();
+    }
+    assert!(net
+        .code_events(new)
+        .contains(&CodePairingEvent::TooManyAttempts));
+    assert!(!net.nodes[new].core.code_pairing_active());
+
+    net.nodes[existing].events.clear();
+    net.open_code(existing, new, &right).unwrap();
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Rejected { .. }]
+    ));
+    assert!(!net.nodes[existing].core.trust().is_trusted(&id_of(2)));
+}
+
+#[test]
+fn a_device_not_showing_a_code_refuses_every_attempt() {
+    let (mut net, existing, new) = two_devices();
+    net.open_code(existing, new, "ABCDEFGH").unwrap();
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Rejected { .. }]
+    ));
+    assert!(
+        net.code_events(new).is_empty(),
+        "no attempt is even counted"
+    );
+    assert!(!net.nodes[new].core.trust().is_trusted(&id_of(1)));
+}
+
+#[test]
+fn an_unused_code_expires() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    net.set_time(T0 + 301_000);
+    let tick = net.nodes[new].core.tick();
+    net.pump(new, tick);
+    assert_eq!(net.code_events(new), vec![CodePairingEvent::Expired]);
+    assert!(!net.nodes[new].core.code_pairing_active());
+
+    net.open_code(existing, new, &shown.replace('-', ""))
+        .unwrap();
+    assert!(!net.nodes[existing].core.trust().is_trusted(&id_of(2)));
+}
+
+#[test]
+fn repeating_the_exchange_is_a_no_op_but_only_for_the_same_device() {
+    let mut net = Net::new();
+    let existing = net.add(1, DeviceType::Mac);
+    let new = net.add(2, DeviceType::AndroidPhone);
+    let other = net.add(3, DeviceType::AndroidTablet);
+    let shown = net.nodes[new].core.start_code_pairing();
+    let code = shown.replace('-', "");
+    net.open_code(existing, new, &code).unwrap();
+    let after_first = net.nodes[new].core.trust_snapshot();
+
+    // A lost reply: the same device tries again with the same code.
+    net.nodes[new].events.clear();
+    net.nodes[existing].events.clear();
+    net.open_code(existing, new, &code).unwrap();
+    assert_eq!(
+        net.nodes[new].core.trust_snapshot(),
+        after_first,
+        "unchanged"
+    );
+    assert!(
+        !net.nodes[new]
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::TrustChanged(_))),
+        "no trust change reported again"
+    );
+    assert!(net.code_events(new).is_empty(), "no second success shown");
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Succeeded { .. }]
+    ));
+
+    // Someone else with the right code is refused while that window is open.
+    net.open_code(other, new, &code).unwrap();
+    assert!(!net.nodes[other].core.trust().is_trusted(&id_of(2)));
+    assert!(!net.nodes[new].core.trust().is_trusted(&id_of(3)));
+}
+
+#[test]
+fn dial_code_rejects_bad_input_and_relayed_connections() {
+    let (mut net, existing, new) = two_devices();
+    let target = id_of(2);
+    let core = &mut net.nodes[existing].core;
+    assert_eq!(
+        core.dial_code(1, &target, "SHORT").err(),
+        Some(CodePairingError::BadCode)
+    );
+    assert_eq!(
+        core.dial_code(1, &target, "ABCDEF0H").err(),
+        Some(CodePairingError::BadCode)
+    );
+    assert_eq!(
+        core.dial_code(1, "not-a-uuid", "ABCDEFGH").err(),
+        Some(CodePairingError::BadTarget)
+    );
+    assert_eq!(
+        core.dial_code(u64::MAX, &target, "ABCDEFGH").err(),
+        Some(CodePairingError::NotDirect)
+    );
+    let _ = new;
+}
+
+#[test]
+fn a_stalled_code_exchange_times_out() {
+    let (mut net, existing, new) = two_devices();
+    net.nodes[new].core.start_code_pairing();
+    // The shower accepts the connection but nothing ever arrives.
+    let b = 77;
+    let accept = net.nodes[new].core.connection_accepted(b).unwrap();
+    net.pump(new, accept);
+    net.set_time(T0 + 16_000);
+    let tick = net.nodes[new].core.tick();
+    assert!(
+        tick.iter()
+            .any(|a| matches!(a, Action::Close { conn } if *conn == b)),
+        "the idle connection is closed"
+    );
+    let _ = existing;
 }

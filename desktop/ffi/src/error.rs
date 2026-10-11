@@ -1,4 +1,4 @@
-use gossip_core::engine::{DialError, SendError};
+use gossip_core::engine::{CodePairingError, DialError, SendError};
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum GossipError {
@@ -38,6 +38,14 @@ impl From<SendError> for GossipError {
 impl From<DialError> for GossipError {
     fn from(e: DialError) -> Self {
         Self::Dial {
+            reason: e.to_string(),
+        }
+    }
+}
+
+impl From<CodePairingError> for GossipError {
+    fn from(e: CodePairingError) -> Self {
+        Self::InvalidArgument {
             reason: e.to_string(),
         }
     }
