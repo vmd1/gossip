@@ -1,12 +1,9 @@
 package dev.vmd1.gossip.features.universalcontrol
 
 import java.nio.ByteBuffer
-import java.security.GeneralSecurityException
 import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.Mac
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import uniffi.gossip_ffi.StreamCipher
+import uniffi.gossip_ffi.StreamProfile
 
 /**
  * Kotlin twin of `mac/Gossip/Features/UniversalControl/ControlProtocol.swift`: the Universal Control data
@@ -143,72 +140,29 @@ sealed class ControlFrame {
     }
 }
 
-/** One end of a session's cipher. Not thread-safe: own it from one thread (or synchronize). */
-class ControlCipher(secret: ByteArray, private val sessionId: String, private val deviceSide: Boolean = true) {
+/** One end of a session's cipher: the core's `StreamCipher` (`desktop/core/src/crypto/stream.rs`). Own it from one thread. */
+class ControlCipher(secret: ByteArray, sessionId: String, deviceSide: Boolean = true) {
     class Failure(message: String, val replayed: Boolean = false) : Exception(message)
 
-    private val sendDirection = if (deviceSide) DIR_D2M else DIR_M2D
-    private val receiveDirection = if (deviceSide) DIR_M2D else DIR_D2M
-    private val sendKey = SecretKeySpec(hkdf(secret, sessionId.toByteArray(), info(sendDirection)), "ChaCha20")
-    private val receiveKey = SecretKeySpec(hkdf(secret, sessionId.toByteArray(), info(receiveDirection)), "ChaCha20")
-    private var sendCounter = 0L
-    private var lastReceived = 0L
+    private val inner = StreamCipher(StreamProfile.CONTROL, secret, sessionId, !deviceSide)
 
-    fun seal(frame: ControlFrame): ByteArray {
-        sendCounter += 1
-        return seal(frame.encode(), sendCounter)
-    }
-
-    /** Exposed for the shared test vectors (fixed counter). */
-    fun seal(plaintext: ByteArray, counter: Long): ByteArray {
-        val c = newCipher()
-        c.init(Cipher.ENCRYPT_MODE, sendKey, IvParameterSpec(nonce(counter)))
-        c.updateAAD(aad(sendDirection))
-        val sealed = c.doFinal(plaintext) // ciphertext || 16-byte tag
-        return ByteBuffer.allocate(8 + sealed.size).putLong(counter).put(sealed).array()
-    }
+    fun seal(frame: ControlFrame): ByteArray = inner.seal(frame.encode())
 
     /** Decrypts and authenticates [message]; throws [Failure] on a replay, a bad length or a forgery. */
     fun open(message: ByteArray): ControlFrame? {
-        if (message.size < 8 + 16) throw Failure("bad length")
-        val counter = ByteBuffer.wrap(message, 0, 8).long
-        if (counter <= lastReceived) throw Failure("replayed", replayed = true)
         val plaintext = try {
-            val c = newCipher()
-            c.init(Cipher.DECRYPT_MODE, receiveKey, IvParameterSpec(nonce(counter)))
-            c.updateAAD(aad(receiveDirection))
-            c.doFinal(message, 8, message.size - 8)
-        } catch (_: GeneralSecurityException) { throw Failure("authentication") }
-        lastReceived = counter // only after authentication, so garbage can't burn counters
+            inner.open(message)
+        } catch (e: Exception) {
+            val text = e.message.orEmpty()
+            when {
+                text.contains("too short") -> throw Failure("bad length")
+                text.contains("not greater") -> throw Failure("replayed", replayed = true)
+                else -> throw Failure("authentication")
+            }
+        }
         return ControlFrame.decode(plaintext)
     }
-
-    private fun aad(direction: Int): ByteArray =
-        "gossip-control-v1".toByteArray() + byteArrayOf(direction.toByte()) + sessionId.toByteArray(Charsets.UTF_8)
-
-    private fun nonce(counter: Long): ByteArray = ByteBuffer.allocate(12).putInt(0).putLong(counter).array()
-
-    companion object {
-        const val DIR_M2D = 1
-        const val DIR_D2M = 2
-        private fun info(direction: Int) =
-            (if (direction == DIR_M2D) "gossip-control-v1 m2d" else "gossip-control-v1 d2m").toByteArray()
-
-        /** HKDF-SHA256 (RFC 5869), one 32-byte output block. */
-        internal fun hkdf(ikm: ByteArray, salt: ByteArray, info: ByteArray): ByteArray {
-            val mac = Mac.getInstance("HmacSHA256")
-            mac.init(SecretKeySpec(if (salt.isEmpty()) ByteArray(32) else salt, "HmacSHA256"))
-            val prk = mac.doFinal(ikm)
-            mac.init(SecretKeySpec(prk, "HmacSHA256"))
-            mac.update(info); mac.update(1.toByte())
-            return mac.doFinal()
-        }
-    }
 }
-
-/** JDK/BouncyCastle name first, Conscrypt's (Android) transformation string as the fallback. */
-private fun newCipher(): Cipher =
-    try { Cipher.getInstance("ChaCha20-Poly1305") } catch (_: GeneralSecurityException) { Cipher.getInstance("ChaCha20/Poly1305/NoPadding") }
 
 /** Constant-time compare for the session id in the hello. */
 internal fun constantTimeEquals(a: String, b: String): Boolean =

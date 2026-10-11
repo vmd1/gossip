@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import GossipCoreKit
 
 /// `type` values this unit registers in `schema/message-types.md`.
 enum MediaMessageType {
@@ -16,8 +17,8 @@ enum MediaCommandAction: String {
     case previous
 }
 
-/// Now-playing state mirrored from the phone's active media session, as published
-/// by a `media.nowplaying` envelope. See `schema/message-types.md` for the wire shape.
+/// Now-playing state mirrored from the phone's active media session, as published in the `media.nowplaying` state slot.
+/// See `schema/message-types.md` for the shape.
 struct NowPlayingState: Equatable {
     var title: String
     var artist: String
@@ -26,6 +27,16 @@ struct NowPlayingState: Equatable {
     var positionMs: Int
     var durationMs: Int
     var packageName: String
+
+    init(title: String, artist: String, artworkData: Data?, isPlaying: Bool, positionMs: Int, durationMs: Int, packageName: String) {
+        self.title = title; self.artist = artist; self.artworkData = artworkData; self.isPlaying = isPlaying
+        self.positionMs = positionMs; self.durationMs = durationMs; self.packageName = packageName
+    }
+
+    init(_ core: GossipCoreKit.NowPlaying) {
+        self.init(title: core.title, artist: core.artist, artworkData: core.artwork, isPlaying: core.isPlaying,
+                  positionMs: Int(core.positionMs), durationMs: Int(core.durationMs), packageName: core.packageName)
+    }
 }
 
 /// Registers a `MessageRouter` handler for `media.nowplaying` envelopes — broadcast by
@@ -50,6 +61,7 @@ final class MediaControlManager: ObservableObject {
     private let identity: IdentityKeyStore
 
     private var cancellables = Set<AnyCancellable>()
+    private let logic = GossipCoreKit.MediaController()
 
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared) {
         self.transportManager = transportManager
@@ -68,14 +80,15 @@ final class MediaControlManager: ObservableObject {
     }
 
     private func apply(deviceId: String, valueJSON: String?) {
-        let state = valueJSON
-            .flatMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
-            .flatMap(Self.parseNowPlaying)
-        if let state {
-            nowPlayingByDevice[deviceId] = state
+        // The state, its parsing and the "which device is current" rule are the core's `MediaController`
+        // (`desktop/core/src/features/media.rs`), shared with every platform.
+        if let valueJSON, (try? logic.onNowPlaying(sender: deviceId, payloadJson: valueJSON)) != nil,
+           let state = logic.stateOf(device: deviceId) {
+            nowPlayingByDevice[deviceId] = NowPlayingState(state)
             mostRecentDeviceId = deviceId
         } else {
             // Cleared: the phone has no media session any more.
+            logic.forget(sender: deviceId)
             nowPlayingByDevice.removeValue(forKey: deviceId)
             if mostRecentDeviceId == deviceId { mostRecentDeviceId = nowPlayingByDevice.keys.sorted().first }
         }
@@ -106,48 +119,27 @@ final class MediaControlManager: ObservableObject {
 
     // MARK: - Parsing (pure, unit-testable without a live transport)
 
+    /// Parses one `media.nowplaying` slot value (validated by the core).
     static func parseNowPlaying(_ payload: JSONValue) -> NowPlayingState? {
-        guard let title = payload["title"]?.stringValue,
-              let artist = payload["artist"]?.stringValue else { return nil }
-
-        let artBase64 = payload["artBase64"]?.stringValue
-        let artworkData = artBase64.flatMap { Data(base64Encoded: $0) }
-        let isPlaying = payload["isPlaying"].flatMap(Self.boolValue) ?? false
-        let positionMs = payload["positionMs"].flatMap(Self.intValue) ?? 0
-        let durationMs = payload["durationMs"].flatMap(Self.intValue) ?? 0
-        let packageName = payload["packageName"]?.stringValue ?? ""
-
-        return NowPlayingState(
-            title: title,
-            artist: artist,
-            artworkData: artworkData,
-            isPlaying: isPlaying,
-            positionMs: positionMs,
-            durationMs: durationMs,
-            packageName: packageName
-        )
+        guard let json = try? JSONEncoder().encode(payload) else { return nil }
+        let controller = GossipCoreKit.MediaController()
+        guard (try? controller.onNowPlaying(sender: "parse", payloadJson: String(decoding: json, as: UTF8.self))) != nil,
+              let state = controller.stateOf(device: "parse") else { return nil }
+        return NowPlayingState(state)
     }
 
-    /// `commandId` uniquely identifies this command *instance* (a fresh UUID per call,
-    /// not per action) so the Android receiver can drop an exact duplicate delivery
-    /// (retry, relay race, dedupe-cache eviction) without skipping/rewinding twice —
-    /// see `MediaControlBridge.handleCommand` (Android).
+    /// `commandId` uniquely identifies this command *instance* (a fresh UUID per call, not per action) so the Android receiver
+    /// can drop an exact duplicate delivery without skipping/rewinding twice (the receiver is the core's `CommandGuard`).
     static func commandPayload(action: MediaCommandAction, seekMs: Int?, commandId: String = UUID().uuidString) -> JSONValue {
-        var fields: [String: JSONValue] = ["action": .string(action.rawValue), "commandId": .string(commandId)]
-        if let seekMs {
-            fields["seekMs"] = .number(Double(seekMs))
+        let core: GossipCoreKit.MediaAction
+        switch action {
+        case .play: core = .play
+        case .pause: core = .pause
+        case .next: core = .next
+        case .previous: core = .previous
         }
-        return .object(fields)
-    }
-
-    private static func boolValue(_ value: JSONValue) -> Bool? {
-        if case .bool(let b) = value { return b }
-        return nil
-    }
-
-    private static func intValue(_ value: JSONValue) -> Int? {
-        if case .number(let n) = value { return Int(n) }
-        return nil
+        let json = GossipCoreKit.mediaCommandPayload(action: core, seekMs: seekMs.map(Int64.init), commandId: commandId)
+        return (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .object([:])
     }
 
     // MARK: - Sending commands

@@ -12,14 +12,27 @@ private final class FakeRinger: Ringer {
     func stop() { stops += 1 }
 }
 
+/// A controllable clock for `RingManager`'s auto-stop and expiry (the real ones are 30 s and 35 s).
+private final class TestClock { var ms: Int64 = 1_000_000 }
+
 final class RingManagerTests: XCTestCase {
+    private func payload(_ action: String, _ id: String) -> JSONValue { .object(["action": .string(action), "ringId": .string(id)]) }
     private func ring(_ action: String, _ id: String) -> Envelope {
-        Envelope(type: "device.ring", senderId: "peer", recipientId: "me", payload: RingManager.payload(action: action, ringId: id))
+        Envelope(type: "device.ring", senderId: "peer", recipientId: "me", payload: payload(action, id))
+    }
+    private func ringState(_ from: String, _ ringing: Bool) -> Envelope {
+        Envelope(type: "device.ring_state", senderId: from, recipientId: "me", payload: .object(["ringing": .bool(ringing)]))
+    }
+    private func flat(_ sent: [Envelope]) -> [String] {
+        sent.map { "\($0.type)>\($0.recipientId ?? "")" + ($0.payload["ringing"]?.boolValue.map { ":\($0)" } ?? ":" + ($0.payload["action"]?.stringValue ?? "")) }
+    }
+    private func manager(_ ringer: Ringer = FakeRinger(), clock: TestClock = TestClock(), sent: @escaping (Envelope) -> Void = { _ in }) -> RingManager {
+        RingManager(transportManager: TransportManager(), ringer: ringer, showsAlert: false, now: { clock.ms }, runsClock: false, sendEnvelope: sent)
     }
 
     func testStartRingsStopSilencesAndDuplicatesAreNoOps() {
         let ringer = FakeRinger()
-        let m = RingManager(transportManager: TransportManager(), ringer: ringer, showsAlert: false)
+        let m = manager(ringer)
         m.handle(ring("stop", "x")); XCTAssertEqual(ringer.stops, 0)
         m.handle(ring("start", "a")); m.handle(ring("start", "a")); m.handle(ring("start", "b"))
         XCTAssertTrue(m.isRinging); XCTAssertEqual(ringer.starts, 1)
@@ -30,40 +43,27 @@ final class RingManagerTests: XCTestCase {
         m.stopRinging()
     }
 
-    func testAutoStopsAfterTimeout() {
-        let ringer = FakeRinger()
-        let m = RingManager(transportManager: TransportManager(), ringer: ringer, autoStopAfter: 0.1, showsAlert: false)
+    func testAutoStopsAfterTheCoresTimeout() {
+        let ringer = FakeRinger(); let clock = TestClock()
+        let m = manager(ringer, clock: clock)
         m.handle(ring("start", "a"))
         XCTAssertTrue(m.isRinging)
-        let done = expectation(description: "auto-stop")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
-        wait(for: [done], timeout: 2)
+        clock.ms += 29_000; m.tick(); XCTAssertTrue(m.isRinging)
+        clock.ms += 2_000; m.tick()
         XCTAssertFalse(m.isRinging); XCTAssertEqual(ringer.stops, 1)
     }
 
     func testMalformedMessagesAreIgnored() {
         let ringer = FakeRinger()
-        let m = RingManager(transportManager: TransportManager(), ringer: ringer, showsAlert: false)
+        let m = manager(ringer)
         m.handle(Envelope(type: "device.ring", senderId: "p"))
         m.handle(Envelope(type: "device.ring", senderId: "p", payload: .object(["action": .string("start")])))
         XCTAssertEqual(ringer.starts, 0)
     }
-}
-
-final class RingStateTests: XCTestCase {
-    private func ring(_ action: String, _ id: String) -> Envelope {
-        Envelope(type: "device.ring", senderId: "peer", recipientId: "me", payload: RingManager.payload(action: action, ringId: id))
-    }
-    private func ringState(_ from: String, _ ringing: Bool) -> Envelope {
-        Envelope(type: "device.ring_state", senderId: from, recipientId: "me", payload: .object(["ringing": .bool(ringing)]))
-    }
-    private func flat(_ sent: [Envelope]) -> [String] {
-        sent.map { "\($0.type)>\($0.recipientId ?? "")" + ($0.payload["ringing"]?.boolValue.map { ":\($0)" } ?? ":" + ($0.payload["action"]?.stringValue ?? "")) }
-    }
 
     func testReportsRingStateToRequesterHoweverRingStops() {
-        var sent: [Envelope] = []
-        let m = RingManager(transportManager: TransportManager(), ringer: FakeRinger(), autoStopAfter: 0.1, showsAlert: false, sendEnvelope: { sent.append($0) })
+        var sent: [Envelope] = []; let clock = TestClock()
+        let m = manager(clock: clock) { sent.append($0) }
         m.handle(ring("start", "a")); m.stopRinging()               // local Stop
         XCTAssertEqual(flat(sent), ["device.ring_state>peer:true", "device.ring_state>peer:false"])
         sent.removeAll()
@@ -73,14 +73,13 @@ final class RingStateTests: XCTestCase {
         m.handle(ring("stop", "d")); m.handle(ring("start", "b"))   // no-ops send nothing
         XCTAssertTrue(sent.isEmpty)
         m.handle(ring("start", "e"))                                // auto-stop
-        let done = expectation(description: "auto-stop"); DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
-        wait(for: [done], timeout: 2)
+        clock.ms += 31_000; m.tick()
         XCTAssertEqual(flat(sent), ["device.ring_state>peer:true", "device.ring_state>peer:false"])
     }
 
     func testToggleRingStartsThenStopsAndTracksPeer() {
         var sent: [Envelope] = []
-        let m = RingManager(transportManager: TransportManager(), ringer: FakeRinger(), showsAlert: false, sendEnvelope: { sent.append($0) })
+        let m = manager { sent.append($0) }
         m.toggleRing("phone")
         XCTAssertEqual(m.ringingPeers, ["phone"]); XCTAssertEqual(sent.last?.payload["action"]?.stringValue, "start")
         m.toggleRing("phone")
@@ -89,14 +88,14 @@ final class RingStateTests: XCTestCase {
     }
 
     func testPeerRingStateUpdatesButtonAndLostReportExpires() {
-        let m = RingManager(transportManager: TransportManager(), ringer: FakeRinger(), peerRingingExpiry: 0.1, showsAlert: false, sendEnvelope: { _ in })
+        let clock = TestClock()
+        let m = manager(clock: clock)
         m.handleRingState(ringState("phone", true)); m.handleRingState(ringState("phone", true))
         XCTAssertEqual(m.ringingPeers, ["phone"])
         m.handleRingState(ringState("phone", false)); m.handleRingState(ringState("phone", false))
         XCTAssertTrue(m.ringingPeers.isEmpty)
         m.handleRingState(ringState("tablet", true))                // the "stopped" report never arrives
-        let done = expectation(description: "expiry"); DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { done.fulfill() }
-        wait(for: [done], timeout: 2)
+        clock.ms += 36_000; m.tick()
         XCTAssertTrue(m.ringingPeers.isEmpty)
     }
 }

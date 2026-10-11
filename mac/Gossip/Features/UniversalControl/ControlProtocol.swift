@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import GossipCoreKit
 
 /// Platform-neutral wire format of the Universal Control data channel (Mac -> Android device).
 /// The Kotlin twin is `ControlProtocol.kt`; both are checked against `schema/control-test-vectors.json`.
@@ -183,74 +184,28 @@ enum ControlFrame: Equatable {
     }
 }
 
-/// Encrypts/decrypts frames for one end of a session. Not thread-safe; owned by one queue.
+/// Encrypts/decrypts frames for one end of a session. The construction is the core's `StreamCipher`
+/// (`desktop/core/src/crypto/stream.rs`), shared with every platform. Owned by one queue.
 struct ControlCipher {
     enum Failure: Error { case badLength, replayed, authentication }
 
-    private let sendKey: SymmetricKey
-    private let receiveKey: SymmetricKey
-    private let sendDirection: ControlDirection
-    private let sessionIdData: Data
-    private(set) var sendCounter: UInt64 = 0
-    private(set) var lastReceivedCounter: UInt64 = 0
+    private let inner: GossipCoreKit.StreamCipher
 
     /// `role` is this end's role: the Mac sends m2d and receives d2m.
     init(secret: Data, sessionId: String, role: ControlDirection) {
-        sessionIdData = Data(sessionId.utf8)
-        func key(_ d: ControlDirection) -> SymmetricKey {
-            HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: secret), salt: Data(sessionId.utf8), info: d.hkdfInfo, outputByteCount: 32)
-        }
-        let other: ControlDirection = role == .macToDevice ? .deviceToMac : .macToDevice
-        sendKey = key(role)
-        receiveKey = key(other)
-        sendDirection = role
+        inner = GossipCoreKit.StreamCipher(profile: .control, secret: secret, sessionId: sessionId, firstEnd: role == .macToDevice)
     }
 
-    private func aad(_ d: ControlDirection) -> Data {
-        var a = Data("gossip-control-v1".utf8)
-        a.append(d.rawValue)
-        a.append(sessionIdData)
-        return a
-    }
-
-    private static func nonce(_ counter: UInt64) throws -> ChaChaPoly.Nonce {
-        var n = Data(count: 4)
-        withUnsafeBytes(of: counter.bigEndian) { n.append(contentsOf: $0) }
-        return try ChaChaPoly.Nonce(data: n)
-    }
-
-    mutating func seal(_ frame: ControlFrame) throws -> Data {
-        sendCounter += 1
-        return try seal(plaintext: frame.encoded(), counter: sendCounter)
-    }
-
-    /// Exposed for the shared test vectors (fixed counter).
-    func seal(plaintext: Data, counter: UInt64) throws -> Data {
-        let box = try ChaChaPoly.seal(plaintext, using: sendKey, nonce: Self.nonce(counter), authenticating: aad(sendDirection))
-        var out = Data()
-        withUnsafeBytes(of: counter.bigEndian) { out.append(contentsOf: $0) }
-        out.append(box.ciphertext)
-        out.append(box.tag)
-        return out
-    }
+    mutating func seal(_ frame: ControlFrame) throws -> Data { try inner.seal(plaintext: frame.encoded()) }
 
     mutating func open(_ message: Data) throws -> ControlFrame? {
-        guard message.count >= 8 + 16 else { throw Failure.badLength }
-        let base = message.startIndex
-        var counter: UInt64 = 0
-        for i in 0..<8 { counter = (counter << 8) | UInt64(message[base + i]) }
-        guard counter > lastReceivedCounter else { throw Failure.replayed }
-        let ciphertext = message[(base + 8)..<(message.endIndex - 16)]
-        let tag = message[(message.endIndex - 16)...]
-        let receiveDirection: ControlDirection = sendDirection == .macToDevice ? .deviceToMac : .macToDevice
         let plaintext: Data
-        do {
-            let box = try ChaChaPoly.SealedBox(nonce: Self.nonce(counter), ciphertext: ciphertext, tag: tag)
-            plaintext = try ChaChaPoly.open(box, using: receiveKey, authenticating: aad(receiveDirection))
-        } catch {
+        do { plaintext = try inner.open(message: message) } catch {
+            let text = "\(error)"
+            if text.contains("too short") { throw Failure.badLength }
+            if text.contains("not greater") { throw Failure.replayed }
             throw Failure.authentication
         }
-        lastReceivedCounter = counter // only after authentication, so garbage can't burn counters
         return ControlFrame.decode(plaintext)
     }
 }

@@ -24,45 +24,16 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
+import uniffi.gossip_ffi.CommandGuard as CoreCommandGuard
+import uniffi.gossip_ffi.MediaAction
 
 private const val TAG = "MediaControlBridge"
-private const val COMMAND_DEDUPE_CACHE_LIMIT = 64
 
 /** `type` values this unit registers in `schema/message-types.md`. */
 object MediaMessageType {
     /** The synchronised state slot a phone keeps its now-playing state in. */
     const val NOWPLAYING_SLOT = "media.nowplaying"
     const val COMMAND = "media.command"
-}
-
-/**
- * A parsed, validated `media.command` payload (mac -> android). Kept as a plain data
- * class, independent of the Android media framework, so parsing can be unit tested
- * without instrumentation.
- *
- * [commandId] identifies this command *instance* (a fresh UUID minted per Mac-side call,
- * not per action — two distinct user presses of "next" get distinct ids) — see
- * [MediaControlBridge.handleCommand], which keys its dedupe cache off it so a duplicate
- * delivery of the same instance can't fire `skipToNext()`/`skipToPrevious()` twice.
- */
-data class MediaCommand(val action: String, val seekMs: Int?, val commandId: String?) {
-    companion object {
-        const val ACTION_PLAY = "play"
-        const val ACTION_PAUSE = "pause"
-        const val ACTION_NEXT = "next"
-        const val ACTION_PREVIOUS = "previous"
-
-        private val VALID_ACTIONS = setOf(ACTION_PLAY, ACTION_PAUSE, ACTION_NEXT, ACTION_PREVIOUS)
-
-        /** Returns null for a payload missing `action` or carrying an unrecognized one. */
-        fun fromPayload(payload: JsonObject): MediaCommand? {
-            val action = (payload["action"] as? JsonPrimitive)?.contentOrNull ?: return null
-            if (action !in VALID_ACTIONS) return null
-            val seekMs = (payload["seekMs"] as? JsonPrimitive)?.intOrNull
-            val commandId = (payload["commandId"] as? JsonPrimitive)?.contentOrNull
-            return MediaCommand(action, seekMs, commandId)
-        }
-    }
 }
 
 /**
@@ -126,24 +97,10 @@ class MediaControlBridge(
 
     private val commandHandler = EnvelopeHandler { envelope -> handleCommand(envelope) }
 
-    /** Bounded, size-capped cache of recently-handled `media.command` [MediaCommand.commandId]s.
-     *  `skipToNext()`/`skipToPrevious()` are not idempotent — a duplicate delivery (retry,
-     *  relay race, mesh dedupe-cache eviction) must not skip twice. `play`/`pause` are
-     *  naturally idempotent and don't strictly need this, but it's harmless to cover them
-     *  too. Mirrors `TransportManager.recentEnvelopeIds`/`recordSeen`. */
-    private val dedupeLock = Any()
-    private val recentCommandIds = ArrayDeque<String>()
-    private val recentCommandIdSet = HashSet<String>()
-
-    private fun recordCommandSeen(commandId: String): Boolean = synchronized(dedupeLock) {
-        if (!recentCommandIdSet.add(commandId)) return@synchronized false
-        recentCommandIds.addLast(commandId)
-        if (recentCommandIds.size > COMMAND_DEDUPE_CACHE_LIMIT) {
-            val evicted = recentCommandIds.removeFirst()
-            recentCommandIdSet.remove(evicted)
-        }
-        true
-    }
+    /** Acts on each `media.command` `commandId` once. `skipToNext()`/`skipToPrevious()` are not idempotent, so a duplicate delivery
+     *  (retry, relay race, dedupe-cache eviction) must not skip twice; the bounded recently-handled cache and the validation
+     *  are the core's `CommandGuard` (`desktop/core/src/features/media.rs`), shared with every platform. */
+    private val commandGuard = CoreCommandGuard()
 
     /** Registers the `media.command` handler and starts observing active sessions. */
     fun start() {
@@ -183,21 +140,16 @@ class MediaControlBridge(
 
     private fun handleCommand(envelope: Envelope) {
         if (envelope.type != MediaMessageType.COMMAND) return
-        val command = MediaCommand.fromPayload(envelope.payload) ?: return
-        // commandId is only absent from a peer running a build from before this field
-        // existed; nothing to dedupe against in that case, same as before this fix.
-        if (command.commandId != null && !recordCommandSeen(command.commandId)) {
-            Log.i(TAG, "Dropping duplicate delivery of media.command ${command.commandId}")
-            return
-        }
+        // `null`: a duplicate delivery or a malformed command.
+        val accepted = runCatching { commandGuard.accept(envelope.payload.toString()) }.getOrNull() ?: return
         val controls = activeController?.transportControls ?: return
-        when (command.action) {
-            MediaCommand.ACTION_PLAY -> controls.play()
-            MediaCommand.ACTION_PAUSE -> controls.pause()
-            MediaCommand.ACTION_NEXT -> controls.skipToNext()
-            MediaCommand.ACTION_PREVIOUS -> controls.skipToPrevious()
+        when (accepted.action) {
+            MediaAction.PLAY -> controls.play()
+            MediaAction.PAUSE -> controls.pause()
+            MediaAction.NEXT -> controls.skipToNext()
+            MediaAction.PREVIOUS -> controls.skipToPrevious()
         }
-        command.seekMs?.let { controls.seekTo(it.toLong()) }
+        accepted.seekMs?.let { controls.seekTo(it) }
     }
 
     /** Reports the current now-playing state as the `media.nowplaying` state slot. The core sends it to every device that

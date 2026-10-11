@@ -450,6 +450,11 @@ impl MediaController {
         Ok(())
     }
 
+    /// The device has no media session any more, or was revoked.
+    pub fn forget(&self, sender: String) {
+        lock(&self.0).forget(&sender);
+    }
+
     /// The user's explicit pick when several devices report a session.
     pub fn select(&self, device: Option<String>) {
         lock(&self.0).select(device);
@@ -478,6 +483,12 @@ impl MediaController {
             .command(action.into(), seek_ms, &command_id)
             .map(Into::into)
     }
+}
+
+/// The `media.command` payload JSON; `command_id` must be a fresh UUID per call.
+#[uniffi::export]
+pub fn media_command_payload(action: MediaAction, seek_ms: Option<i64>, command_id: String) -> String {
+    object_json(media::command_payload(action.into(), seek_ms, &command_id))
 }
 
 #[derive(Debug, Clone, uniffi::Record)]

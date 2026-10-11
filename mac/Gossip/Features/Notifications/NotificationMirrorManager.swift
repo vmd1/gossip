@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import GossipCoreKit
 import ImageIO
 
 /// Mirrors Android notifications (`notification.posted` / `notification.removed`) onto
@@ -259,7 +260,8 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     private func sendReply(id: String, text: String, to sourceDeviceId: String) {
         guard let transportManager else { return }
         do {
-            let payloadData = try JSONEncoder().encode(NotificationReplyPayload(id: id, text: text, attemptId: UUID().uuidString))
+            // The payload shape (and the per-attempt id the receiver de-duplicates on) is the core's.
+            let payloadData = Data(GossipCoreKit.notificationReplyPayload(notificationId: id, text: text, attemptId: UUID().uuidString).utf8)
             let payloadJSON = try JSONDecoder().decode(JSONValue.self, from: payloadData)
             let envelope = Envelope(
                 type: "notification.reply",
@@ -382,16 +384,6 @@ struct NotificationRemovedPayload: Codable {
 /// The `notification.active` state slot: ids of every notification the phone is still mirroring. See `handleActive`.
 struct NotificationSyncPayload: Codable {
     let ids: [String]
-}
-
-/// `attemptId` identifies this reply *attempt*, not the notification (`id` is reused
-/// across distinct replies to the same notification) — the Android receiver keys its
-/// recently-handled dedupe cache off it so a duplicate delivery can't fire the same
-/// real-world reply twice. See `NotificationListenerImpl.handleReply` (Android).
-struct NotificationReplyPayload: Codable {
-    let id: String
-    let text: String
-    let attemptId: String
 }
 
 struct NotificationDismissPayload: Codable {

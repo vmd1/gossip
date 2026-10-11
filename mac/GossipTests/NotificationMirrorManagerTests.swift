@@ -1,5 +1,6 @@
 import XCTest
 @testable import Gossip
+import GossipCoreKit
 
 final class NotificationMirrorManagerTests: XCTestCase {
     func makeManager() -> NotificationMirrorManager {
@@ -51,12 +52,13 @@ final class NotificationMirrorManagerTests: XCTestCase {
     }
 
     func testNotificationReplyPayloadEncodesExpectedFields() throws {
-        let reply = NotificationReplyPayload(id: "42", text: "On my way", attemptId: "attempt-1")
-        let data = try JSONEncoder().encode(reply)
-        let decoded = try JSONDecoder().decode(NotificationReplyPayload.self, from: data)
-        XCTAssertEqual(decoded.id, "42")
-        XCTAssertEqual(decoded.text, "On my way")
-        XCTAssertEqual(decoded.attemptId, "attempt-1")
+        // The payload is built by the core, and the receiver's `ReplyGuard` accepts each attempt once.
+        let json = GossipCoreKit.notificationReplyPayload(notificationId: "42", text: "On my way", attemptId: "attempt-1")
+        let guardLogic = GossipCoreKit.ReplyGuard()
+        let accepted = try guardLogic.accept(payloadJson: json)
+        XCTAssertEqual(accepted?.notificationId, "42")
+        XCTAssertEqual(accepted?.text, "On my way")
+        XCTAssertNil(try guardLogic.accept(payloadJson: json), "the same attempt is acted on once")
     }
 
     func testReplyCategoryUsesTextInputAction() {

@@ -634,3 +634,24 @@ fn beacon_key_slot_round_trips_and_refuses_the_wrong_length() {
         "never flooded through the mesh"
     );
 }
+
+#[test]
+fn media_controller_forgets_a_device_that_clears_its_session() {
+    let mut m = MediaController::new();
+    m.on_now_playing("a", &obj(json!({"title": "A", "artist": "x"})));
+    m.on_now_playing("b", &obj(json!({"title": "B", "artist": "y"})));
+    assert_eq!(m.effective_device(), Some("b"));
+    m.forget("b");
+    assert_eq!(m.state_of("b"), None);
+    assert_eq!(
+        m.effective_device(),
+        Some("a"),
+        "falls back to the remaining reporter"
+    );
+    m.forget("a");
+    assert_eq!(m.effective_device(), None);
+    assert!(
+        m.command(media::Action::Play, None, "id").is_none(),
+        "nothing to control"
+    );
+}
