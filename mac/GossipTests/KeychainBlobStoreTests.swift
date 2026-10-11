@@ -28,6 +28,14 @@ final class KeychainBlobStoreTests: XCTestCase {
 
     override func tearDown() { deleteItem() }
 
+    /// A store whose access-list upgrade is already marked done: that step edits the item's ACL, which can block on a
+    /// prompt in a session nobody is watching, so only the opt-in test below exercises it.
+    private func makeStore() -> KeychainBlobStore {
+        let defaults = UserDefaults(suiteName: "kb-\(UUID().uuidString)")!
+        defaults.set(true, forKey: "keychain.accessUpgraded.\(service!).\(account)")
+        return KeychainBlobStore(service: service, account: account, defaults: defaults)
+    }
+
     private func deleteItem() {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                        kSecAttrService as String: service as Any,
@@ -35,11 +43,11 @@ final class KeychainBlobStoreTests: XCTestCase {
     }
 
     func testWriteThenReadRoundTrips() {
-        let store = KeychainBlobStore(service: service, account: account)
+        let store = makeStore()
         XCTAssertNil(store.read())
         XCTAssertTrue(store.write(Data("secret".utf8)))
         XCTAssertEqual(store.read(), Data("secret".utf8))
-        XCTAssertEqual(KeychainBlobStore(service: service, account: account).read(), Data("secret".utf8))
+        XCTAssertEqual(makeStore().read(), Data("secret".utf8))
     }
 
     /// Changing an item's access list can make macOS show a prompt that takes about a minute to give up on, so this one
@@ -59,10 +67,10 @@ final class KeychainBlobStoreTests: XCTestCase {
     }
 
     func testIdentityPersistsThroughKeychainBlob() {
-        let first = IdentityKeyStore(blob: KeychainBlobStore(service: service, account: account))
+        let first = IdentityKeyStore(blob: makeStore())
         let id = first.deviceId
         let key = first.signingKey.rawRepresentation
-        let second = IdentityKeyStore(blob: KeychainBlobStore(service: service, account: account))
+        let second = IdentityKeyStore(blob: makeStore())
         XCTAssertEqual(second.deviceId, id)
         XCTAssertEqual(second.signingKey.rawRepresentation, key)
     }
