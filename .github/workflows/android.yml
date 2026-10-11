@@ -62,8 +62,11 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      # -PrebuildCore: the generated Kotlin bindings and libraries live under desktop/target, which the Rust cache restores,
+      # and Gradle skips building the core when they are already there. Force it, so a restored copy can never be stale
+      # (cargo itself is incremental, so this costs little).
       - name: Unit tests and debug APK
-        run: ./gradlew testDebugUnitTest assembleDebug
+        run: ./gradlew testDebugUnitTest assembleDebug -PrebuildCore
 
       - name: Upload debug APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
