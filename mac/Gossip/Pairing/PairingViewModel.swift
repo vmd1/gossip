@@ -10,9 +10,6 @@ final class PairingViewModel: ObservableObject {
         case idle
         case showingQR
         case waitingForPhone
-        /// This Mac is pairing with a device that showed a code: `code` is the six-digit comparison code the other
-        /// device asks for.
-        case joining(code: String)
         case confirmingTrust(deviceName: String, code: String)
         case paired(deviceName: String)
         case failed(String)
@@ -20,9 +17,6 @@ final class PairingViewModel: ObservableObject {
 
     @Published private(set) var state: PairingState = .idle
     @Published private(set) var qrImage: NSImage?
-    /// The typeable form of the QR (see `PairingLink`), for a device that can't scan.
-    @Published private(set) var pairingLink: String?
-    private var joiningDeviceId: String?
 
     private var currentPayload: PairingQRPayload?
     private weak var transportManager: TransportManager?
@@ -72,45 +66,12 @@ final class PairingViewModel: ObservableObject {
         let payload = QRCodeGenerator.makePairingPayload()
         currentPayload = payload
         qrImage = QRCodeGenerator.image(for: payload)
-        pairingLink = (try? JSONEncoder().encode(payload)).map(PairingLink.encode(json:))
         state = .showingQR
         transportManager?.armPairing(token: payload.pairingToken)
         transportManager?.start()
         // Once the phone connects, TransportManager will move through
         // .handshaking to either onUntrustedHandshake or onTrustedConnected.
         state = .waitingForPhone
-    }
-
-    /// Pairs with a device that showed a pairing code (a QR it could not be scanned from). The device's user then types the
-    /// comparison code shown here and confirms on that device.
-    func join(withCode text: String) {
-        guard let json = PairingLink.decode(text),
-              let payload = try? JSONDecoder().decode(PairingQRPayload.self, from: json),
-              let theirKey = Data(base64Encoded: payload.responderPublicKey), theirKey.count == 32 else {
-            state = .failed("That is not a valid pairing code")
-            return
-        }
-        // This Mac is joining, not showing a code: nothing may pair in through the pairing gate meanwhile.
-        transportManager?.disarmPairing()
-        qrImage = nil
-        pairingLink = nil
-        joiningDeviceId = payload.responderDeviceId
-        let code = PairingCode.make(IdentityKeyStore.shared.agreementKey.publicKey.rawRepresentation, theirKey)
-        state = .joining(code: code)
-        transportManager?.start()
-        transportManager?.join(payload) { [weak self] result in
-            guard let self, self.joiningDeviceId == payload.responderDeviceId else { return }
-            self.joiningDeviceId = nil
-            switch result {
-            case .success:
-                self.state = .paired(deviceName: payload.responderDeviceName)
-                NotificationCenter.default.post(name: .gossipDevicePaired, object: nil)
-            case .failure(.unreadable):
-                self.state = .failed("That is not a valid pairing code")
-            case .failure(.notConfirmed):
-                self.state = .failed("The other device did not confirm the pairing")
-            }
-        }
     }
 
     /// User taps "Confirm" in response to `.confirmingTrust`.
@@ -129,9 +90,6 @@ final class PairingViewModel: ObservableObject {
     }
 
     func reset() {
-        if let id = joiningDeviceId { transportManager?.cancelJoin(deviceId: id) }
-        joiningDeviceId = nil
-        pairingLink = nil
         transportManager?.disarmPairing()
         currentPayload = nil
         qrImage = nil

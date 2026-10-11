@@ -217,19 +217,6 @@ final class TrustedDevicesStore: ObservableObject {
         publishOnMain()
     }
 
-    /// Drops a row without leaving a tombstone: for a pairing that never completed, which must not block a later
-    /// pairing or look like a revocation to the mesh.
-    func discard(deviceId: String) {
-        let removed: Bool = queue.sync {
-            let before = storage.count
-            storage.removeAll { $0.deviceId == deviceId }
-            return storage.count != before
-        }
-        guard removed else { return }
-        persist()
-        publishOnMain()
-    }
-
     func revokedAt(deviceId: String) -> Int64? {
         queue.sync { revoked[deviceId] }
     }

@@ -76,11 +76,9 @@ class PairingViewModel(
      *  other device only completes the pairing when its user types the code shown here. */
     fun onQrScanned(rawValue: String) {
         val payload = try {
-            // A scanned QR is the JSON; a typed or pasted pairing code is the `gossip-pair:` form of it.
-            val json = PairingLink.decode(rawValue) ?: throw IllegalArgumentException("not a pairing code")
-            Json { ignoreUnknownKeys = true }.decodeFromString(PairingQrPayload.serializer(), json)
+            Json { ignoreUnknownKeys = true }.decodeFromString(PairingQrPayload.serializer(), rawValue)
         } catch (e: Exception) {
-            failWith("That is not a valid pairing code")
+            failWith("Unreadable QR code")
             return
         }
         val key = RosterGossipManager.decodeKey(payload.responderPublicKey)

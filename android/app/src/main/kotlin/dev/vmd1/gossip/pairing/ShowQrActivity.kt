@@ -108,12 +108,6 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit, onCance
                 val bitmap = remember(current.payload) { QRCodeGenerator.bitmap(current.payload) }
                 Text("Scan this on another device to pair", style = MaterialTheme.typography.titleMedium)
                 Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Pairing QR code")
-                val context = androidx.compose.ui.platform.LocalContext.current
-                var copied by remember { mutableStateOf(false) }
-                androidx.compose.material3.TextButton(onClick = {
-                    copyPairingCode(context, QRCodeGenerator.linkText(current.payload))
-                    copied = true
-                }) { Text(if (copied) "Copied. Paste it on the other device" else "Can't scan? Copy a pairing code") }
                 androidx.compose.material3.OutlinedButton(onClick = onCancel) { Text("Cancel") }
             }
             is ShowQrUiState.ConfirmingTrust -> {
@@ -150,14 +144,4 @@ private fun ShowQrScreen(viewModel: ShowQrViewModel, onDone: () -> Unit, onCance
             }
         }
     }
-}
-
-/** Puts a pairing code on the clipboard marked sensitive, so clipboard sync never sends it to other devices. */
-internal fun copyPairingCode(context: Context, text: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-    val clip = android.content.ClipData.newPlainText("Gossip pairing code", text)
-    clip.description.extras = android.os.PersistableBundle().apply {
-        putBoolean("android.content.extra.IS_SENSITIVE", true)
-    }
-    clipboard.setPrimaryClip(clip)
 }

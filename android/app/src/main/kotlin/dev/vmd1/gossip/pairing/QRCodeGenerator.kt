@@ -13,10 +13,6 @@ import kotlinx.serialization.json.Json
 object QRCodeGenerator {
     private val json = Json { encodeDefaults = true }
 
-    /** The typeable pairing code for [payload] (see [PairingLink]). */
-    fun linkText(payload: PairingQrPayload): String =
-        PairingLink.encode(json.encodeToString(PairingQrPayload.serializer(), payload))
-
     fun bitmap(payload: PairingQrPayload, sizePx: Int = 800): Bitmap {
         val text = json.encodeToString(PairingQrPayload.serializer(), payload)
         val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx)

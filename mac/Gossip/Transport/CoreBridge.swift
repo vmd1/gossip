@@ -98,13 +98,6 @@ final class CoreBridge {
         convert(core.tick())
     }
 
-    /// Replaces the engine's trust table with the app's store, for rows the app edits itself (a pairing it starts by
-    /// entering a code adds a provisional row first). `provisional` rows stay out of roster gossip.
-    func setTrust(json: String, provisional: [String]) throws -> [BridgeAction] {
-        try core.setTrust(trustJson: json, provisional: provisional)
-        return []
-    }
-
     func shouldDial(deviceId: String) -> Bool { core.shouldDial(deviceId: deviceId) }
 
     // MARK: - Relay

@@ -96,32 +96,6 @@ final class CoreBridgeTests: XCTestCase {
         wire.pump(scanner, scanner.bridge.confirmPairing(conn: scannerPrompt.conn, accepted: true))
     }
 
-    /// Pairing by typed code: the joiner trusts the shower's key up front (a provisional row, pushed into the engine),
-    /// dials with the shower's token, and only counts the pairing once the shower speaks, which it does after its
-    /// user confirmed. The provisional row must stay out of the joiner's roster gossip until then.
-    func testJoiningByCodeCompletesWhenTheShowerConfirms() throws {
-        let wire = Wire()
-        let shower = try Peer("shower", directory: directory), joiner = try Peer("joiner", directory: directory)
-        joiner.trust.addDevice(deviceId: shower.deviceId, publicKeyBase64: shower.noisePublicKey.base64EncodedString(),
-                               deviceName: "shower", deviceType: .mac,
-                               signingPublicKeyBase64: shower.identity.signingKey.publicKey.rawRepresentation.base64EncodedString())
-        wire.pump(joiner, try joiner.bridge.setTrust(json: joiner.trust.exportCoreSnapshot(), provisional: [shower.deviceId]))
-
-        shower.bridge.armPairing(token: "token-1")
-        try wire.open(dialer: joiner, listener: shower, pairingToken: "token-1")
-        let prompt = try XCTUnwrap(shower.prompt(), "the shower is asked to confirm")
-        XCTAssertEqual(prompt.peer.deviceId, joiner.deviceId)
-        XCTAssertTrue(joiner.delivered("presence.online").isEmpty, "nothing from the shower before it confirms")
-
-        wire.pump(shower, shower.bridge.confirmPairing(conn: prompt.conn, accepted: true))
-        XCTAssertFalse(joiner.delivered("presence.online").isEmpty, "the shower's first message proves it confirmed")
-        XCTAssertTrue(shower.bridge.isConnected(deviceId: joiner.deviceId))
-
-        // Clearing the provisional mark (as `join` does on success) makes the row part of the roster.
-        wire.pump(joiner, try joiner.bridge.setTrust(json: joiner.trust.exportCoreSnapshot(), provisional: []))
-        XCTAssertTrue(joiner.bridge.isConnected(deviceId: shower.deviceId))
-    }
-
     func testPairingDeliversMessagesWithPayloadsIntact() throws {
         let wire = Wire()
         let mac = try Peer("mac", directory: directory), phone = try Peer("phone", directory: directory)

@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
@@ -32,7 +31,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -154,17 +152,6 @@ class QRScanActivity : ComponentActivity() {
                     if (cameraGranted) "Point the camera at the other device's QR code" else "Camera permission is required to scan a QR code.",
                     style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center
                 )
-                var entering by remember { mutableStateOf(false) }
-                var typed by remember { mutableStateOf("") }
-                if (entering) {
-                    androidx.compose.material3.OutlinedTextField(
-                        value = typed, onValueChange = { typed = it }, label = { Text("Pairing code") },
-                        placeholder = { Text("gossip-pair:…") }, modifier = Modifier.fillMaxWidth(), maxLines = 4
-                    )
-                    Button(onClick = { viewModel.onQrScanned(typed) }, enabled = typed.isNotBlank()) { Text("Pair") }
-                } else {
-                    androidx.compose.material3.TextButton(onClick = { entering = true }) { Text("Enter a pairing code instead") }
-                }
                 OutlinedButton(onClick = ::cancelAndClose) { Text("Cancel") }
             }
         }
