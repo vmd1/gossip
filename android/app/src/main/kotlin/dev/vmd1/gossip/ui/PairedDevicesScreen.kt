@@ -163,13 +163,6 @@ fun PairedDevicesScreen(
                         )
                         Column {
                             Text(device.deviceName, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                            if (connectivity == Connectivity.RELAYED) {
-                                Text(
-                                    "Through the relay. Screen mirroring and Universal Control need the same network.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                         }
                     }
                     // Grouped in their own Row (not two more top-level children of the

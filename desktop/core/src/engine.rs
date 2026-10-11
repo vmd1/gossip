@@ -1591,8 +1591,14 @@ impl<E: Env> Core<E> {
                         members: members.len(),
                     }));
                 }
-                // Dialing waits for the LAN grace; `relay_poll` decides.
-                RelayOut::PeerSeen(_) => {}
+                // Dialing waits for the LAN grace; `relay_poll` decides. A peer showing up on the relay is fresh news,
+                // so the backoff earned by dials that failed while it was away must not delay the next one (it could
+                // otherwise leave the pair waiting a full minute after the peer is back).
+                RelayOut::PeerSeen(tag) => {
+                    if let Some(device) = self.device_for_tag(&tag) {
+                        self.relay_retry.remove(&device);
+                    }
+                }
                 RelayOut::PeerGone(tag) => {
                     if let Some(conn) = self.route_conns.get(&tag).copied() {
                         self.drop_conn(conn, false, out);
