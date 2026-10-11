@@ -9,6 +9,5 @@ mkdir -p "$out"
 swiftc -O -o "$out/swift-harness" \
   "$repo/mac/Gossip/Transport/Envelope.swift" \
   "$repo/mac/Gossip/Transport/EnvelopeSigning.swift" \
-  "$repo/mac/Gossip/Features/Hotspot/HotspotGattProtocol.swift" \
   "$here/interop/swift/main.swift"
 echo "built $out/swift-harness"
