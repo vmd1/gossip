@@ -3,7 +3,8 @@ import Combine
 
 /// `type` values this unit registers in `schema/message-types.md`.
 enum MediaMessageType {
-    static let nowPlaying = "media.nowplaying"
+    /// The synchronised state slot a phone keeps its now-playing state in.
+    static let nowPlayingSlot = "media.nowplaying"
     static let command = "media.command"
 }
 
@@ -48,70 +49,62 @@ final class MediaControlManager: ObservableObject {
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
 
-    /// When each device last reported (main queue). A phone resends its state every 60 s while connected, so one that
-    /// has been silent for `staleAfter` is gone (or stopped reporting) and its card is dropped rather than shown stale.
-    private var lastReport: [String: Date] = [:]
-    private var expiryTimer: Timer?
-    static let staleAfter: TimeInterval = 150
+    private var cancellables = Set<AnyCancellable>()
 
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared) {
         self.transportManager = transportManager
         self.identity = identity
-        transportManager.router.register(prefix: MediaMessageType.nowPlaying) { [weak self] envelope in
-            let inactive = Self.isInactive(envelope.payload)
-            let state = inactive ? nil : Self.parseNowPlaying(envelope.payload)
-            guard inactive || state != nil else { return }
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let state {
-                    self.nowPlayingByDevice[envelope.senderId] = state
-                    self.mostRecentDeviceId = envelope.senderId
-                    self.lastReport[envelope.senderId] = Date()
-                } else {
-                    // `active: false`: the phone has no media session any more.
-                    self.drop(envelope.senderId)
-                }
-            }
+        // Now-playing is a synchronised state slot (`media.nowplaying`, see `docs/plans/state-sync.md`): the core keeps it
+        // correct across reconnects and drops it when the phone clears it, so there is no resync or expiry logic here.
+        transportManager.addOnStateChanged { [weak self] change in
+            guard change.slot == MediaMessageType.nowPlayingSlot else { return }
+            self?.apply(deviceId: change.deviceId, valueJSON: change.valueJSON)
         }
-        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.expireStale() }
-        RunLoop.main.add(timer, forMode: .common)
-        expiryTimer = timer
+        // A phone that is no longer reachable stops showing its card; the card comes back with the phone.
+        transportManager.$meshReachableDeviceIds
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
-    private func drop(_ deviceId: String) {
-        nowPlayingByDevice.removeValue(forKey: deviceId)
-        lastReport.removeValue(forKey: deviceId)
-        if mostRecentDeviceId == deviceId { mostRecentDeviceId = lastReport.max(by: { $0.value < $1.value })?.key }
+    private func apply(deviceId: String, valueJSON: String?) {
+        let state = valueJSON
+            .flatMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
+            .flatMap(Self.parseNowPlaying)
+        if let state {
+            nowPlayingByDevice[deviceId] = state
+            mostRecentDeviceId = deviceId
+        } else {
+            // Cleared: the phone has no media session any more.
+            nowPlayingByDevice.removeValue(forKey: deviceId)
+            if mostRecentDeviceId == deviceId { mostRecentDeviceId = nowPlayingByDevice.keys.sorted().first }
+        }
     }
 
-    private func expireStale(now: Date = Date()) {
-        for deviceId in Self.staleDevices(lastReport: lastReport, now: now) { drop(deviceId) }
+    /// Devices whose card is shown: one that reported and is currently reachable.
+    static func shownDevices(reported: Set<String>, reachable: Set<String>) -> Set<String> {
+        reported.intersection(reachable)
     }
 
-    /// Devices whose last report is older than `staleAfter`.
-    static func staleDevices(lastReport: [String: Date], now: Date) -> [String] {
-        lastReport.filter { now.timeIntervalSince($0.value) > staleAfter }.keys.sorted()
+    private var shown: Set<String> {
+        Self.shownDevices(reported: Set(nowPlayingByDevice.keys), reachable: transportManager?.meshReachableDeviceIds ?? [])
     }
 
     /// The now-playing state currently shown/controlled by the menu bar UI.
     var nowPlaying: NowPlayingState? {
-        guard let deviceId = effectiveSelectedDeviceId else { return nil }
+        guard let deviceId = effectiveSelectedDeviceId, shown.contains(deviceId) else { return nil }
         return nowPlayingByDevice[deviceId]
     }
 
     private var effectiveSelectedDeviceId: String? {
-        if let selectedDeviceId, nowPlayingByDevice[selectedDeviceId] != nil {
+        if let selectedDeviceId, shown.contains(selectedDeviceId) {
             return selectedDeviceId
         }
-        return mostRecentDeviceId
+        if let mostRecentDeviceId, shown.contains(mostRecentDeviceId) { return mostRecentDeviceId }
+        return shown.sorted().first
     }
 
     // MARK: - Parsing (pure, unit-testable without a live transport)
-
-    /// `active: false` means the phone has no media session (absent means active, for phones from before the field).
-    static func isInactive(_ payload: JSONValue) -> Bool {
-        payload["active"].flatMap(Self.boolValue) == false
-    }
 
     static func parseNowPlaying(_ payload: JSONValue) -> NowPlayingState? {
         guard let title = payload["title"]?.stringValue,

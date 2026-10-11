@@ -77,6 +77,9 @@ class CoreBridge(
          *  `toString` that prints it. */
         class TopicChanged(val secret: ByteArray, val epoch: ULong) : BridgeAction()
 
+        /** Another device's state slot changed ([valueJson] is `null` when it was cleared or the device was dropped). */
+        class StateChanged(val deviceId: String, val slot: String, val valueJson: String?, val version: ULong) : BridgeAction()
+
         /** Pairing by code: this device and [peer] now trust each other (a [TrustChanged] precedes it). */
         class CodePairingSucceeded(val peer: HandshakePeerInfo) : BridgeAction()
 
@@ -110,6 +113,14 @@ class CoreBridge(
 
     fun dial(conn: ULong, target: String, remoteStaticKey: ByteArray, pairingToken: String?): List<BridgeAction> =
         call { core.dial(conn, target, remoteStaticKey, pairingToken) }
+
+    // ---- Synchronised state -----------------------------------------------------------------------------------
+
+    /** Sets ([valueJson] is the JSON value) or clears (`null`) one of this device's state slots; the core keeps every
+     *  other device's copy correct. Setting what the slot already holds does nothing. */
+    fun setState(slot: String, valueJson: String?): List<BridgeAction> = call { core.setState(slot, valueJson) }
+
+    fun state(deviceId: String, slot: String): String? = core.getState(deviceId, slot)
 
     // ---- Pairing by code --------------------------------------------------------------------------------------
 
@@ -230,6 +241,7 @@ class CoreBridge(
             is CoreAction.RelayDown -> BridgeAction.RelayDown
             is CoreAction.RelayError -> BridgeAction.RelayError(action.code)
             is CoreAction.TopicChanged -> BridgeAction.TopicChanged(action.secret, action.epoch)
+            is CoreAction.StateChanged -> BridgeAction.StateChanged(action.deviceId, action.slot, action.valueJson, action.version)
             is CoreAction.CodePairingSucceeded -> BridgeAction.CodePairingSucceeded(peerInfo(action.peer))
             is CoreAction.CodePairingWrongCode -> BridgeAction.CodePairingWrongCode(action.attemptsLeft)
             is CoreAction.CodePairingTooManyAttempts -> BridgeAction.CodePairingTooManyAttempts

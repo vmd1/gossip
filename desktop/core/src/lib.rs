@@ -19,6 +19,7 @@ pub mod mesh;
 pub mod reconcile;
 pub mod relay;
 pub mod relay_directory;
+pub mod state_sync;
 pub mod topic;
 pub mod trust;
 pub mod wire;

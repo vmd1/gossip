@@ -30,7 +30,8 @@ private const val COMMAND_DEDUPE_CACHE_LIMIT = 64
 
 /** `type` values this unit registers in `schema/message-types.md`. */
 object MediaMessageType {
-    const val NOWPLAYING = "media.nowplaying"
+    /** The synchronised state slot a phone keeps its now-playing state in. */
+    const val NOWPLAYING_SLOT = "media.nowplaying"
     const val COMMAND = "media.command"
 }
 
@@ -80,7 +81,6 @@ data class NowPlayingSnapshot(
     val packageName: String
 ) {
     fun toPayload(): JsonObject = buildJsonObject {
-        put("active", true)
         put("title", title)
         put("artist", artist)
         artBase64?.let { put("artBase64", it) }
@@ -89,18 +89,6 @@ data class NowPlayingSnapshot(
         put("durationMs", durationMs)
         put("packageName", packageName)
     }
-}
-
-/** The `media.nowplaying` payload for "no media session": receivers drop whatever they were showing for this device.
- *  The other fields stay present (and empty) so a receiver from before `active` existed still parses it. */
-fun inactiveNowPlayingPayload(): JsonObject = buildJsonObject {
-    put("active", false)
-    put("title", "")
-    put("artist", "")
-    put("isPlaying", false)
-    put("positionMs", 0L)
-    put("durationMs", 0L)
-    put("packageName", "")
 }
 
 /**
@@ -212,36 +200,13 @@ class MediaControlBridge(
         command.seekMs?.let { controls.seekTo(it.toLong()) }
     }
 
-    /** Re-sends the current now-playing snapshot (if any session is active), for a
-     *  caller reconciling this device's state to a peer that may have missed the
-     *  original event-driven publish — a fresh reconnect, or a periodic self-healing
-     *  backstop. See `SyncForegroundService`'s connection-state observer and resync
-     *  loop, which call this the same way `DndSyncManager.reportInitialSyncState`/
-     *  `RosterGossipManager.periodicResync` are already called for the same reason
-     *  (this project's `CLAUDE.md` convention: anything configuring state on a
-     *  recipient needs a self-healing resync, not just a one-shot send-on-change). A
-     *  also sent, as `active: false`, when nothing is playing. */
-    fun resyncNowPlaying() = publishNowPlaying()
-
+    /** Reports the current now-playing state as the `media.nowplaying` state slot. The core sends it to every device that
+     *  connects later and repairs it periodically (see `docs/plans/state-sync.md`), so nothing here resends it. No session
+     *  (it ended, or never existed) clears the slot, so the Macs stop showing the last track. Setting what the slot
+     *  already holds does nothing, so this is safe to call on any event. */
     private fun publishNowPlaying() {
-        // No session (it ended, or never existed) is state too: tell the Macs so they stop showing the last track.
-        val controller = activeController
-        val snapshot = controller?.let { snapshotFrom(it) }
-        val payload = snapshot?.toPayload() ?: inactiveNowPlayingPayload()
-        // Broadcast (mesh support): every trusted Mac should see this device's
-        // now-playing state, not just whichever single peer used to be tracked — each
-        // Mac keys its own now-playing state per sender (senderId), so multiple phones'
-        // sessions can be shown/controlled independently.
-        val envelope = Envelope(
-            type = MediaMessageType.NOWPLAYING,
-            senderId = identityKeyStore.deviceId,
-            broadcast = true,
-            payload = payload
-        )
-        scope.launch {
-            runCatching { transportManager.send(envelope) }
-                .onFailure { Log.w(TAG, "Failed to send media.nowplaying: ${it.message}") }
-        }
+        val snapshot = activeController?.let { snapshotFrom(it) }
+        transportManager.setState(MediaMessageType.NOWPLAYING_SLOT, snapshot?.toPayload())
     }
 
     private fun snapshotFrom(controller: MediaController): NowPlayingSnapshot? {

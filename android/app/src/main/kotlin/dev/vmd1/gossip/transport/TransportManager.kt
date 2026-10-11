@@ -341,6 +341,13 @@ class TransportManager(
                 if (event.task == "trust.roster_update") sendRoster(event.peer)
             }
             is CoreBridge.BridgeAction.DeviceRevoked -> Unit
+            is CoreBridge.BridgeAction.StateChanged -> _stateChanges.emit(
+                StateChange(
+                    event.deviceId, event.slot,
+                    event.valueJson?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) }.getOrNull() },
+                    event.version
+                )
+            )
             is CoreBridge.BridgeAction.CodePairingSucceeded -> onCodePairingSucceeded(event.peer)
             is CoreBridge.BridgeAction.CodePairingWrongCode -> _codePairing.tryEmit(CodePairingEvent.WrongCode(event.attemptsLeft.toInt()))
             is CoreBridge.BridgeAction.CodePairingTooManyAttempts -> {
@@ -357,6 +364,34 @@ class TransportManager(
     }
 
     private val promptJobs = ConcurrentHashMap<ULong, Job>()
+
+    // ---- Synchronised state -----------------------------------------------------------------------------------
+
+    /** Another device's state slot changed; [value] is `null` when it was cleared (or the device was revoked). */
+    class StateChange(val deviceId: String, val slot: String, val value: kotlinx.serialization.json.JsonElement?, val version: ULong)
+
+    private val _stateChanges = MutableSharedFlow<StateChange>(extraBufferCapacity = 64)
+
+    /** Every change to another device's state slots, in order. */
+    val stateChanges: SharedFlow<StateChange> = _stateChanges.asSharedFlow()
+
+    /**
+     * Sets (or, with `null`, clears) one of this device's own state slots. The core announces the change, sends it to every
+     * device that connects later and repairs it periodically, so a feature only reports its current state and never runs
+     * its own resync loop. A no-op when the slot already holds this value.
+     */
+    fun setState(slot: String, value: kotlinx.serialization.json.JsonElement?) {
+        try {
+            runEngine { bridge.setState(slot, value?.toString()) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not set state $slot: ${e.message}")
+        }
+    }
+
+    /** A slot's current value: this device's own, or the latest received from [deviceId]. */
+    fun state(deviceId: String, slot: String): kotlinx.serialization.json.JsonElement? =
+        engineLock.withLock { bridge.state(deviceId, slot) }
+            ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) }.getOrNull() }
 
     // ---- Pairing by code --------------------------------------------------------------------------------------
 

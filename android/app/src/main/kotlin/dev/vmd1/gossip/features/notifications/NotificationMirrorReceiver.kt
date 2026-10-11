@@ -64,7 +64,13 @@ class NotificationMirrorReceiver(
         ensureChannel()
         messageRouter.register(MessageType.NOTIFICATION_POSTED, EnvelopeHandler { handlePosted(it) })
         messageRouter.register(MessageType.NOTIFICATION_REMOVED, EnvelopeHandler { handleRemoved(it) })
-        messageRouter.register(MessageType.NOTIFICATION_SYNC, EnvelopeHandler { handleSync(it) })
+        // Which notifications each phone is still mirroring is a synchronised state slot: the core keeps it correct across
+        // disconnects, so a removal that was lost is repaired here.
+        scope.launch {
+            transportManager.stateChanges.collect { change ->
+                if (change.slot == NotificationListenerImpl.ACTIVE_SLOT) handleActive(change.deviceId, change.value)
+            }
+        }
     }
 
     private val book = MirrorBook()
@@ -112,19 +118,13 @@ class NotificationMirrorReceiver(
         NotificationManagerCompat.from(context).cancel(tag, MIRROR_NOTIFICATION_ID)
     }
 
-    /** `notification.sync`: the sender's list of notifications it is still mirroring. Any mirrored copy from that
-     *  sender that is not on the list, and has been here for more than [SYNC_GRACE_MS], was a lost `removed`, so drop
-     *  it. Applying the same list twice changes nothing. */
-    private fun handleSync(envelope: Envelope) {
-        if (envelope.senderId == identityKeyStore.deviceId) return
-        val payload = try {
-            NotificationSyncPayload.fromPayload(envelope.payload)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to decode notification.sync payload", e)
-            return
-        }
-        val live = payload.ids.map { localTag(envelope.senderId, it) }.toSet()
-        val stale = book.applySync("${envelope.senderId}|", live, System.currentTimeMillis())
+    /** The `notification.active` slot of [sender]: the ids it is still mirroring (`null` when cleared, meaning none). Any
+     *  mirrored copy from that sender that is not on the list, and has been here for more than the grace period, was a lost
+     *  `removed`, so drop it. Applying the same list twice changes nothing. */
+    private fun handleActive(sender: String, value: kotlinx.serialization.json.JsonElement?) {
+        val ids = value?.let { runCatching { NotificationSyncPayload.fromJson(it).ids }.getOrNull() }.orEmpty()
+        val live = ids.map { localTag(sender, it) }.toSet()
+        val stale = book.applySync("$sender|", live, System.currentTimeMillis())
         for (tag in stale) NotificationManagerCompat.from(context).cancel(tag, MIRROR_NOTIFICATION_ID)
     }
 

@@ -234,6 +234,7 @@ fn kinds(node: &Node) -> Vec<&'static str> {
             Event::TopicChanged { .. } => "topic",
             Event::RelayJoined { .. } | Event::RelayDown | Event::RelayError { .. } => "relay",
             Event::CodePairing(_) => "code-pairing",
+            Event::StateChanged { .. } => "state",
         })
         .collect()
 }
@@ -1272,4 +1273,207 @@ fn a_stalled_code_exchange_times_out() {
         "the idle connection is closed"
     );
     let _ = existing;
+}
+
+// ---- Central state sync ------------------------------------------------------------------------------------------
+
+impl Net {
+    fn state_changes(&self, node: usize) -> Vec<(String, String, Option<Value>)> {
+        self.nodes[node]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::StateChanged {
+                    device_id,
+                    slot,
+                    value,
+                    ..
+                } => Some((device_id.clone(), slot.clone(), value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn set_state(&mut self, node: usize, slot: &str, value: Option<Value>) {
+        let out = self.nodes[node].core.set_state(slot, value).unwrap();
+        self.pump(node, out);
+    }
+
+    fn tick_all(&mut self) {
+        for n in 0..self.nodes.len() {
+            let out = self.nodes[n].core.tick();
+            self.pump(n, out);
+        }
+    }
+}
+
+fn line_of_three() -> (Net, usize, usize, usize) {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    let b = net.add(2, DeviceType::Mac);
+    let c = net.add(3, DeviceType::AndroidTablet);
+    net.pair(a, b);
+    net.pair(c, b);
+    net.introduce(b);
+    (net, a, b, c)
+}
+
+#[test]
+fn a_state_change_reaches_every_device_and_repeating_it_is_a_no_op() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "Song"})));
+    for node in [b, c] {
+        assert_eq!(
+            net.state_changes(node),
+            vec![(
+                id_of(1),
+                "media.nowplaying".to_owned(),
+                Some(json!({"title": "Song"}))
+            )],
+            "node {node} saw the update once"
+        );
+        assert_eq!(
+            net.nodes[node].core.state(&id_of(1), "media.nowplaying"),
+            Some(json!({"title": "Song"}))
+        );
+    }
+    // Reporting the same state again (a feature doing it on a timer) sends nothing and changes nothing.
+    let again = net.nodes[a]
+        .core
+        .set_state("media.nowplaying", Some(json!({"title": "Song"})))
+        .unwrap();
+    assert!(again.is_empty());
+}
+
+#[test]
+fn clearing_a_slot_is_state_too() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "Song"})));
+    net.set_state(a, "media.nowplaying", None);
+    for node in [b, c] {
+        let changes = net.state_changes(node);
+        assert_eq!(changes.last().unwrap().2, None, "the clear arrived");
+        assert_eq!(
+            net.nodes[node].core.state(&id_of(1), "media.nowplaying"),
+            None
+        );
+    }
+}
+
+#[test]
+fn a_device_that_connects_later_is_sent_everything() {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    let b = net.add(2, DeviceType::Mac);
+    // The phone has state before it is connected to anybody: setting it must not fail.
+    net.set_state(a, "notification.active", Some(json!({"ids": ["x", "y"]})));
+    net.set_state(a, "media.nowplaying", None);
+    net.pair(a, b);
+    assert_eq!(
+        net.nodes[b].core.state(&id_of(1), "notification.active"),
+        Some(json!({"ids": ["x", "y"]}))
+    );
+}
+
+#[test]
+fn the_periodic_digest_repairs_a_device_that_missed_an_update() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "One"})));
+    // A new device d joins through b only after the update, so b never forwards it (a's update was already sent).
+    let d = net.add(4, DeviceType::AndroidTablet);
+    net.pair(d, b);
+    net.introduce(b);
+    assert_eq!(
+        net.nodes[d].core.state(&id_of(1), "media.nowplaying"),
+        None,
+        "d missed it"
+    );
+
+    // A minute later a's digest goes out; d notices it lacks the slot, asks a (through b), and a answers. Time moves in
+    // steps so heartbeats keep the links alive, as the shell's one-second tick does.
+    for step in 1..=8 {
+        net.set_time(T0 + step * 10_000);
+        net.tick_all();
+    }
+    assert_eq!(
+        net.nodes[d].core.state(&id_of(1), "media.nowplaying"),
+        Some(json!({"title": "One"})),
+        "repaired by the digest"
+    );
+    let _ = c;
+}
+
+#[test]
+fn an_older_update_cannot_undo_a_newer_one() {
+    let (mut net, a, b, _c) = line_of_three();
+    net.set_state(a, "s", Some(json!(1)));
+    net.set_state(a, "s", Some(json!(2)));
+    // Replay the first update to b by hand (a duplicate delivery or a relay race).
+    let stale = {
+        let mut slot = serde_json::Map::new();
+        slot.insert("slot".into(), "s".into());
+        slot.insert("version".into(), 1u64.into());
+        slot.insert("value".into(), json!(1));
+        let mut payload = serde_json::Map::new();
+        payload.insert("slots".into(), Value::Array(vec![Value::Object(slot)]));
+        net.nodes[a]
+            .core
+            .new_envelope("state.update")
+            .broadcast()
+            .with_payload(payload)
+    };
+    net.send(a, stale).unwrap();
+    assert_eq!(net.nodes[b].core.state(&id_of(1), "s"), Some(json!(2)));
+}
+
+#[test]
+fn a_feature_turned_off_neither_sends_nor_applies_its_slots() {
+    let (mut net, a, b, _c) = line_of_three();
+    let mut off = FeatureSettings::all_enabled();
+    off.set_enabled(Feature::Media, false);
+    net.nodes[b].core.set_features(off);
+    net.set_state(a, "media.nowplaying", Some(json!(1)));
+    net.set_state(a, "notification.active", Some(json!({"ids": []})));
+    assert_eq!(net.nodes[b].core.state(&id_of(1), "media.nowplaying"), None);
+    assert!(net.nodes[b]
+        .core
+        .state(&id_of(1), "notification.active")
+        .is_some());
+
+    // And its own slot is stored but not announced while the feature is off.
+    let out = net.nodes[b]
+        .core
+        .set_state("media.nowplaying", Some(json!(2)))
+        .unwrap();
+    assert!(out.is_empty());
+}
+
+#[test]
+fn a_revoked_devices_state_is_dropped() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "Song"})));
+    let out = net.nodes[b].core.revoke_device(&id_of(1));
+    net.pump(b, out);
+    assert_eq!(net.nodes[b].core.state(&id_of(1), "media.nowplaying"), None);
+    assert!(net
+        .state_changes(b)
+        .iter()
+        .any(|(dev, slot, value)| dev == &id_of(1)
+            && slot == "media.nowplaying"
+            && value.is_none()));
+    let _ = c;
+}
+
+#[test]
+fn invalid_slots_are_refused() {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    assert!(net.nodes[a]
+        .core
+        .set_state("Bad Name", Some(json!(1)))
+        .is_err());
+    assert!(net.nodes[a]
+        .core
+        .set_state("big", Some(Value::String("x".repeat(300_000))))
+        .is_err());
 }

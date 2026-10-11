@@ -154,6 +154,14 @@ pub enum Action {
         task: String,
         peer: Option<String>,
     },
+    /// Another device's state slot changed (`value_json` is `None` when it was cleared) or was dropped because the
+    /// device was revoked. See `set_state`.
+    StateChanged {
+        device_id: String,
+        slot: String,
+        value_json: Option<String>,
+        version: u64,
+    },
     /// Pairing by code finished: `peer` is now trusted (a `TrustChanged` precedes it).
     CodePairingSucceeded {
         peer: PeerInfo,
@@ -239,6 +247,17 @@ impl From<engine::Action> for Action {
                     snapshot_json: serde_json::to_string(&snapshot).expect("snapshot serialises"),
                 },
                 E::DeviceRevoked { device_id } => Action::DeviceRevoked { device_id },
+                E::StateChanged {
+                    device_id,
+                    slot,
+                    value,
+                    version,
+                } => Action::StateChanged {
+                    device_id,
+                    slot,
+                    value_json: value.map(|v| v.to_string()),
+                    version,
+                },
                 E::CodePairing(c) => match c {
                     engine::CodePairingEvent::Succeeded { peer } => {
                         Action::CodePairingSucceeded { peer: peer.into() }

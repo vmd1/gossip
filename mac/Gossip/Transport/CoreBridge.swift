@@ -45,6 +45,8 @@ final class CoreBridge {
         /// The mesh topic changed. The secret must be persisted in secure storage and never logged or interpolated
         /// into a message (`TransportManager` only hands it to `RelayTopicStore`).
         case topicChanged(secret: Data, epoch: UInt64)
+        /// Another device's state slot changed (`valueJSON == nil` means cleared or dropped). See `setState`.
+        case stateChanged(deviceId: String, slot: String, valueJSON: String?, version: UInt64)
         /// Pairing by code: this device and `peer` now trust each other (a `trustChanged` precedes it).
         case codePairingSucceeded(peer: HandshakePeerInfo)
         /// The device showing the code was given a wrong one.
@@ -105,6 +107,16 @@ final class CoreBridge {
     func tick() -> [BridgeAction] {
         convert(core.tick())
     }
+
+    // MARK: - Synchronised state
+
+    /// Sets (`valueJSON` is the JSON value) or clears (`nil`) one of this device's state slots; the core keeps every other
+    /// device's copy correct. Setting what the slot already holds does nothing.
+    func setState(slot: String, valueJSON: String?) throws -> [BridgeAction] {
+        try map { try core.setState(slot: slot, valueJson: valueJSON) }
+    }
+
+    func state(deviceId: String, slot: String) -> String? { core.getState(deviceId: deviceId, slot: slot) }
 
     // MARK: - Pairing by code
 
@@ -219,6 +231,8 @@ final class CoreBridge {
             case .relayDown: return .relayDown
             case .relayError(let code): return .relayError(code: code)
             case .topicChanged(let secret, let epoch): return .topicChanged(secret: secret, epoch: epoch)
+            case .stateChanged(let deviceId, let slot, let valueJson, let version):
+                return .stateChanged(deviceId: deviceId, slot: slot, valueJSON: valueJson, version: version)
             case .codePairingSucceeded(let peer): return .codePairingSucceeded(peer: Self.peerInfo(peer))
             case .codePairingWrongCode(let left): return .codePairingWrongCode(attemptsLeft: left)
             case .codePairingTooManyAttempts: return .codePairingTooManyAttempts

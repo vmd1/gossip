@@ -93,6 +93,12 @@ class BindingsSmokeTest {
         assertTrue(net.nodes[phone].core.codePairingActive())
         assertTrue(net.nodes[mac].core.isValidPairingCode(shown.lowercase()))
         assertFalse(net.nodes[mac].core.isValidPairingCode("ABC"))
+        assertFailsWith<GossipException> { net.nodes[phone].core.setState("bad name", "1") }
+        assertFailsWith<GossipException> { net.nodes[phone].core.setState("s", "{not json") }
+        net.pump(phone, net.nodes[phone].core.setState("s", "{\"n\":1}"))
+        assertEquals("{\"n\":1}", net.nodes[phone].core.getState(net.nodes[phone].id.deviceId, "s"))
+        net.pump(phone, net.nodes[phone].core.setState("s", null))
+        assertEquals(null, net.nodes[phone].core.getState(net.nodes[phone].id.deviceId, "s"))
         net.nodes[phone].core.stopCodePairing()
         assertFalse(net.nodes[phone].core.codePairingActive())
         assertEquals("disabled", net.nodes[mac].core.relayStatus())

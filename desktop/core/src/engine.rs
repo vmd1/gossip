@@ -34,6 +34,7 @@ use crate::limits::{InboundRateLimiter, PendingFrameQueue};
 use crate::mesh::{self, SeenCache};
 use crate::reconcile::{Due, Reconciler};
 use crate::relay::{self, RelayClient, RelayOut, RelayState, RouteTag};
+use crate::state_sync::{LocalState, RemoteState};
 use crate::topic::{Topic, TopicSecret};
 use crate::trust::{SelfEntry, TrustSnapshot, TrustStore, TrustedDevice};
 use crate::wire::envelope::{Envelope, DEFAULT_TTL};
@@ -41,6 +42,7 @@ use crate::wire::frame::{self, FrameDecoder, MAX_HANDSHAKE_FRAME, MAX_TRANSPORT_
 use crate::wire::handshake::{self, DeviceType, HandshakeIdentity};
 
 mod code_pairing;
+mod state_sync;
 pub use code_pairing::{CodePairingError, CodePairingEvent};
 
 /// Opaque handle for one transport connection, chosen by the shell.
@@ -183,6 +185,14 @@ pub enum Event {
     },
     /// A reconciliation resend is due; the owning feature answers it.
     ReconcileDue(Due),
+    /// A device's state slot changed (or was cleared, `value: None`): see [`Core::set_state`]. Only ever for other
+    /// devices' slots; the shell already knows its own.
+    StateChanged {
+        device_id: String,
+        slot: String,
+        value: Option<Value>,
+        version: u64,
+    },
     /// Progress of a pairing by code (see [`Core::start_code_pairing`] and [`Core::dial_code`]).
     CodePairing(CodePairingEvent),
     /// This device joined the relay topic; `members` other devices are present.
@@ -343,6 +353,9 @@ pub struct Core<E: Env> {
     armed_pairing: Option<(String, i64)>,
     /// A code this device is showing so another device can pair with it by typing it.
     code_show: Option<code_pairing::CodeShow>,
+    /// This device's synchronised state slots, and what it holds of other devices' (see `crate::state_sync`).
+    local_state: LocalState,
+    remote_state: RemoteState,
     prompt_active: bool,
     relay: RelayClient,
     topic: Option<Topic>,
@@ -381,6 +394,8 @@ impl<E: Env> Core<E> {
             reconciler: Reconciler::default(),
             armed_pairing: None,
             code_show: None,
+            local_state: LocalState::default(),
+            remote_state: RemoteState::default(),
             prompt_active: false,
             relay,
             topic: None,
@@ -997,8 +1012,10 @@ impl<E: Env> Core<E> {
         if !self.ensure_topic(out) {
             self.send_topic_to(&peer.device_id, out);
         }
+        // Our synchronised state goes to the new peer at once; the periodic digest repairs anything later.
+        self.send_state_to(&peer.device_id, out);
         for due in self.reconciler.on_peer_connected(&peer.device_id) {
-            if due.task != TOPIC_TASK {
+            if due.task != TOPIC_TASK && due.task != state_sync::STATE_TASK {
                 out.push(Action::Event(Event::ReconcileDue(due)));
             }
         }
@@ -1163,6 +1180,9 @@ impl<E: Env> Core<E> {
             "trust.roster_update" => return self.handle_roster_update(envelope, out),
             "trust.revoke" => return self.handle_revoke(envelope, out),
             "mesh.topic" => return self.handle_mesh_topic(conn, envelope, out),
+            "state.update" | "state.digest" | "state.request" => {
+                return self.handle_state_message(envelope, out)
+            }
             _ => {}
         }
         // A feature turned off on this device never reaches its handlers.
@@ -1231,6 +1251,7 @@ impl<E: Env> Core<E> {
         out.push(Action::Event(Event::DeviceRevoked {
             device_id: device_id.clone(),
         }));
+        self.forget_state_of(&device_id, out);
         if let Some(conn) = self.peers.get(&device_id).copied() {
             self.drop_conn(conn, true, out);
         }
@@ -1261,6 +1282,7 @@ impl<E: Env> Core<E> {
         let already_revoked = self.trust.revoked_at(device_id).is_some();
         self.trust.revoke(device_id, now);
         out.push(Action::Event(Event::TrustChanged(self.trust.snapshot())));
+        self.forget_state_of(device_id, &mut out);
         if let Some(conn) = self.peers.get(device_id).copied() {
             self.drop_conn(conn, true, &mut out);
         }
@@ -1478,7 +1500,9 @@ impl<E: Env> Core<E> {
         }
 
         for due in self.reconciler.tick(now, !self.peers.is_empty()) {
-            if due.task == TOPIC_TASK {
+            if due.task == state_sync::STATE_TASK {
+                self.broadcast_state_digest(&mut out);
+            } else if due.task == TOPIC_TASK {
                 self.resend_topic_to_all(&mut out);
             } else {
                 out.push(Action::Event(Event::ReconcileDue(due)));

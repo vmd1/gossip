@@ -57,28 +57,22 @@ data class NotificationRemovedPayload(val id: String) {
     )
 }
 
-/** `notification.sync` payload (android -> mesh, broadcast): the ids of every notification this phone is currently
- *  mirroring, so a receiver can drop any mirrored copy that is no longer in the list (a `notification.removed` that
- *  was lost to a disconnect or race). Sent on every fresh connection and every 60 s. Receivers only act on
- *  notifications they have held for a few seconds, so a snapshot that races a newer `notification.posted` never
- *  removes it. */
+/** The value of the `notification.active` state slot (android -> mesh, see `docs/plans/state-sync.md`): the ids of every
+ *  notification the phone is currently mirroring, so a receiver can drop any mirrored copy that is no longer in the list
+ *  (a `notification.removed` that was lost to a disconnect or race). Receivers only act on notifications they have held
+ *  for a few seconds, so a snapshot that raced a newer `notification.posted` never removes it. */
 @Serializable
 data class NotificationSyncPayload(val ids: List<String>) {
-    fun toEnvelope(senderId: String): Envelope = Envelope(
-        type = MessageType.NOTIFICATION_SYNC,
-        senderId = senderId,
-        broadcast = true,
-        payload = Json.encodeToJsonElement(serializer(), this).jsonObject
-    )
+    fun toJson(): JsonObject = Json.encodeToJsonElement(serializer(), this).jsonObject
 
     companion object {
-        /** A phone with more active notifications than this skips the sync rather than send a huge message;
+        /** A phone with more active notifications than this reports nothing rather than send a huge list;
          *  receivers then simply keep what they have. */
         const val MAX_IDS = 200
         private val json = Json { ignoreUnknownKeys = true }
 
-        fun fromPayload(payload: JsonObject): NotificationSyncPayload =
-            json.decodeFromJsonElement(serializer(), payload)
+        fun fromJson(value: kotlinx.serialization.json.JsonElement): NotificationSyncPayload =
+            json.decodeFromJsonElement(serializer(), value)
     }
 }
 

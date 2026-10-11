@@ -96,8 +96,11 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         transportManager?.router.register(prefix: "notification.removed") { [weak self] envelope in
             self?.handleRemoved(envelope)
         }
-        transportManager?.router.register(prefix: "notification.sync") { [weak self] envelope in
-            self?.handleSync(envelope)
+        // Which notifications each phone is still mirroring is a synchronised state slot (see `docs/plans/state-sync.md`):
+        // the core keeps it correct across disconnects, so a removal that was lost is repaired here.
+        transportManager?.addOnStateChanged { [weak self] change in
+            guard change.slot == "notification.active" else { return }
+            self?.handleActive(sender: change.deviceId, valueJSON: change.valueJSON)
         }
     }
 
@@ -166,17 +169,14 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
     }
 
-    /// `notification.sync`: the phone's list of notifications it is still mirroring. Anything from that phone shown here
-    /// that is not on the list (and has been here for more than `syncGrace`) was a lost `notification.removed`, so it is
-    /// removed. Anything the user dismissed here that the phone still lists was a lost `notification.dismiss`, so it is
-    /// sent again. Applying the same list twice changes nothing.
-    private func handleSync(_ envelope: Envelope) {
-        guard let sync = try? decode(NotificationSyncPayload.self, from: envelope.payload) else {
-            gossipError("Gossip: failed to decode notification.sync payload")
-            return
-        }
-        let sender = envelope.senderId
-        let live = Set(sync.ids.map { localIdentifier(for: $0, sourceDeviceId: sender) })
+    /// The `notification.active` slot of `sender`: the ids it is still mirroring (`nil` when cleared, which means none).
+    /// Anything from that phone shown here that is not on the list (and has been here for more than `syncGrace`) was a
+    /// lost `notification.removed`, so it is removed. Anything the user dismissed here that the phone still lists was a
+    /// lost `notification.dismiss`, so it is sent again. Applying the same list twice changes nothing.
+    private func handleActive(sender: String, valueJSON: String?) {
+        let ids = valueJSON
+            .flatMap { try? JSONDecoder().decode(NotificationSyncPayload.self, from: Data($0.utf8)) }?.ids ?? []
+        let live = Set(ids.map { localIdentifier(for: $0, sourceDeviceId: sender) })
         let outcome = book.applySync(liveIdentifiers: live, owns: { [weak self] in self?.decodeLocalIdentifier($0)?.sourceDeviceId == sender })
         if !outcome.remove.isEmpty { notificationCenter.removeDeliveredNotifications(withIdentifiers: outcome.remove) }
         for identifier in outcome.redismiss {
@@ -379,7 +379,7 @@ struct NotificationRemovedPayload: Codable {
     let id: String
 }
 
-/// `notification.sync`: ids of every notification the phone is still mirroring. See `handleSync`.
+/// The `notification.active` state slot: ids of every notification the phone is still mirroring. See `handleActive`.
 struct NotificationSyncPayload: Codable {
     let ids: [String]
 }

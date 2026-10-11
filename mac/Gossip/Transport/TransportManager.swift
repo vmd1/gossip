@@ -525,6 +525,42 @@ final class TransportManager: ObservableObject {
     static let maxPendingInbound = 32
     static let maxPendingInboundPerHost = 4
 
+    // MARK: - Synchronised state
+
+    /// Another device's state slot changed; `valueJSON == nil` means it was cleared (or the device was revoked).
+    struct StateChange {
+        let deviceId: String
+        let slot: String
+        let valueJSON: String?
+        let version: UInt64
+    }
+
+    private var stateHandlers: [(StateChange) -> Void] = []
+
+    /// Registers a handler for other devices' state changes, called on the main queue.
+    func addOnStateChanged(_ handler: @escaping (StateChange) -> Void) {
+        onQueue { stateHandlers.append(handler) }
+    }
+
+    /// Sets (`valueJSON` is the JSON value) or clears (`nil`) one of this device's own state slots. The core announces the
+    /// change, sends it to every device that connects later and repairs it periodically, so a feature only reports its
+    /// current state and never runs its own resync.
+    func setState(slot: String, valueJSON: String?) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                self.process(try self.bridge.setState(slot: slot, valueJSON: valueJSON))
+            } catch {
+                gossipError("Gossip: could not set state \(slot): \(error)")
+            }
+        }
+    }
+
+    /// A slot's current value as JSON text: this device's own or the latest received from `deviceId`.
+    func state(of deviceId: String, slot: String) -> String? {
+        onQueue { bridge.state(deviceId: deviceId, slot: slot) }
+    }
+
     // MARK: - Pairing by code
 
     enum CodePairingEvent {
@@ -846,6 +882,11 @@ final class TransportManager: ObservableObject {
 
             case .deviceRevoked:
                 break // the trust snapshot that accompanies it already updated the store
+
+            case .stateChanged(let deviceId, let slot, let valueJSON, let version):
+                let change = StateChange(deviceId: deviceId, slot: slot, valueJSON: valueJSON, version: version)
+                let handlers = stateHandlers
+                DispatchQueue.main.async { handlers.forEach { $0(change) } }
 
             case .codePairingSucceeded(let peer):
                 if !codeEntryFinished {

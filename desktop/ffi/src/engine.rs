@@ -247,6 +247,32 @@ impl GossipCore {
         self.lock().disarm_pairing();
     }
 
+    // ---- Synchronised state ------------------------------------------------------------------------------------
+
+    /// Sets one of this device's state slots (`value_json` is the JSON value; `None` clears it) and lets the core keep
+    /// every other device's copy correct: it is announced on change, sent to every newly connected device, and
+    /// repaired by a periodic digest. Setting the value the slot already holds does nothing, so a feature can report
+    /// its current state whenever it likes. Slot names are 1 to 64 characters of a-z, 0-9, `.`, `_`, `-`.
+    pub fn set_state(
+        &self,
+        slot: String,
+        value_json: Option<String>,
+    ) -> Result<Vec<Action>, GossipError> {
+        let value = match value_json {
+            Some(text) => Some(
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|e| GossipError::invalid(format!("value is not valid JSON: {e}")))?,
+            ),
+            None => None,
+        };
+        Ok(actions(self.lock().set_state(&slot, value)?))
+    }
+
+    /// A slot's current value as JSON: this device's own, or the latest received from `device_id`.
+    pub fn get_state(&self, device_id: String, slot: String) -> Option<String> {
+        self.lock().state(&device_id, &slot).map(|v| v.to_string())
+    }
+
     // ---- Pairing by code ---------------------------------------------------------------------------------------
 
     /// The new device calls this and shows the returned code (`ABCD-EFGH`). While it is active

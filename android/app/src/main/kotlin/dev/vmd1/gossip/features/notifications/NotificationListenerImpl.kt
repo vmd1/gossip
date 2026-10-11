@@ -111,6 +111,7 @@ class NotificationListenerImpl : NotificationListenerService() {
 
         active = this
         ensureHandlersRegistered()
+        publishActive()
     }
 
     private val replyEnvelopeHandler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
@@ -212,18 +213,21 @@ class NotificationListenerImpl : NotificationListenerService() {
         return title.isNotEmpty() || body.isNotEmpty()
     }
 
-    /** Broadcasts `notification.sync`: the keys of everything currently mirrored. Called on every fresh connection and
-     *  every 60 s by [dev.vmd1.gossip.service.SyncForegroundService]; a receiver drops any mirrored copy not listed. */
-    fun resyncActive() {
+    /** Reports which notifications are currently mirrored as the `notification.active` state slot (see
+     *  `docs/plans/state-sync.md`): the core sends it to every device that connects later and repairs it periodically, so a
+     *  receiver that missed a `notification.removed` drops its copy. Called after every post and removal, and when the
+     *  listener connects; a no-op when the list is unchanged. A phone with more than [NotificationSyncPayload.MAX_IDS] active
+     *  notifications reports nothing rather than a huge list, and receivers keep what they have. */
+    private fun publishActive() {
         if (!isPhone || scope == null) return
         val keys = try {
             activeNotifications?.filter { shouldMirror(it) }?.map { it.key }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not list active notifications for the sync: ${e.message}")
+            Log.w(TAG, "Could not list active notifications: ${e.message}")
             null
         } ?: return
         if (keys.size > NotificationSyncPayload.MAX_IDS) return
-        send(NotificationSyncPayload(keys).toEnvelope(senderId = deviceId()))
+        TransportManagerHolder.instance?.setState(ACTIVE_SLOT, NotificationSyncPayload(keys).toJson())
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -233,6 +237,7 @@ class NotificationListenerImpl : NotificationListenerService() {
         replyTargets.remove(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
         send(payload.toEnvelope(senderId = deviceId()))
+        publishActive()
     }
 
     // MARK: - notification.dismiss (mac -> android)
@@ -350,5 +355,8 @@ class NotificationListenerImpl : NotificationListenerService() {
     companion object {
         /** The connected listener instance, so [SyncForegroundService] can nudge it once the transport exists. */
         @Volatile var active: NotificationListenerImpl? = null
+
+        /** The synchronised state slot listing the notifications this phone is mirroring. */
+        const val ACTIVE_SLOT = "notification.active"
     }
 }
