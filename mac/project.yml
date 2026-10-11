@@ -21,6 +21,11 @@ settings:
       # unit-test bundle and the test host crashes at launch. Debug builds are never distributed; Release keeps it.
       ENABLE_HARDENED_RUNTIME: NO
 
+packages:
+  # The Rust protocol engine (desktop/core) as a Swift package. Build it first: `scripts/build-core.sh`.
+  GossipCoreKit:
+    path: ../desktop/target/swift-package
+
 targets:
   Gossip:
     type: application
@@ -32,6 +37,7 @@ targets:
           - "Resources/Gossip.entitlements"
       - path: Shared
     dependencies:
+      - package: GossipCoreKit
       # The "Device Mirroring" launcher rides inside Gossip.app (Contents/SharedSupport) and is copied
       # out next to it on first run — see LauncherInstaller.
       - target: DeviceMirroring

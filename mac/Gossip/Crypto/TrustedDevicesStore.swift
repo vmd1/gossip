@@ -131,8 +131,8 @@ final class TrustedDevicesStore: ObservableObject {
         let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
         PrivateFile.ensureDirectory(dir)
         self.init(
-            devicesBlob: KeychainBlobStore(account: "trusted-devices", legacyFile: dir.appendingPathComponent("trusted-devices.json")),
-            revokedBlob: KeychainBlobStore(account: "revoked-devices", legacyFile: dir.appendingPathComponent("revoked-devices.json"))
+            devicesBlob: ProductionBlobStore.make(account: "trusted-devices", legacyFile: dir.appendingPathComponent("trusted-devices.json")),
+            revokedBlob: ProductionBlobStore.make(account: "revoked-devices", legacyFile: dir.appendingPathComponent("revoked-devices.json"))
         )
     }
 
@@ -244,6 +244,85 @@ final class TrustedDevicesStore: ObservableObject {
         }
         persist()
         publishOnMain()
+    }
+
+    // MARK: - Rust engine snapshot
+
+    /// The trust table in the Rust engine's snapshot format (`desktop/core` `TrustSnapshot`): the engine is
+    /// created from this and owns the live trust decisions, then reports changes back through `importCoreSnapshot`.
+    /// App-only fields (fallback host, lock-on-leave) never go to the engine.
+    func exportCoreSnapshot() -> String {
+        let (devices, tombstones) = queue.sync { (storage, revoked) }
+        let rows: [[String: Any]] = devices.map { d in
+            var row: [String: Any] = [
+                "device_id": d.deviceId,
+                "public_key": d.publicKeyBase64,
+                "device_name": d.deviceName,
+                "device_type": d.deviceType.rawValue,
+                "added_at": Int64(d.addedAt.timeIntervalSince1970 * 1000),
+            ]
+            row["signing_public_key"] = d.signingPublicKeyBase64 ?? NSNull()
+            row["beacon_key"] = d.beaconKeyBase64 ?? NSNull()
+            return row
+        }
+        let root: [String: Any] = ["devices": rows, "revoked": tombstones.mapValues { $0 as Any }]
+        let data = (try? JSONSerialization.data(withJSONObject: root)) ?? Data("{\"devices\":[],\"revoked\":{}}".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Applies a snapshot the engine reported after its trust changed (a pairing was confirmed, a roster introduced a
+    /// device, a revocation arrived, a signing key was learned from a handshake). Existing rows keep their app-only
+    /// fields; devices the engine has revoked are removed and tombstoned. Returns whether anything changed.
+    @discardableResult
+    func importCoreSnapshot(_ json: String) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
+              let rows = root["devices"] as? [[String: Any]] else { return false }
+        let tombstones = (root["revoked"] as? [String: Any])?.compactMapValues { ($0 as? NSNumber)?.int64Value } ?? [:]
+
+        var changed = false
+        queue.sync {
+            var seen = Set<String>()
+            for row in rows {
+                guard let id = row["device_id"] as? String, let key = row["public_key"] as? String,
+                      let name = row["device_name"] as? String, let typeRaw = row["device_type"] as? String else { continue }
+                seen.insert(id)
+                let signing = row["signing_public_key"] as? String
+                if let index = storage.firstIndex(where: { $0.deviceId == id }) {
+                    // The row exists: only the signing key (learned from an authenticated handshake) can have changed.
+                    if let signing, storage[index].signingPublicKeyBase64 != signing {
+                        storage[index].signingPublicKeyBase64 = signing
+                        changed = true
+                    }
+                } else if let type = DeviceType(rawValue: typeRaw) {
+                    // A device type this app has no case for (a future platform) can be trusted by the engine and
+                    // relayed through, but has no row to show yet.
+                    let ms = (row["added_at"] as? NSNumber)?.int64Value ?? Int64(Date().timeIntervalSince1970 * 1000)
+                    storage.append(TrustedDevice(
+                        deviceId: id, publicKeyBase64: key, deviceName: name, deviceType: type,
+                        addedAt: Date(timeIntervalSince1970: TimeInterval(ms) / 1000), signingPublicKeyBase64: signing
+                    ))
+                    changed = true
+                }
+            }
+            // Only a device the engine has tombstoned is removed. "Missing from the snapshot" is not enough: the app may
+            // have added a row after the engine produced this snapshot, and that row must survive.
+            let before = storage.count
+            storage.removeAll { tombstones[$0.deviceId] != nil && !seen.contains($0.deviceId) }
+            if storage.count != before { changed = true }
+            for (id, at) in tombstones where (revoked[id] ?? Int64.min) < at {
+                revoked[id] = at
+                changed = true
+            }
+            // A device the engine trusts again (a direct re-pairing) is no longer tombstoned.
+            for id in seen where revoked[id] != nil && tombstones[id] == nil {
+                revoked.removeValue(forKey: id)
+                changed = true
+            }
+        }
+        guard changed else { return false }
+        persist()
+        publishOnMain()
+        return true
     }
 
     // MARK: - Persistence

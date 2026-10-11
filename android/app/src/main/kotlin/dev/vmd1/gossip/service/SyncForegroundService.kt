@@ -97,14 +97,31 @@ class SyncForegroundService : Service() {
         )
         controlSessionState.register(messageRouter)
         observeRemoteAccess()
+        val relayDirectory = dev.vmd1.gossip.transport.RelayDirectoryService.getInstance(applicationContext)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter,
             deviceType = deviceType,
-            isMessageAllowed = featureSettings::isMessageAllowed
+            isMessageAllowed = featureSettings::isMessageAllowed,
+            initialDisabledFeatures = featureSettings.disabled.value.map(::coreFeatureKey),
+            relayTopicStore = dev.vmd1.gossip.transport.RelayTopicStore.getInstance(applicationContext),
+            relayDirectory = relayDirectory
         )
+        // The relay is opt-in (Settings > Relay): push the user's choice to the engine now and on every change. With the
+        // custom address (if set) wins, then the relay the directory names, then the built-in default.
+        val relaySettings = dev.vmd1.gossip.transport.RelaySettings.getInstance(applicationContext)
+        kotlinx.coroutines.flow.combine(relaySettings.enabled, relaySettings.customUrl, relayDirectory.state) { _, _, directory ->
+            relayDirectory.wanted = relaySettings.enabled.value // polled only while the relay is on
+            relaySettings.configuration(directory.cachedOrigin, directory.isFresh, directory.awaitingFirstAnswer)
+        }
+            .onEach { transportManager.setRelayEnabled(it.enabled, it.origin) }
+            .launchIn(serviceScope)
+        // The engine applies the same per-feature gate on delivery, so it needs to hear about every change.
+        featureSettings.disabled
+            .onEach { transportManager.setDisabledFeatures(it.map(::coreFeatureKey)) }
+            .launchIn(serviceScope)
         mediaControlBridge = MediaControlBridge(
             context = applicationContext,
             messageRouter = messageRouter,
@@ -140,15 +157,7 @@ class SyncForegroundService : Service() {
             messageRouter = messageRouter,
             scope = serviceScope
         )
-        rosterGossipManager = RosterGossipManager(
-            transportManager = transportManager,
-            trustedDevicesStore = trustedDevices,
-            identityKeyStore = identity,
-            messageRouter = messageRouter,
-            scope = serviceScope,
-            deviceName = Build.MODEL ?: "Android device",
-            deviceType = deviceType
-        )
+        rosterGossipManager = RosterGossipManager(transportManager)
         bleProximityMonitor = BLEProximityMonitor(
             context = applicationContext,
             identityKeyStore = identity,
@@ -433,7 +442,7 @@ class SyncForegroundService : Service() {
         // state flips to CONNECTED: a second peer connecting while the first is still up
         // causes no flip, and would otherwise wait for the 60s resync loops. The sends are
         // broadcasts and idempotent, so an already-connected peer just gets a harmless repeat.
-        transportManager.connectedDeviceIds
+        transportManager.peerDeviceIds
             .newlyConnectedPeers()
             .onEach {
                 // Two devices that were apart can each have a different real DND
@@ -596,7 +605,6 @@ class SyncForegroundService : Service() {
         serviceScope.launch {
             while (isActive) {
                 delay(ROSTER_RESYNC_INTERVAL_MS)
-                rosterGossipManager.periodicResync()
                 beaconKeyManager.periodicResync()
             }
         }
@@ -776,3 +784,7 @@ class SyncForegroundService : Service() {
         private const val ROSTER_RESYNC_INTERVAL_MS = 300_000L
     }
 }
+
+/** The engine's key for a feature (`desktop/core` `Feature::key`): the enum name in lowerCamelCase. */
+private fun coreFeatureKey(feature: dev.vmd1.gossip.features.settings.Feature): String =
+    feature.name.lowercase().split('_').mapIndexed { i, part -> if (i == 0) part else part.replaceFirstChar { it.uppercase() } }.joinToString("")

@@ -1,0 +1,126 @@
+name: Core CI
+
+# The sans-IO Rust core (`desktop/core`) and the shared conformance vectors it is checked against.
+# Runs on pull requests (and manually) only, like the other CI workflows.
+on:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "schema/**"
+      - ".github/workflows/core.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: core-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS so the interop tests can build and run the Mac app's real Noise, envelope and hotspot sources
+    # (`desktop/scripts/build-swift-interop.sh`); the portable tests run everywhere.
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Format and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Build the Swift interop harness
+        run: ./scripts/build-swift-interop.sh
+
+      - name: Test (vectors, engine, interop with the Mac app's code)
+        run: cargo test
+
+      - name: Swift bindings smoke test
+        run: ./scripts/test-swift-bindings.sh
+
+  kotlin-bindings:
+    # The generated Kotlin compiled and exercised on a JVM through JNA (no emulator needed).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Set up Java
+        run: java -version
+
+      - name: Kotlin bindings smoke test
+        run: ./scripts/test-kotlin-bindings.sh
+
+  vectors:
+    # The Noise vectors come from an implementation independent of both apps; make sure they stay reproducible.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Regenerate and compare
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet noiseprotocol
+          /tmp/venv/bin/python -W ignore schema/conformance/gen_noise_vectors.py > /tmp/noise-ik-vectors.json
+          diff /tmp/noise-ik-vectors.json schema/noise-ik-vectors.json
+
+  swift-package:
+    # The universal macOS XCFramework + generated Swift, as the SwiftPM package the Mac app will depend on.
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain and both Mac targets
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build the XCFramework package
+        run: ./scripts/build-xcframework.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gossip-core-swift-package
+          path: desktop/target/swift-package
+
+  android-libs:
+    # libgossip_ffi.so for every ABI plus the generated Kotlin, using the NDK GitHub's Ubuntu runners ship with.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain, the Android targets and cargo-ndk
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          cargo install cargo-ndk --locked
+
+      - name: Build the Android libraries
+        run: ./scripts/build-android.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gossip-core-android
+          path: desktop/target/android

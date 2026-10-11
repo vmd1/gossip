@@ -16,6 +16,7 @@ struct DeviceMirroringView: View {
             devices: trustedDevicesStore.devices,
             connectedIds: transportManager.connectedDeviceIds,
             meshIds: transportManager.meshReachableDeviceIds,
+            relayedIds: transportManager.relayedDeviceIds,
             batteries: batterySyncManager.batteryBySenderId
         )
     }
@@ -60,6 +61,8 @@ struct DeviceMirroringView: View {
                     Circle().fill(MenuBarView.color(for: row.connectivity)).frame(width: 7, height: 7)
                     Text(row.connectivity == .mesh
                          ? "Connected through another device — mirroring needs a direct connection"
+                         : row.connectivity == .relayed
+                         ? "Connected through the relay — mirroring needs the same network"
                          : MenuBarView.description(of: row.connectivity))
                     if let battery = row.battery {
                         Image(systemName: MenuBarView.batterySymbol(battery))

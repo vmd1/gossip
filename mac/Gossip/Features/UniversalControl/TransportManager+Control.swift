@@ -1,6 +1,8 @@
 import Foundation
 
 extension TransportManager: ControlMesh {
+    /// Same-network links only: a device reached through the relay is never "directly" connected, so no control
+    /// session starts for it (the engine refuses `control.*` on relayed links as well).
     func isDirectlyConnected(_ deviceId: String) -> Bool { connectedDeviceIds.contains(deviceId) }
 
     func host(for deviceId: String) -> String? { hostWithZone(for: deviceId) }

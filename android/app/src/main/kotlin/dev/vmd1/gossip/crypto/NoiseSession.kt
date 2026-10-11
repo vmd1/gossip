@@ -85,12 +85,13 @@ class NoiseSession(
         }
     }
 
-    /** Initiator: build message 1 (`e, es, s, ss`) carrying [payload] (handshake.hello info). */
-    fun writeMessage1(payload: ByteArray): ByteArray {
+    /** Initiator: build message 1 (`e, es, s, ss`) carrying [payload] (handshake.hello info). [ephemeral] exists so the
+     *  shared conformance vectors (`schema/noise-ik-vectors.json`) can fix the key; production callers leave it null. */
+    fun writeMessage1(payload: ByteArray, ephemeral: X25519KeyPair? = null): ByteArray {
         check(role == NoiseRole.INITIATOR) { "Only the initiator sends message 1" }
         val rs = remoteStatic ?: throw NoiseHandshakeException("Missing responder static key")
 
-        val e = X25519Utils.generateKeyPair()
+        val e = ephemeral ?: X25519Utils.generateKeyPair()
         localEphemeral = e
         mixHash(e.publicKey)
 
@@ -135,13 +136,13 @@ class NoiseSession(
         return NoiseHandshakeResult(payload, rs)
     }
 
-    /** Responder: build message 2 (`e, ee, se`), completing the handshake on this side. */
-    fun writeMessage2(payload: ByteArray): ByteArray {
+    /** Responder: build message 2 (`e, ee, se`), completing the handshake on this side. See [writeMessage1] for [ephemeral]. */
+    fun writeMessage2(payload: ByteArray, ephemeral: X25519KeyPair? = null): ByteArray {
         check(role == NoiseRole.RESPONDER) { "Only the responder sends message 2" }
         val re = remoteEphemeralPublic ?: throw NoiseHandshakeException("Message 1 not yet processed")
         val rs = remoteStatic ?: throw NoiseHandshakeException("Message 1 not yet processed")
 
-        val e = X25519Utils.generateKeyPair()
+        val e = ephemeral ?: X25519Utils.generateKeyPair()
         localEphemeral = e
         mixHash(e.publicKey)
 

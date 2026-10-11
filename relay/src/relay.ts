@@ -1,50 +1,38 @@
-import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
-import { ConnectionManager } from "./connectionManager.js";
+import { pathToFileURL } from "node:url";
+import { loadConfig, type RelayConfig } from "./config.js";
+import { Relay, type RelayOptions } from "./hub.js";
 import { logger } from "./logger.js";
 
-const PORT = Number(process.env.PORT ?? 8080);
-const PATH = process.env.RELAY_PATH ?? "/connect";
+export { Relay, loadConfig };
+export type { RelayConfig, RelayOptions };
 
-/**
- * Plain `ws://` over plain HTTP in dev. Production deployment should
- * terminate TLS (`wss://`) in front of this process (e.g. a reverse proxy
- * or a platform-managed load balancer) — see relay/README.md. Certificate
- * management is explicitly out of scope for this unit.
- */
-export function createRelayServer() {
-  const httpServer = createServer((req, res) => {
-    if (req.url === "/healthz") {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
-      return;
-    }
-    res.writeHead(404, { "content-type": "text/plain" });
-    res.end("not found");
-  });
-
-  const wss = new WebSocketServer({ server: httpServer, path: PATH });
-  const manager = new ConnectionManager();
-
-  wss.on("connection", (ws) => {
-    manager.registerConnection(ws);
-  });
-
-  wss.on("error", (err) => {
-    logger.error("server.error", { message: err.message });
-  });
-
-  return { httpServer, wss, manager };
+export function createRelay(config: RelayConfig = loadConfig(), opts: RelayOptions = {}): Relay {
+  return new Relay(config, opts);
 }
 
-function main(): void {
-  const { httpServer } = createRelayServer();
-  httpServer.listen(PORT, () => {
-    logger.info("server.listening", { port: PORT, path: PATH });
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const relay = createRelay(config);
+  if (!process.env.RELAY_ORIGIN) {
+    logger.warn("config.relay_origin_default", { origin: config.relayOrigin });
+  }
+  await relay.start();
+  logger.info("server.listening", { port: relay.port, path: config.path, powBits: config.powBits });
+  // SIGUSR2 toggles the kill switch at runtime (see README).
+  process.on("SIGUSR2", () => {
+    relay.toggleKillSwitch();
   });
+  const shutdown = () => {
+    void relay.close().then(() => process.exit(0));
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 }
 
-const isMainModule = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
-  main();
+  main().catch((err) => {
+    logger.error("server.fatal", { message: (err as Error).message });
+    process.exit(1);
+  });
 }

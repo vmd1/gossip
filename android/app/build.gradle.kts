@@ -29,6 +29,33 @@ val gossipSigning: Map<String, String>? = run {
     if (values.values.all { it != null }) values.mapValues { it.value!! } else null
 }
 
+// ---- Rust protocol engine (desktop/core) -------------------------------------------------------------------------
+// The Android build produces the native libraries and the generated Kotlin bindings with desktop/scripts/build-android.sh
+// (needs the NDK, `cargo-ndk` and a Rust toolchain; see desktop/README.md). The task is skipped when its output is
+// already there; `-PrebuildCore` forces it, and GOSSIP_CORE_ABIS=arm64-v8a limits it to the ABIs you need locally.
+val gossipDesktopDir: File = rootProject.file("../desktop")
+val gossipCoreOutput: File = File(gossipDesktopDir, "target/android")
+val rustPath: String = listOf("${System.getProperty("user.home")}/.cargo/bin", "/opt/homebrew/opt/rustup/bin", System.getenv("PATH") ?: "")
+    .joinToString(File.pathSeparator)
+
+val buildGossipCore by tasks.registering(Exec::class) {
+    description = "Builds libgossip_ffi.so (all ABIs) and the generated Kotlin bindings from desktop/core."
+    workingDir = gossipDesktopDir
+    environment("PATH", rustPath)
+    commandLine("sh", "scripts/build-android.sh")
+    onlyIf { project.hasProperty("rebuildCore") || !File(gossipCoreOutput, "kotlin").isDirectory }
+}
+
+// JVM unit tests load the engine through JNA from a host build of the same library.
+val gossipCoreHostLibDir: File = File(gossipDesktopDir, "target/debug")
+val buildGossipCoreHost by tasks.registering(Exec::class) {
+    description = "Builds the host (desktop) libgossip_ffi for JVM unit tests."
+    workingDir = gossipDesktopDir
+    environment("PATH", rustPath)
+    commandLine("cargo", "build", "-p", "gossip-ffi")
+    onlyIf { project.hasProperty("rebuildCore") || listOf("libgossip_ffi.dylib", "libgossip_ffi.so").none { File(gossipCoreHostLibDir, it).isFile } }
+}
+
 android {
     namespace = "dev.vmd1.gossip"
     // 36 (Android 16), not 34: needed at compile time only, for `@RefineAs(TetheringManager
@@ -87,6 +114,15 @@ android {
         buildConfig = true // BuildConfig.DEBUG gates the diagnostic logging (util/Log.kt)
     }
 
+    sourceSets {
+        getByName("main") {
+            // The Rust protocol engine (desktop/core): libgossip_ffi.so per ABI and its generated Kotlin bindings, produced
+            // by desktop/scripts/build-android.sh (see the buildGossipCore task below).
+            jniLibs.srcDir(File(gossipCoreOutput, "jniLibs"))
+            java.srcDir(File(gossipCoreOutput, "kotlin"))
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -131,6 +167,13 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // The generated Kotlin bindings for the Rust protocol engine call into libgossip_ffi.so through JNA.
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
+
+    // The relay WebSocket (transport/RelayConnection.kt). Pinned; 4.x is the line that supports minSdk 29 with a plain JVM
+    // artifact. okio comes in transitively.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // Security / crypto
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.google.crypto.tink:tink-android:1.15.0")
@@ -166,8 +209,12 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
+    // The JVM flavour of JNA (the @aar above carries Android's native dispatcher, which a host JVM cannot load).
+    testImplementation("net.java.dev.jna:jna:5.17.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
     // bcprov-jdk18on (used by NoiseSession.kt's Noise_IK handshake) is a signed jar. The
@@ -194,4 +241,11 @@ dependencies {
 
 configurations.matching { it.name == "testCompileClasspath" || it.name == "testRuntimeClasspath" }.configureEach {
     exclude(group = "org.bouncycastle", module = "bcprov-jdk18on")
+}
+
+// The engine must exist before anything compiles, and unit tests need its host build.
+tasks.named("preBuild") { dependsOn(buildGossipCore) }
+tasks.withType<Test>().configureEach {
+    dependsOn(buildGossipCoreHost)
+    systemProperty("jna.library.path", gossipCoreHostLibDir.absolutePath)
 }
