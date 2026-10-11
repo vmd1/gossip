@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import GossipCoreKit
 import ImageIO
 
 /// Mirrors Android notifications (`notification.posted` / `notification.removed`) onto
@@ -30,9 +31,9 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     private let identity: IdentityKeyStore
     private let notificationCenter = UNUserNotificationCenter.current()
 
-    /// Local identifiers of mirrored notifications we believe are still showing — see
-    /// `pollForDismissedNotifications`'s doc for why this exists.
-    private var trackedIdentifiers: Set<String> = []
+    /// What we believe is showing, what was removed, and what the user dismissed here; see `NotificationMirrorBook`
+    /// and `pollForDismissedNotifications`'s doc for why it exists.
+    private let book = NotificationMirrorBook()
     private var dismissPollTimer: Timer?
 
     /// Drives the "notifications disabled" warning in `MenuBarView`. Mirroring degrades
@@ -96,6 +97,12 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         transportManager?.router.register(prefix: "notification.removed") { [weak self] envelope in
             self?.handleRemoved(envelope)
         }
+        // Which notifications each phone is still mirroring is a synchronised state slot (see `docs/plans/state-sync.md`):
+        // the core keeps it correct across disconnects, so a removal that was lost is repaired here.
+        transportManager?.addOnStateChanged { [weak self] change in
+            guard change.slot == "notification.active" else { return }
+            self?.handleActive(sender: change.deviceId, valueJSON: change.valueJSON)
+        }
     }
 
     /// Requests local-notification authorization if not already granted/denied.
@@ -122,6 +129,9 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             return
         }
 
+        let postedIdentifier = localIdentifier(for: posted.id, sourceDeviceId: envelope.senderId)
+        if book.isStale(postedIdentifier, postedAt: posted.timestamp) { return }
+
         let content = UNMutableNotificationContent()
         content.title = String(posted.appName.prefix(80))
         content.subtitle = String(posted.title.prefix(200))
@@ -133,8 +143,10 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
         attachIcon(base64: posted.iconBase64, to: content) { [weak self] contentWithIcon in
             guard let self else { return }
+            // The removal may have arrived while the icon was being decoded.
+            if self.book.isStale(postedIdentifier, postedAt: posted.timestamp) { return }
             let request = UNNotificationRequest(
-                identifier: self.localIdentifier(for: posted.id, sourceDeviceId: envelope.senderId),
+                identifier: postedIdentifier,
                 content: contentWithIcon,
                 trigger: nil
             )
@@ -142,8 +154,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
                 if let error {
                     gossipError("Gossip: failed to post mirrored notification: \(error)")
                 } else {
-                    // `trackedIdentifiers` is read by the dismiss poller on main; mutate it there too.
-                    DispatchQueue.main.async { self?.trackedIdentifiers.insert(request.identifier) }
+                    self?.book.recordShown(request.identifier)
                 }
             }
         }
@@ -155,8 +166,23 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             return
         }
         let identifier = localIdentifier(for: removed.id, sourceDeviceId: envelope.senderId)
-        DispatchQueue.main.async { [weak self] in self?.trackedIdentifiers.remove(identifier) }
+        book.recordRemoval(identifier, at: envelope.ts)
         notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    /// The `notification.active` slot of `sender`: the ids it is still mirroring (`nil` when cleared, which means none).
+    /// Anything from that phone shown here that is not on the list (and has been here for more than `syncGrace`) was a
+    /// lost `notification.removed`, so it is removed. Anything the user dismissed here that the phone still lists was a
+    /// lost `notification.dismiss`, so it is sent again. Applying the same list twice changes nothing.
+    private func handleActive(sender: String, valueJSON: String?) {
+        let ids = valueJSON
+            .flatMap { try? JSONDecoder().decode(NotificationSyncPayload.self, from: Data($0.utf8)) }?.ids ?? []
+        let live = Set(ids.map { localIdentifier(for: $0, sourceDeviceId: sender) })
+        let outcome = book.applySync(liveIdentifiers: live, owns: { [weak self] in self?.decodeLocalIdentifier($0)?.sourceDeviceId == sender })
+        if !outcome.remove.isEmpty { notificationCenter.removeDeliveredNotifications(withIdentifiers: outcome.remove) }
+        for identifier in outcome.redismiss {
+            if let (source, androidId) = decodeLocalIdentifier(identifier) { sendDismiss(id: androidId, to: source) }
+        }
     }
 
     /// Self-healing substitute for a dismiss callback macOS won't reliably give us: unlike
@@ -165,7 +191,7 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     /// (confirmed directly — zero deliveries for a swipe-dismissed banner in testing, even
     /// with unconditional logging at the very top of that delegate method, so this isn't a
     /// bug in how we handle the callback, the callback itself just doesn't come). Instead,
-    /// periodically diff the real delivered-notifications list against `trackedIdentifiers`
+    /// periodically diff the real delivered-notifications list against the book of shown notifications
     /// (everything we posted and haven't already resolved): anything that dropped out
     /// without us removing it ourselves was dismissed by the user, so tell Android.
     private func startDismissPolling() {
@@ -177,15 +203,15 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     }
 
     private func pollForDismissedNotifications() {
-        guard !trackedIdentifiers.isEmpty else { return }
+        guard !book.isEmpty else { return }
         notificationCenter.getDeliveredNotifications { [weak self] delivered in
             guard let self else { return }
             let stillShowing = Set(delivered.map { $0.request.identifier })
-            let dismissedIdentifiers = self.trackedIdentifiers.subtracting(stillShowing)
+            let dismissedIdentifiers = self.book.shownIdentifiers.subtracting(stillShowing)
             guard !dismissedIdentifiers.isEmpty else { return }
             DispatchQueue.main.async {
                 for identifier in dismissedIdentifiers {
-                    self.trackedIdentifiers.remove(identifier)
+                    self.book.recordDismissedHere(identifier)
                     if let (sourceDeviceId, androidId) = self.decodeLocalIdentifier(identifier) {
                         self.sendDismiss(id: androidId, to: sourceDeviceId)
                     }
@@ -234,7 +260,8 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
     private func sendReply(id: String, text: String, to sourceDeviceId: String) {
         guard let transportManager else { return }
         do {
-            let payloadData = try JSONEncoder().encode(NotificationReplyPayload(id: id, text: text, attemptId: UUID().uuidString))
+            // The payload shape (and the per-attempt id the receiver de-duplicates on) is the core's.
+            let payloadData = Data(GossipCoreKit.notificationReplyPayload(notificationId: id, text: text, attemptId: UUID().uuidString).utf8)
             let payloadJSON = try JSONDecoder().decode(JSONValue.self, from: payloadData)
             let envelope = Envelope(
                 type: "notification.reply",
@@ -329,7 +356,7 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
             // In practice macOS rarely if ever delivers this (see `pollForDismissedNotifications`,
             // the actual mechanism this relies on) — kept as a fast path in case some
             // interaction or future macOS version does provide it.
-            trackedIdentifiers.remove(response.notification.request.identifier)
+            book.forget(response.notification.request.identifier)
             sendDismiss(id: androidId, to: sourceDeviceId)
         default:
             break
@@ -354,14 +381,9 @@ struct NotificationRemovedPayload: Codable {
     let id: String
 }
 
-/// `attemptId` identifies this reply *attempt*, not the notification (`id` is reused
-/// across distinct replies to the same notification) — the Android receiver keys its
-/// recently-handled dedupe cache off it so a duplicate delivery can't fire the same
-/// real-world reply twice. See `NotificationListenerImpl.handleReply` (Android).
-struct NotificationReplyPayload: Codable {
-    let id: String
-    let text: String
-    let attemptId: String
+/// The `notification.active` state slot: ids of every notification the phone is still mirroring. See `handleActive`.
+struct NotificationSyncPayload: Codable {
+    let ids: [String]
 }
 
 struct NotificationDismissPayload: Codable {

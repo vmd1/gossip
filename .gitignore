@@ -26,3 +26,7 @@ mac/Config/Signing.local.xcconfig
 *.jks
 *.pfx
 *.password
+
+# Local security audit reports (never commit)
+.security/
+mac/Config/Signing.local.xcconfig.bak

@@ -8,23 +8,6 @@ final class ScreenCipherTests: XCTestCase {
         })
     }
 
-    func testSharedVectorsMatch() throws {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("schema/screen-cipher-vectors.json")
-        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
-        let secret = data(hex: root["secretHex"] as! String)
-        let sessionId = root["sessionId"] as! String
-        for c in root["cases"] as! [[String: Any]] {
-            let viewer = c["viewerSends"] as! Bool
-            let counter = UInt64(c["counter"] as! Int)
-            let plaintext = data(hex: c["plaintextHex"] as! String)
-            let sealed = data(hex: c["sealedHex"] as! String)
-            XCTAssertEqual(try ScreenCipher(secret: secret, sessionId: sessionId, viewer: viewer).seal(plaintext, counter: counter), sealed)
-            // the opposite end opens it
-            XCTAssertEqual(try ScreenCipher(secret: secret, sessionId: sessionId, viewer: !viewer).open(sealed), plaintext)
-        }
-    }
-
     func testRejectsReplayForgeryWrongSessionAndReflection() throws {
         let secret = Data(repeating: 9, count: 32)
         let viewer = ScreenCipher(secret: secret, sessionId: "s1", viewer: true)

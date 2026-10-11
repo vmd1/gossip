@@ -120,16 +120,12 @@ class PairingViewModel(
             val remoteStaticKey = RosterGossipManager.decodeKey(payload.responderPublicKey)
             if (remoteStaticKey == null) { failWith("Unreadable QR code"); return@launch }
             _uiState.value = PairingUiState.Handshaking(transportManager.pairingCodeFor(remoteStaticKey))
-            transportManager.connect(
-                peer.host, peer.port, remoteStaticKey,
-                deviceId = payload.responderDeviceId, pairingToken = payload.pairingToken
-            )
 
-            // The responder acks the handshake *before* its user confirms, so a plain
-            // "connected" proves nothing about consent. Pairing only counts once the responder
-            // sends its first message, which it does only after its user taps Confirm. The row is
-            // added first (the QR carries the key and signing key) so that message verifies;
-            // it is removed again if the responder never confirms.
+            // The responder acks the handshake *before* its user confirms, so a plain "connected" proves nothing about
+            // consent. Pairing only counts once the responder sends its first message, which it does only after its
+            // user taps Confirm. The row is added first (the QR carries the key and signing key) so that message
+            // verifies and the engine will dial a device it already trusts; it is removed again if the responder
+            // never confirms.
             val rowAlreadyTrusted = trustedDevicesStore.isTrusted(payload.responderDeviceId)
             if (!rowAlreadyTrusted) {
                 // Provisional rows are left out of roster gossip until the other side confirms.

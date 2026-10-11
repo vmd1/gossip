@@ -26,7 +26,6 @@ import dev.vmd1.gossip.transport.ConnectionState
 import dev.vmd1.gossip.transport.MessageRouter
 import dev.vmd1.gossip.transport.TransportManager
 import dev.vmd1.gossip.transport.TransportManagerHolder
-import dev.vmd1.gossip.transport.newlyConnectedPeers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -97,14 +96,32 @@ class SyncForegroundService : Service() {
         )
         controlSessionState.register(messageRouter)
         observeRemoteAccess()
+        val relayDirectory = dev.vmd1.gossip.transport.RelayDirectoryService.getInstance(applicationContext)
         transportManager = TransportManager(
             context = applicationContext,
             identityKeyStore = identity,
             trustedDevicesStore = trustedDevices,
             messageRouter = messageRouter,
             deviceType = deviceType,
-            isMessageAllowed = featureSettings::isMessageAllowed
+            isMessageAllowed = featureSettings::isMessageAllowed,
+            initialDisabledFeatures = featureSettings.disabled.value.map(::coreFeatureKey),
+            relayTopicStore = dev.vmd1.gossip.transport.RelayTopicStore.getInstance(applicationContext),
+            relayDirectory = relayDirectory
         )
+        // The relay is opt-in (Settings > Relay): push the user's choice to the engine now and on every change. With the
+        // custom address (if set) wins, then the relay the directory names, then the built-in default.
+        val relaySettings = dev.vmd1.gossip.transport.RelaySettings.getInstance(applicationContext)
+        shareRelaySettings(relaySettings)
+        kotlinx.coroutines.flow.combine(relaySettings.enabled, relaySettings.customUrl, relayDirectory.state) { _, _, directory ->
+            relayDirectory.wanted = relaySettings.enabled.value // polled only while the relay is on
+            relaySettings.configuration(directory.cachedOrigin, directory.isFresh, directory.awaitingFirstAnswer)
+        }
+            .onEach { transportManager.setRelayEnabled(it.enabled, it.origin) }
+            .launchIn(serviceScope)
+        // The engine applies the same per-feature gate on delivery, so it needs to hear about every change.
+        featureSettings.disabled
+            .onEach { transportManager.setDisabledFeatures(it.map(::coreFeatureKey)) }
+            .launchIn(serviceScope)
         mediaControlBridge = MediaControlBridge(
             context = applicationContext,
             messageRouter = messageRouter,
@@ -119,7 +136,6 @@ class SyncForegroundService : Service() {
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
             transportManager = transportManager,
-            messageRouter = messageRouter,
             deviceId = identity.deviceId,
             scope = serviceScope,
             shizukuManager = shizukuManager,
@@ -140,15 +156,7 @@ class SyncForegroundService : Service() {
             messageRouter = messageRouter,
             scope = serviceScope
         )
-        rosterGossipManager = RosterGossipManager(
-            transportManager = transportManager,
-            trustedDevicesStore = trustedDevices,
-            identityKeyStore = identity,
-            messageRouter = messageRouter,
-            scope = serviceScope,
-            deviceName = Build.MODEL ?: "Android device",
-            deviceType = deviceType
-        )
+        rosterGossipManager = RosterGossipManager(transportManager)
         bleProximityMonitor = BLEProximityMonitor(
             context = applicationContext,
             identityKeyStore = identity,
@@ -159,7 +167,6 @@ class SyncForegroundService : Service() {
             transportManager = transportManager,
             trustedDevicesStore = trustedDevices,
             identityKeyStore = identity,
-            messageRouter = messageRouter,
             scope = serviceScope,
             onKeysChanged = { bleProximityMonitor.rebuildFingerprintMap() }
         )
@@ -207,7 +214,6 @@ class SyncForegroundService : Service() {
             context = applicationContext,
             identityKeyStore = identity,
             transportManager = transportManager,
-            messageRouter = messageRouter,
             scope = serviceScope,
             deviceType = deviceType,
             shizukuManager = shizukuManager,
@@ -218,7 +224,6 @@ class SyncForegroundService : Service() {
             context = applicationContext,
             trustedDevicesStore = trustedDevices,
             bleProximityMonitor = bleProximityMonitor,
-            messageRouter = messageRouter,
             transportManager = transportManager,
             identityKeyStore = identity,
             localDeviceType = deviceType,
@@ -249,23 +254,21 @@ class SyncForegroundService : Service() {
         // peers' levels for the paired-devices list, alerts when a peer runs low.
         batterySyncManager = dev.vmd1.gossip.features.battery.BatterySyncManager(
             context = applicationContext,
-            deviceId = identity.deviceId,
-            messageRouter = messageRouter,
-            send = { envelope -> transportManager.send(envelope) },
             scope = serviceScope,
+            setState = { slot, value -> transportManager.setState(slot, value) },
+            stateChanges = transportManager.stateChanges,
             onLowBattery = { senderId, level -> showLowBatteryNotification(senderId, level) },
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.BATTERY) }
         )
         batterySyncManager.start()
 
-        // Display size, so the Mac's Universal Control layout draws this device at its real shape
-        // before any session exists. Reconciled on every new peer + the 60s loop below.
+        // Display size, so the Mac's Universal Control layout draws this device at its real shape before any session
+        // exists. A state slot: the core keeps it correct, and it is republished when the display rotates.
         displayInfoSync = dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync(
-            deviceId = identity.deviceId,
-            send = { envelope -> transportManager.send(envelope) },
-            scope = serviceScope,
+            setState = { slot, value -> transportManager.setState(slot, value) },
             readSize = { dev.vmd1.gossip.features.universalcontrol.DisplayInfoSync.readFromSystem(applicationContext) }
         )
+        displayInfoSync.start(applicationContext)
 
         // Developer hooks (adb broadcasts that toggle the hotspot, read hotspot credentials and the clipboard, drive
         // screen mirroring...). They are exported receivers that log sensitive values, so they exist ONLY in
@@ -429,60 +432,7 @@ class SyncForegroundService : Service() {
             }
             .launchIn(serviceScope)
 
-        // Initial syncs fire for every *newly connected peer*, not just when the aggregate
-        // state flips to CONNECTED: a second peer connecting while the first is still up
-        // causes no flip, and would otherwise wait for the 60s resync loops. The sends are
-        // broadcasts and idempotent, so an already-connected peer just gets a harmless repeat.
-        transportManager.connectedDeviceIds
-            .newlyConnectedPeers()
-            .onEach {
-                // Two devices that were apart can each have a different real DND
-                // state with neither side having done anything wrong — nothing
-                // synced them yet. Report on every fresh connection (not just once
-                // ever) so a reconnect after being out of range reconciles too; see
-                // DndSyncManager.reportInitialSyncState's doc for why this can't be
-                // a plain reportCurrentState() call.
-                dndSyncManager.reportInitialSyncState()
-                // Same reasoning: a Mac that reconnects after being disconnected
-                // (or missed the original event-driven publish to any other race)
-                // otherwise never learns this device is currently playing anything
-                // until the *next* playback/metadata change, which might be a long
-                // time or never — mediaControlBridge.start() only ever published
-                // once, at service startup, with no reconnect-triggered resend.
-                mediaControlBridge.resyncNowPlaying()
-                // Same reasoning as dndSyncManager.reportInitialSyncState above: a
-                // peer that reconnects (or missed the original event-driven report
-                // to any race) shouldn't have to wait for this phone's *next*
-                // hotspot toggle to learn its current state.
-                hotspotStateManager.periodicResync()
-                // Same reasoning for battery.update: a reconnecting peer shouldn't wait
-                // for the next 1% level change to learn this device's battery.
-                batterySyncManager.reportInitialSyncState()
-                displayInfoSync.resync()
-            }
-            .launchIn(serviceScope)
-
         runFallbackDialLoop(trustedDevices)
-        runDndResyncLoop()
-        runRosterResyncLoop()
-        runMediaResyncLoop()
-        runHotspotStateResyncLoop()
-        runBatteryResyncLoop()
-    }
-
-    /** Self-healing backstop for `battery.update`, on top of the event-driven publish (a local
-     *  battery change) and the on-connect resend: re-sends the current reading every 60s while
-     *  connected, so a dropped or mis-timed report never leaves peers stale. */
-    private fun runBatteryResyncLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                delay(DND_RESYNC_INTERVAL_MS)
-                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
-                    batterySyncManager.periodicResync()
-                    displayInfoSync.resync()
-                }
-            }
-        }
     }
 
     /** Persistent, non-dismissible indicator while another device is viewing this screen or its cursor is here. */
@@ -570,75 +520,6 @@ class SyncForegroundService : Service() {
         runCatching { manager.notify(BATTERY_NOTIFICATION_BASE + (senderId.hashCode() and 0xFFFF), n) }
     }
 
-    /** Self-healing backstop for `hotspot.state_update`, on top of the event-driven
-     *  publish (a local `WIFI_AP_STATE_CHANGED_ACTION`) and the on-connect resend above:
-     *  periodically re-sends this phone's current hotspot state while connected. Mirrors
-     *  [runDndResyncLoop]/[runMediaResyncLoop] — a no-op on a tablet/Mac (never
-     *  originates this) and cheap on a phone regardless of whether the state has
-     *  actually changed recently. */
-    private fun runHotspotStateResyncLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                delay(DND_RESYNC_INTERVAL_MS)
-                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
-                    hotspotStateManager.periodicResync()
-                }
-            }
-        }
-    }
-
-    /** Self-healing backstop for roster gossip, on top of the event-driven paths (a fresh
-     *  connection, or a brand-new pairing): periodically re-broadcasts the full local
-     *  roster to every connected peer. Mirrors [runDndResyncLoop] — safe to call
-     *  repeatedly, since re-adding an already-trusted device is a no-op (see
-     *  `RosterGossipManager.handleRosterUpdate`). */
-    private fun runRosterResyncLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                delay(ROSTER_RESYNC_INTERVAL_MS)
-                rosterGossipManager.periodicResync()
-                beaconKeyManager.periodicResync()
-            }
-        }
-    }
-
-    /** Self-healing backstop for DND sync, on top of the event-driven paths
-     *  ([DndSyncManager.reportCurrentState] on a local change, `reportInitialSyncState()` on
-     *  every fresh connect): periodically re-sends this device's current state as another
-     *  `isInitialSync` OR-merge report while connected. Event-driven sync alone has no
-     *  recovery if a single message is ever dropped, sent while transiently disconnected, or
-     *  missed by a race — the two devices then stay silently mismatched indefinitely, which is
-     *  exactly the failure mode several bugs in this DND feature turned out to be. Reusing the
-     *  OR-merge (rather than a plain mirror) keeps this safe to call repeatedly: it only acts
-     *  when there's a genuine disagreement to fix, so healthy periods are no-ops. */
-    private fun runDndResyncLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                delay(DND_RESYNC_INTERVAL_MS)
-                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
-                    dndSyncManager.reportInitialSyncState()
-                }
-            }
-        }
-    }
-
-    /** Self-healing backstop for `media.nowplaying`, on top of the event-driven publish
-     *  (a playback/metadata change) and the on-connect resend above: periodically
-     *  re-sends this device's current now-playing snapshot while connected. Mirrors
-     *  [runDndResyncLoop] — a no-op both when nothing is playing and when a peer
-     *  already has this exact snapshot, since it's the same publish a real change
-     *  would trigger. */
-    private fun runMediaResyncLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                delay(DND_RESYNC_INTERVAL_MS)
-                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
-                    mediaControlBridge.resyncNowPlaying()
-                }
-            }
-        }
-    }
-
     /** Android only ever listens for inbound connections (`transportManager.listen()`) on
      *  the LAN — Mac-initiated discovery/dialing (Bonjour browse + `NWConnection`) doesn't
      *  reach a device that isn't on the same LAN/mDNS domain (e.g. different networks
@@ -676,6 +557,31 @@ class SyncForegroundService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Relay settings follow the mesh: this device's choice is the `relay.config` slot and a paired device's newer edit is
+     * adopted ([dev.vmd1.gossip.transport.RelaySettings.adopt]; the newest edit wins, see
+     * `desktop/core/src/features/relay_config.rs`).
+     */
+    private fun shareRelaySettings(settings: dev.vmd1.gossip.transport.RelaySettings) {
+        val slot = uniffi.gossip_ffi.relayConfigSlot()
+        fun publish(config: uniffi.gossip_ffi.RelayConfig) = transportManager.setState(
+            slot, kotlinx.serialization.json.Json.parseToJsonElement(uniffi.gossip_ffi.relayConfigPayload(config))
+        )
+        settings.onChange = { publish(it) }
+        if (settings.changedAt > 0) publish(settings.config)
+        serviceScope.launch {
+            transportManager.stateChanges.collect { change ->
+                if (change.slot != slot) return@collect
+                val parsed = change.value?.toString()?.let { uniffi.gossip_ffi.relayConfigParse(it) } ?: return@collect
+                // A malformed custom address from a peer must not become this device's relay.
+                val url = parsed.customUrl
+                val normalized = if (url == null) null else (dev.vmd1.gossip.transport.RelayEndpointPolicy.normalizeOrigin(url)
+                    as? dev.vmd1.gossip.transport.RelayEndpointPolicy.Result.Ok)?.origin ?: return@collect
+                settings.adopt(parsed.copy(customUrl = normalized))
+            }
+        }
+    }
+
     override fun onDestroy() {
         mediaControlBridge.stop()
         dndSyncManager.stop()
@@ -699,6 +605,8 @@ class SyncForegroundService : Service() {
     fun transportManager(): TransportManager = transportManager
 
     fun dndSyncManager(): DndSyncManager = dndSyncManager
+
+    fun lockOnLeaveManager(): LockOnLeaveManager = lockOnLeaveManager
 
     fun rosterGossipManager(): RosterGossipManager = rosterGossipManager
 
@@ -772,7 +680,9 @@ class SyncForegroundService : Service() {
          *  app posts (e.g. a manual test notification). */
         const val NOTIFICATION_ID = 1001
         private const val FALLBACK_DIAL_INTERVAL_MS = 15_000L
-        private const val DND_RESYNC_INTERVAL_MS = 60_000L
-        private const val ROSTER_RESYNC_INTERVAL_MS = 300_000L
     }
 }
+
+/** The engine's key for a feature (`desktop/core` `Feature::key`): the enum name in lowerCamelCase. */
+private fun coreFeatureKey(feature: dev.vmd1.gossip.features.settings.Feature): String =
+    feature.name.lowercase().split('_').mapIndexed { i, part -> if (i == 0) part else part.replaceFirstChar { it.uppercase() } }.joinToString("")

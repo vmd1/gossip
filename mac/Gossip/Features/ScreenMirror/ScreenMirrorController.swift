@@ -74,6 +74,10 @@ final class ScreenMirrorController: ObservableObject {
             lastError = "Screen mirroring is turned off in Settings."
             return
         }
+        guard !transport.isRelayed(deviceId) else {
+            lastError = "\(deviceName) is connected through the relay. Screen mirroring needs both devices on the same network."
+            return
+        }
         guard transport.hostWithZone(for: deviceId) != nil else {
             lastError = "\(deviceName) isn't connected right now."
             return

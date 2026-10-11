@@ -6,7 +6,6 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -32,10 +31,8 @@ class ScreenCipherTest {
             val viewerSends = o["viewerSends"]!!.jsonPrimitive.boolean
             val plaintext = hex(o["plaintextHex"]!!.jsonPrimitive.content)
             val sealed = hex(o["sealedHex"]!!.jsonPrimitive.content)
-            val counter = o["counter"]!!.jsonPrimitive.long
             // deviceSide = !viewerSends is the *receiving* end for this vector
             assertArrayEquals(plaintext, ScreenCipher(secret, sessionId, deviceSide = viewerSends).open(sealed))
-            assertArrayEquals(sealed, ScreenCipher(secret, sessionId, deviceSide = !viewerSends).seal(plaintext, counter))
         }
     }
 

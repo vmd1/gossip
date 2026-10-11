@@ -2,53 +2,58 @@ package dev.vmd1.gossip.features.universalcontrol
 
 import android.content.Context
 import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
-import dev.vmd1.gossip.util.Log
 import android.view.Display
-import dev.vmd1.gossip.protocol.Envelope
-import dev.vmd1.gossip.protocol.MessageType
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-
-private const val TAG = "DisplayInfoSync"
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import uniffi.gossip_ffi.DisplayInfo
+import uniffi.gossip_ffi.displayPayload
+import uniffi.gossip_ffi.displaySlot
 
 /** The display's logical, rotation-applied pixel size — what the Mac's layout window draws. */
 data class DisplaySize(val width: Int, val height: Int, val rotation: Int)
 
 /**
- * Implements `display.info` (see `schema/message-types.md`): broadcasts this device's display size so a
- * Mac can draw an accurately shaped card in its Universal Control layout before any control session exists.
- *
- * **Reconciled**: [resync] is called on every newly connected peer and every 60s (from
- * `SyncForegroundService`), so a dropped send or a rotation that happened while disconnected self-heals.
- * Receivers treat it as last-write-wins per sender, so a repeat is a no-op.
+ * Publishes this device's display size as the `control.display` state slot (see `schema/message-types.md` and
+ * `docs/plans/state-sync.md`), so a Mac can draw an accurately shaped card in its Universal Control layout before any
+ * control session exists. The core sends the slot to every device that connects later and repairs it periodically, so a
+ * dropped send or a rotation that happened while disconnected heals itself; [publish] is called at start and on every
+ * display change (rotation, resize) and is a no-op when the size is unchanged.
  */
 class DisplayInfoSync(
-    private val deviceId: String,
-    private val send: suspend (Envelope) -> Unit,
-    private val scope: CoroutineScope,
+    private val setState: (slot: String, value: JsonElement?) -> Unit,
     private val readSize: () -> DisplaySize?
 ) {
-    fun resync() {
+    private var listener: DisplayManager.DisplayListener? = null
+
+    /** Publishes the current size (the core ignores an unchanged one). Nothing is published if it cannot be read. */
+    fun publish() {
         val size = readSize() ?: return
-        val envelope = Envelope(
-            type = MessageType.DISPLAY_INFO,
-            senderId = deviceId,
-            broadcast = true,
-            payload = payload(size)
-        )
-        scope.launch { runCatching { send(envelope) }.onFailure { Log.w(TAG, "Failed to send display.info", it) } }
+        val value = displayPayload(DisplayInfo(size.width.toUInt(), size.height.toUInt(), size.rotation.coerceIn(0, 3).toUByte()))
+        setState(displaySlot(), Json.parseToJsonElement(value))
+    }
+
+    /** Publishes now and again whenever the display changes (a rotation, a fold). */
+    fun start(context: Context) {
+        publish()
+        val manager = context.getSystemService(DisplayManager::class.java) ?: return
+        val l = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) { if (displayId == Display.DEFAULT_DISPLAY) publish() }
+        }
+        manager.registerDisplayListener(l, Handler(Looper.getMainLooper()))
+        listener = l
+    }
+
+    fun stop(context: Context) {
+        listener?.let { context.getSystemService(DisplayManager::class.java)?.unregisterDisplayListener(it) }
+        listener = null
     }
 
     companion object {
-        fun payload(size: DisplaySize) = buildJsonObject {
-            put("width", JsonPrimitive(size.width))
-            put("height", JsonPrimitive(size.height))
-            put("rotation", JsonPrimitive(size.rotation))
-        }
-
         @Suppress("DEPRECATION")
         fun readFromSystem(context: Context): DisplaySize? {
             val display = context.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY) ?: return null

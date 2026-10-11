@@ -1,4 +1,5 @@
 import Foundation
+import GossipCoreKit
 import Combine
 import CoreGraphics
 
@@ -218,7 +219,7 @@ final class UniversalControlManager: ObservableObject {
         applyAdvertisedSize(deviceId: id, width: info.width, height: info.height)
     }
 
-    /// Records a device's real display size, from a live session or a `display.info` message (which arrives
+    /// Records a device's real display size, from a live session or a `control.display` slot (which arrives
     /// without any session, so cards are right before the first connect). A repeat is a no-op.
     func applyAdvertisedSize(deviceId id: String, width: Int, height: Int) {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -472,17 +473,16 @@ final class UniversalControlManager: ObservableObject {
 
     // MARK: Mesh messages
 
-    /// `display.info`: a device's real display size, sent without any control session. Idempotent.
-    func handleDisplayInfo(_ envelope: Envelope) {
-        guard let size = Self.parseDisplaySize(envelope.payload) else { return }
-        let id = envelope.senderId
-        DispatchQueue.main.async { [weak self] in self?.applyAdvertisedSize(deviceId: id, width: size.width, height: size.height) }
+    /// The `control.display` slot: a device's real display size, sent without any control session. Idempotent; a cleared slot
+    /// or a size out of range changes nothing.
+    func handleDisplaySlot(deviceId: String, valueJSON: String?) {
+        guard let valueJSON, let size = Self.parseDisplaySize(valueJSON) else { return }
+        DispatchQueue.main.async { [weak self] in self?.applyAdvertisedSize(deviceId: deviceId, width: size.width, height: size.height) }
     }
 
-    static func parseDisplaySize(_ payload: JSONValue) -> (width: Int, height: Int)? {
-        guard let w = payload["width"]?.numberValue, let h = payload["height"]?.numberValue,
-              w >= 1, h >= 1, w <= 20_000, h <= 20_000 else { return nil }
-        return (Int(w), Int(h))
+    /// The display size in a `control.display` slot value (validated by the core), or `nil`.
+    static func parseDisplaySize(_ valueJSON: String) -> (width: Int, height: Int)? {
+        GossipCoreKit.displayParse(valueJson: valueJSON).map { (Int($0.width), Int($0.height)) }
     }
 
     func handleMesh(_ envelope: Envelope) {

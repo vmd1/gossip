@@ -7,7 +7,18 @@ import androidx.security.crypto.MasterKey
 import dev.vmd1.gossip.protocol.DeviceType
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
 
 /** One row of the `TrustedDevices` table: deviceId -> publicKey -> metadata. */
 data class TrustedDevice(
@@ -86,13 +97,30 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
 
     private val provisional = HashSet<String>()
 
+    /** Called (on whatever thread made the change, after it is applied) whenever the table changes. Listeners must not
+     *  block or take locks that a thread holding this store's monitor could be waiting on: hand the work to another thread. */
+    private val changeListeners = CopyOnWriteArrayList<() -> Unit>()
+
+    fun addChangeListener(listener: () -> Unit) { changeListeners.add(listener) }
+
+    private fun notifyChanged() {
+        for (listener in changeListeners) runCatching { listener() }
+    }
+
     /** A row added during pairing but not yet confirmed by the other side; kept out of roster gossip. In memory only. */
-    @Synchronized fun markProvisional(deviceId: String) { provisional.add(deviceId) }
-    @Synchronized fun clearProvisional(deviceId: String) { provisional.remove(deviceId) }
+    @Synchronized fun markProvisional(deviceId: String) { provisional.add(deviceId); notifyChanged() }
+    @Synchronized fun clearProvisional(deviceId: String) { provisional.remove(deviceId); notifyChanged() }
     @Synchronized fun isProvisional(deviceId: String): Boolean = deviceId in provisional
+    @Synchronized fun provisionalIds(): List<String> = provisional.toList()
 
     @Synchronized
     fun addDevice(device: TrustedDevice) {
+        writeDevice(device)
+        notifyChanged()
+    }
+
+    /** Writes the row (and clears any tombstone) without notifying listeners. */
+    private fun writeDevice(device: TrustedDevice) {
         val row = TrustedDeviceRow(
             deviceId = device.deviceId,
             publicKeyBase64 = Base64.getEncoder().encodeToString(device.publicKey),
@@ -167,6 +195,7 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     @Synchronized
     fun remove(deviceId: String) {
         prefs.edit().remove(rowKey(deviceId)).apply()
+        notifyChanged()
     }
 
     /** Removes the device and records a sticky tombstone so gossip can't quietly bring it
@@ -176,11 +205,101 @@ class TrustedDevicesStore internal constructor(private val prefs: SharedPreferen
     fun revoke(deviceId: String, revokedAt: Long = System.currentTimeMillis()) {
         val latest = maxOf(revokedAt(deviceId) ?: 0L, revokedAt)
         prefs.edit().remove(rowKey(deviceId)).putLong(revokedKey(deviceId), latest).apply()
+        notifyChanged()
     }
 
     @Synchronized
     fun revokedAt(deviceId: String): Long? =
         if (prefs.contains(revokedKey(deviceId))) prefs.getLong(revokedKey(deviceId), 0L) else null
+
+    // ---- Rust engine snapshot -------------------------------------------------------------------------------------
+
+    /**
+     * The trust table in the Rust engine's snapshot format (`desktop/core` `TrustSnapshot`). The engine is created from
+     * this, and handed a fresh copy whenever the app edits the table itself (see `CoreBridge.syncTrustFromStore`).
+     * App-only fields (fallback host, lock-on-leave) never go to the engine.
+     */
+    @Synchronized
+    fun exportCoreSnapshot(): String {
+        val enc = Base64.getEncoder()
+        val devices = buildJsonArray {
+            for (d in allDevices()) {
+                add(buildJsonObject {
+                    put("device_id", JsonPrimitive(d.deviceId))
+                    put("public_key", JsonPrimitive(enc.encodeToString(d.publicKey)))
+                    put("device_name", JsonPrimitive(d.deviceName))
+                    put("device_type", JsonPrimitive(d.deviceType.wireValue))
+                    put("added_at", JsonPrimitive(d.addedAt))
+                    put("signing_public_key", d.signingPublicKey?.let { JsonPrimitive(enc.encodeToString(it)) } ?: JsonNull)
+                    put("beacon_key", d.beaconKey?.let { JsonPrimitive(enc.encodeToString(it)) } ?: JsonNull)
+                })
+            }
+        }
+        val revoked = buildJsonObject {
+            for ((key, value) in prefs.all) {
+                if (key.startsWith(REVOKED_PREFIX) && value is Long) put(key.removePrefix(REVOKED_PREFIX), JsonPrimitive(value))
+            }
+        }
+        return buildJsonObject {
+            put("devices", devices)
+            put("revoked", revoked)
+        }.toString()
+    }
+
+    /**
+     * Applies a snapshot the engine reported after its trust changed (a pairing was confirmed, a roster introduced a
+     * device, a revocation arrived, a signing key was learned from a handshake). Existing rows keep their app-only
+     * fields and a new row is added; only a device the engine has *revoked* is removed. "Missing from the snapshot" is
+     * deliberately not a removal: the app may have added a row after the engine produced it. Returns whether anything
+     * changed.
+     */
+    @Synchronized
+    fun importCoreSnapshot(json: String): Boolean {
+        val root = runCatching { Json.parseToJsonElement(json).jsonObject }.getOrNull() ?: return false
+        val rows = (root["devices"] as? JsonArray) ?: return false
+        val tombstones = (root["revoked"] as? JsonObject)?.mapNotNull { (id, v) ->
+            (v as? JsonPrimitive)?.longOrNull?.let { id to it }
+        }?.toMap() ?: emptyMap()
+        val dec = Base64.getDecoder()
+        var changed = false
+        val seen = HashSet<String>()
+        // Applied after the loop so one batched write is not notified as many separate changes.
+        for (element in rows) {
+            val row = element as? JsonObject ?: continue
+            val id = row["device_id"]?.jsonPrimitive?.contentOrNull ?: continue
+            val key = row["public_key"]?.jsonPrimitive?.contentOrNull?.let { runCatching { dec.decode(it) }.getOrNull() } ?: continue
+            val name = row["device_name"]?.jsonPrimitive?.contentOrNull ?: continue
+            val typeRaw = row["device_type"]?.jsonPrimitive?.contentOrNull ?: continue
+            val signing = row["signing_public_key"]?.jsonPrimitive?.contentOrNull?.let { runCatching { dec.decode(it) }.getOrNull() }
+            seen.add(id)
+            val existing = getDevice(id)
+            if (existing != null) {
+                // Only the signing key (learned from an authenticated handshake) can have changed on an existing row.
+                if (signing != null && existing.signingPublicKey?.contentEquals(signing) != true) {
+                    writeDevice(existing.copy(signingPublicKey = signing))
+                    changed = true
+                }
+            } else if (DeviceType.entries.any { it.wireValue == typeRaw }) {
+                // A device type this app has no case for (a future platform) can be trusted by the engine and relayed
+                // through, but has no row to show yet.
+                val addedAt = row["added_at"]?.jsonPrimitive?.longOrNull ?: System.currentTimeMillis()
+                writeDevice(TrustedDevice(id, key, name, DeviceType.fromWire(typeRaw), addedAt, signingPublicKey = signing))
+                changed = true
+            }
+        }
+        for ((id, at) in tombstones) {
+            if (id !in seen && isTrusted(id)) {
+                prefs.edit().remove(rowKey(id)).apply()
+                changed = true
+            }
+            if ((revokedAt(id) ?: Long.MIN_VALUE) < at) {
+                prefs.edit().putLong(revokedKey(id), at).apply()
+                changed = true
+            }
+        }
+        if (changed) notifyChanged()
+        return changed
+    }
 
     private fun parse(json: String): TrustedDevice {
         val row = rowJson.decodeFromString(TrustedDeviceRow.serializer(), json)

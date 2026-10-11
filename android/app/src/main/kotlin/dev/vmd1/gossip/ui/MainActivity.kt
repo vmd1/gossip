@@ -239,18 +239,8 @@ class MainActivity : ComponentActivity() {
                         },
                         onSetLockOnLeave = { deviceId, enabled ->
                             trustedDevicesStore.setLockOnLeaveEnabled(deviceId, enabled)
-                            val transport = boundService?.transportManager()
-                            if (transport != null) {
-                                val envelope = Envelope(
-                                    type = MessageType.LOCK_ON_LEAVE_CONFIG,
-                                    senderId = IdentityKeyStore.getInstance(applicationContext).deviceId,
-                                    recipientId = deviceId,
-                                    payload = buildJsonObject { put("enabled", JsonPrimitive(enabled)) }
-                                )
-                                lifecycleScope.launch {
-                                    runCatching { transport.send(envelope) }
-                                }
-                            }
+                            // The phone publishes which computers it arms as a state slot; the core keeps it correct.
+                            boundService?.lockOnLeaveManager()?.publishArmed()
                         },
                         provideHotspotEnabledProvider = { OnboardingPreferences(applicationContext).provideHotspotEnabled },
                         onSetProvideHotspotEnabled = { enabled ->
@@ -266,6 +256,8 @@ class MainActivity : ComponentActivity() {
                         hotspotOverrides = hotspotOverrides,
                         directDeviceIdsProvider = { boundService?.transportManager()?.connectedDeviceIds },
                         meshDeviceIdsProvider = { boundService?.transportManager()?.meshReachableDeviceIds },
+                        relayedDeviceIdsProvider = { boundService?.transportManager()?.relayedDeviceIds },
+                        relayStatusProvider = { boundService?.transportManager()?.let { t -> RelayUiState(t.relayStatus, t.relayIdle, t.relayErrorCode) } },
                         batteryStatesProvider = { boundService?.batterySyncManager()?.batteryBySenderId },
                         ringingPeersProvider = { boundService?.ringManager()?.ringingPeers },
                         onToggleRing = { deviceId -> boundService?.ringManager()?.toggleRing(deviceId) }
@@ -424,6 +416,8 @@ fun ConnectHomeScreen(
     hotspotOverrides: Map<String, Pair<Boolean, Long>> = emptyMap(),
     directDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
     meshDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    relayedDeviceIdsProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
+    relayStatusProvider: () -> RelayUiState? = { null },
     batteryStatesProvider: () -> kotlinx.coroutines.flow.StateFlow<Map<String, dev.vmd1.gossip.features.battery.BatteryState>>? = { null },
     ringingPeersProvider: () -> kotlinx.coroutines.flow.StateFlow<Set<String>>? = { null },
     onToggleRing: (deviceId: String) -> Unit = {}
@@ -476,6 +470,7 @@ fun ConnectHomeScreen(
                     }
                 }
                 SettingsMenuRow("Features", "Turn features on or off on this device") { settingsPage = SettingsPage.FEATURES }
+                SettingsMenuRow("Relay", "Stay connected when your devices are not on the same network") { settingsPage = SettingsPage.RELAY }
                 if (isPhone) {
                     SettingsMenuRow("Instant Hotspot", "Let your other devices use this phone's hotspot") {
                         settingsPage = SettingsPage.HOTSPOT
@@ -534,6 +529,13 @@ fun ConnectHomeScreen(
 
             SettingsPage.FEATURES -> SettingsPageScaffold("Features", onBack = { settingsPage = page.parent }) {
                 FeatureTogglesContent(featureSettings)
+            }
+
+            SettingsPage.RELAY -> SettingsPageScaffold("Relay", onBack = { settingsPage = page.parent }) {
+                RelaySettingsContent(
+                    settings = dev.vmd1.gossip.transport.RelaySettings.getInstance(androidx.compose.ui.platform.LocalContext.current),
+                    state = relayStatusProvider()
+                )
             }
 
             SettingsPage.HOTSPOT -> SettingsPageScaffold("Instant Hotspot", onBack = { settingsPage = page.parent }) {
@@ -650,6 +652,7 @@ fun ConnectHomeScreen(
             val ringingPeers by (ringingPeersProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val directDeviceIds by (directDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val meshDeviceIds by (meshDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
+            val relayedDeviceIds by (relayedDeviceIdsProvider()?.collectAsState() ?: remember { mutableStateOf(emptySet<String>()) })
             val batteryStates by (batteryStatesProvider()?.collectAsState() ?: remember { mutableStateOf(emptyMap<String, dev.vmd1.gossip.features.battery.BatteryState>()) })
 
             val toastContext = androidx.compose.ui.platform.LocalContext.current
@@ -664,6 +667,7 @@ fun ConnectHomeScreen(
                 hotspotOverrides = hotspotOverrides,
                 directDeviceIds = directDeviceIds,
                 meshDeviceIds = meshDeviceIds,
+                relayedDeviceIds = relayedDeviceIds,
                 batteryStates = batteryStates,
                 ringingPeers = ringingPeers,
                 onToggleRing = onToggleRing,

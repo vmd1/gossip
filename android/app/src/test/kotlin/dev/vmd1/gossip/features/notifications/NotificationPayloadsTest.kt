@@ -72,22 +72,14 @@ class NotificationPayloadsTest {
             timestamp = 1
         ).toEnvelope(senderId = "device-mac")
 
-        // Build a notification.reply payload the way the Mac side would, then parse it
-        // back the way NotificationListenerImpl.handleReply does.
-        val replyEnvelope = dev.vmd1.gossip.protocol.Envelope(
-            type = MessageType.NOTIFICATION_REPLY,
-            senderId = "device-mac",
-            recipientId = "device-android",
-            payload = kotlinx.serialization.json.Json.encodeToJsonElement(
-                NotificationReplyPayload.serializer(),
-                NotificationReplyPayload(id = "notif-4", text = "On my way", attemptId = "attempt-1")
-            ).let { it as kotlinx.serialization.json.JsonObject }
-        )
-
-        val parsed = NotificationReplyPayload.fromPayload(replyEnvelope.payload)
-        assertEquals("notif-4", parsed.id)
+        // Build a notification.reply payload with the core (the way both apps now do), then accept it the way
+        // NotificationListenerImpl.handleReply does.
+        val payload = uniffi.gossip_ffi.notificationReplyPayload("notif-4", "On my way", "attempt-1")
+        val guard = uniffi.gossip_ffi.ReplyGuard()
+        val parsed = guard.accept(payload)!!
+        assertEquals("notif-4", parsed.notificationId)
         assertEquals("On my way", parsed.text)
-        assertEquals("attempt-1", parsed.attemptId)
+        assertEquals(null, guard.accept(payload))   // the same attempt is acted on once
         assertTrue(envelope.type == MessageType.NOTIFICATION_POSTED) // sanity: unrelated envelope untouched
     }
 }

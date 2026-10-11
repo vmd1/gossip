@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "mac/**"
+      - "desktop/**"
       - "schema/**"
       - ".github/workflows/mac.yml"
   workflow_dispatch:
@@ -39,6 +40,19 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: mac
+
+      # The app's protocol engine is the Rust core (desktop/core), consumed as a local Swift package that must exist
+      # before the Xcode project is generated. Host architecture only: the runner is the only target here.
+      - name: Build the protocol engine
+        run: |
+          (cd ../desktop && (rustup show active-toolchain || rustup toolchain install))
+          scripts/build-core.sh
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -53,6 +67,9 @@ jobs:
           -configuration Debug
           -destination 'platform=macOS'
           -derivedDataPath build
+          -test-timeouts-enabled YES
+          -default-test-execution-time-allowance 120
+          -maximum-test-execution-time-allowance 300
           CODE_SIGNING_ALLOWED=NO
           test
 

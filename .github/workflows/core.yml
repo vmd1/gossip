@@ -1,0 +1,98 @@
+name: Core CI
+
+# The sans-IO Rust core (`desktop/core`) and the shared conformance vectors it is checked against.
+# Runs on pull requests (and manually), like the other CI workflows.
+# A push to dev or main also runs it, which warms the Rust build cache that pull requests start from.
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - "desktop/**"
+      - "schema/**"
+      - ".github/workflows/core.yml"
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "schema/**"
+      - ".github/workflows/core.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: core-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # macOS so the interop tests can build and run the Mac app's real envelope sources
+    # (`desktop/scripts/build-swift-interop.sh`); the portable tests run everywhere.
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: core-test
+
+      - name: Format and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Build the Swift interop harness
+        run: ./scripts/build-swift-interop.sh
+
+      - name: Test (vectors, engine, interop with the Mac app's code)
+        run: cargo test
+
+      - name: Swift bindings smoke test
+        run: ./scripts/test-swift-bindings.sh
+
+  kotlin-bindings:
+    # The generated Kotlin compiled and exercised on a JVM through JNA (no emulator needed).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: core-kotlin
+
+      - name: Set up Java
+        run: java -version
+
+      - name: Kotlin bindings smoke test
+        run: ./scripts/test-kotlin-bindings.sh
+
+  vectors:
+    # The Noise vectors come from an implementation independent of both apps; make sure they stay reproducible.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Regenerate and compare
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet noiseprotocol
+          /tmp/venv/bin/python -W ignore schema/conformance/gen_noise_vectors.py > /tmp/noise-ik-vectors.json
+          diff /tmp/noise-ik-vectors.json schema/noise-ik-vectors.json

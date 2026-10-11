@@ -1,70 +1,58 @@
 package dev.vmd1.gossip.features.media
 
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import uniffi.gossip_ffi.CommandGuard
+import uniffi.gossip_ffi.MediaAction
 
+/** `media.command` validation and de-duplication are the core's `CommandGuard`; these check them across the bindings. */
 class MediaCommandTest {
+    private fun accept(guard: CommandGuard, json: String) = guard.accept(json)
 
     @Test
-    fun `parses a play command with no seekMs`() {
-        val payload = buildJsonObject { put("action", "play") }
-        val command = MediaCommand.fromPayload(payload)
-        assertEquals(MediaCommand("play", null, null), command)
+    fun `accepts a play command with no seekMs`() {
+        val c = accept(CommandGuard(), """{"action":"play"}""")!!
+        assertEquals(MediaAction.PLAY, c.action)
+        assertNull(c.seekMs)
     }
 
     @Test
-    fun `parses a command with a seekMs`() {
-        val payload = buildJsonObject {
-            put("action", "pause")
-            put("seekMs", 4200)
-        }
-        val command = MediaCommand.fromPayload(payload)
-        assertEquals(MediaCommand("pause", 4200, null), command)
+    fun `accepts a command with a seekMs`() {
+        val c = accept(CommandGuard(), """{"action":"pause","seekMs":4200}""")!!
+        assertEquals(MediaAction.PAUSE, c.action)
+        assertEquals(4200L, c.seekMs)
     }
 
     @Test
-    fun `returns null for a missing action`() {
-        val payload = buildJsonObject { put("seekMs", 100) }
-        assertNull(MediaCommand.fromPayload(payload))
-    }
-
-    @Test
-    fun `returns null for an unrecognized action`() {
-        val payload = buildJsonObject { put("action", "shuffle") }
-        assertNull(MediaCommand.fromPayload(payload))
-    }
-
-    @Test
-    fun `returns null when action is not a string primitive`() {
-        val payload = buildJsonObject { put("action", JsonNull) }
-        assertNull(MediaCommand.fromPayload(payload))
-    }
-
-    @Test
-    fun `parses commandId when present`() {
-        val payload = buildJsonObject {
-            put("action", "next")
-            put("commandId", "abc-123")
-        }
-        assertEquals("abc-123", MediaCommand.fromPayload(payload)?.commandId)
-    }
-
-    @Test
-    fun `commandId is null when absent (older peer)`() {
-        val payload = buildJsonObject { put("action", "next") }
-        assertNull(MediaCommand.fromPayload(payload)?.commandId)
+    fun `refuses a missing, unrecognized or non-string action`() {
+        val g = CommandGuard()
+        assertNull(accept(g, """{"seekMs":100}"""))
+        assertNull(accept(g, """{"action":"shuffle"}"""))
+        assertNull(accept(g, """{"action":null}"""))
     }
 
     @Test
     fun `recognizes all four valid actions`() {
-        for (action in listOf("play", "pause", "next", "previous")) {
-            val payload = buildJsonObject { put("action", action) }
-            assertEquals(action, MediaCommand.fromPayload(payload)?.action)
-        }
+        val expected = mapOf("play" to MediaAction.PLAY, "pause" to MediaAction.PAUSE, "next" to MediaAction.NEXT, "previous" to MediaAction.PREVIOUS)
+        for ((name, action) in expected) assertEquals(action, accept(CommandGuard(), """{"action":"$name"}""")?.action)
+    }
+
+    @Test
+    fun `each commandId is acted on once so a duplicate delivery cannot skip twice`() {
+        val g = CommandGuard()
+        assertEquals(MediaAction.NEXT, accept(g, """{"action":"next","commandId":"abc"}""")?.action)
+        assertNull("the same instance again", accept(g, """{"action":"next","commandId":"abc"}"""))
+        assertEquals(MediaAction.NEXT, accept(g, """{"action":"next","commandId":"def"}""")?.action)
+    }
+
+    @Test
+    fun `a command from an older peer without a commandId is still accepted`() {
+        val g = CommandGuard()
+        assertEquals(MediaAction.NEXT, accept(g, """{"action":"next"}""")?.action)
+        assertEquals(MediaAction.NEXT, accept(g, """{"action":"next"}""")?.action)
     }
 }
 

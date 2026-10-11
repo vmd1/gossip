@@ -5,46 +5,45 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import dev.vmd1.gossip.transport.TransportManager
 import dev.vmd1.gossip.util.Log
-import dev.vmd1.gossip.protocol.Envelope
-import dev.vmd1.gossip.protocol.MessageType
-import dev.vmd1.gossip.transport.EnvelopeHandler
-import dev.vmd1.gossip.transport.MessageRouter
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import uniffi.gossip_ffi.Battery as CoreBattery
+import uniffi.gossip_ffi.BatteryEffect
+import uniffi.gossip_ffi.batteryLowThreshold
+import uniffi.gossip_ffi.batteryRearmLevel
+import uniffi.gossip_ffi.batterySlot
+import uniffi.gossip_ffi.BatteryState as CoreBatteryState
 
 private const val TAG = "BatterySync"
 
-/** A device's battery as last reported over the mesh (`battery.update`). */
+/** A device's battery as last reported over the mesh (the `battery.state` slot). */
 data class BatteryState(val level: Int, val isCharging: Boolean)
 
 /**
- * Implements `battery.update` (see `schema/message-types.md`): broadcasts this device's battery
- * level + charging state to the whole mesh, tracks every other device's last report for the
- * paired-devices UI, and raises a low-battery alert (via [onLowBattery]) when a peer drops to
- * [LOW_THRESHOLD] or below while not charging.
+ * Battery sync: publishes this device's battery level + charging state as the `battery.state` state slot (see
+ * `docs/plans/state-sync.md`), tracks every other device's last report for the paired-devices UI, and raises a low-battery
+ * alert (via [onLowBattery]) when a peer drops to [LOW_THRESHOLD] or below while not charging.
  *
- * **Reconciled**, per this repo's `CLAUDE.md` convention: sent on every local change (level or
- * charging flip), on every fresh `CONNECTED` transition, and every 60s while connected —
- * [reportInitialSyncState]/[periodicResync], driven from `SyncForegroundService` exactly like
- * `HotspotStateManager`. Receiving is last-write-wins per sender and idempotent; the low-battery
- * alert fires once per low *episode* (re-armed only after the peer charges or climbs back above
- * [REARM_LEVEL]) so a duplicate/resynced report can never re-alert.
+ * The decisions (change detection, last-write-wins per sender, the once-per-episode alert) are the core's `Battery`
+ * (`desktop/core/src/features/battery.rs`), shared with every platform; reconciliation is the core's state sync, so nothing
+ * here resends on connect or on a timer. This class only reads the battery and shows the result.
  */
 class BatterySyncManager(
     /** Only needed for the live system battery receiver/reader; `null` in unit tests. */
     private val context: Context?,
-    private val deviceId: String,
-    private val messageRouter: MessageRouter,
-    private val send: suspend (Envelope) -> Unit,
     private val scope: CoroutineScope,
+    /** Publishes (or clears, with `null`) one of this device's state slots: [TransportManager.setState]. */
+    private val setState: (slot: String, value: JsonElement?) -> Unit,
+    /** Other devices' slot changes: [TransportManager.stateChanges]. */
+    private val stateChanges: Flow<TransportManager.StateChange>,
     private val readBattery: () -> BatteryState? = { context?.let(::readFromSystem) },
     private val onLowBattery: (senderId: String, level: Int) -> Unit = { _, _ -> },
     private val isEnabled: () -> Boolean = { true }
@@ -52,86 +51,68 @@ class BatterySyncManager(
     private val _states = MutableStateFlow<Map<String, BatteryState>>(emptyMap())
     val batteryBySenderId: StateFlow<Map<String, BatteryState>> = _states.asStateFlow()
 
-    private var lastReported: BatteryState? = null
-    private val alerted = mutableSetOf<String>()
+    private val logic = CoreBattery()
     private var receiverRegistered = false
+    private var collecting: kotlinx.coroutines.Job? = null
 
     private val changeReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) { reportCurrentState() }
     }
 
-    private val updateHandler = EnvelopeHandler { handleUpdate(it) }
-
     fun start() {
-        messageRouter.register(MessageType.BATTERY_UPDATE, updateHandler)
+        collecting?.cancel()
+        collecting = scope.launch {
+            stateChanges.collect { change -> if (change.slot == batterySlot()) handleSlot(change.deviceId, change.value) }
+        }
         if (!receiverRegistered && context != null) {
             context.registerReceiver(changeReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
             receiverRegistered = true
         }
+        reportCurrentState()
     }
 
     fun stop() {
-        messageRouter.unregister(updateHandler)
+        collecting?.cancel()
+        collecting = null
         if (receiverRegistered) {
             runCatching { context?.unregisterReceiver(changeReceiver) }
             receiverRegistered = false
         }
     }
 
-    /** Sends the current reading if it differs from the last one sent. */
+    /** Publishes the current reading; the core ignores it when it is the one already published. */
     fun reportCurrentState() {
         if (!isEnabled()) return
-        val now = readBattery() ?: return
-        if (now == lastReported) return
-        lastReported = now
-        sendState(now)
+        val reading = readBattery()?.let { CoreBatteryState(it.level.coerceIn(0, 100).toUByte(), it.isCharging) }
+        val effect = logic.report(reading)
+        if (effect is BatteryEffect.SetState) setState(effect.slot, Json.parseToJsonElement(effect.valueJson))
     }
 
-    /** Sends the current reading unconditionally — on every fresh connection and every 60s
-     *  while connected, so a missed/dropped report self-heals. */
-    fun periodicResync() {
-        if (!isEnabled()) return
-        val now = readBattery() ?: return
-        lastReported = now
-        sendState(now)
-    }
-
-    fun reportInitialSyncState() = periodicResync()
-
-    private fun sendState(state: BatteryState) {
-        val envelope = Envelope(
-            type = MessageType.BATTERY_UPDATE,
-            senderId = deviceId,
-            broadcast = true,
-            payload = payload(deviceId, state)
-        )
-        scope.launch { runCatching { send(envelope) }.onFailure { Log.w(TAG, "Failed to send battery.update", it) } }
-    }
-
-    private fun handleUpdate(envelope: Envelope) {
-        val level = envelope.payload["level"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()?.coerceIn(0, 100) ?: return
-        val charging = envelope.payload["isCharging"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: return
-        val sender = envelope.senderId
-        _states.value = _states.value + (sender to BatteryState(level, charging))
-        val shouldAlert = synchronized(alerted) {
-            when {
-                charging || level > REARM_LEVEL -> { alerted.remove(sender); false }
-                level <= LOW_THRESHOLD -> alerted.add(sender)  // false if already alerted this episode
-                else -> false
+    /** A peer's `battery.state` slot changed (`null`: cleared, or the device was revoked). */
+    fun handleSlot(sender: String, value: JsonElement?) {
+        if (value == null) {
+            logic.forget(sender)
+            _states.value = _states.value - sender
+            return
+        }
+        val effects = runCatching { logic.onUpdate(sender, value.toString()) }.getOrElse {
+            Log.w(TAG, "Bad battery.state from $sender", it)
+            return
+        }
+        for (effect in effects) {
+            when (effect) {
+                is BatteryEffect.Updated -> logic.stateOf(effect.sender)?.let {
+                    _states.value = _states.value + (effect.sender to BatteryState(it.level.toInt(), it.isCharging))
+                }
+                is BatteryEffect.LowBattery -> onLowBattery(effect.sender, effect.level.toInt())
+                is BatteryEffect.SetState -> Unit
             }
         }
-        if (shouldAlert) onLowBattery(sender, level)
     }
 
     companion object {
-        const val LOW_THRESHOLD = 20
-        const val REARM_LEVEL = 30
-
-        fun payload(sourceDeviceId: String, state: BatteryState) = buildJsonObject {
-            put("sourceDeviceId", JsonPrimitive(sourceDeviceId))
-            put("level", JsonPrimitive(state.level))
-            put("isCharging", JsonPrimitive(state.isCharging))
-        }
+        val LOW_THRESHOLD: Int get() = batteryLowThreshold().toInt()
+        val REARM_LEVEL: Int get() = batteryRearmLevel().toInt()
 
         fun readFromSystem(context: Context): BatteryState? {
             val i = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return null

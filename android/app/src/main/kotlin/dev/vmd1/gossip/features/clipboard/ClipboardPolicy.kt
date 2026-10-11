@@ -11,9 +11,10 @@ object ClipboardPolicy {
     /** Set by apps that copy secrets (password managers); [android.content.ClipDescription.EXTRA_IS_SENSITIVE] on API 33+. */
     const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
 
-    fun textAllowed(text: String): Boolean = text.length <= MAX_TEXT_BYTES && text.toByteArray(Charsets.UTF_8).size <= MAX_TEXT_BYTES
+    // The size limits are the core's (`desktop/core/src/features/clipboard.rs`), shared with every platform.
+    fun textAllowed(text: String): Boolean = uniffi.gossip_ffi.clipboardTextAllowed(text)
 
-    fun imageBytesAllowed(size: Int): Boolean = size in 1..MAX_IMAGE_BYTES
+    fun imageBytesAllowed(size: Int): Boolean = size > 0 && uniffi.gossip_ffi.clipboardImageBytesAllowed(size.toULong())
 
     fun imageDimensionsAllowed(width: Int, height: Int): Boolean =
         width > 0 && height > 0 && width.toLong() * height.toLong() <= MAX_IMAGE_PIXELS

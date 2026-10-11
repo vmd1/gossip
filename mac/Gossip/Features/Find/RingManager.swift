@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import SwiftUI
 import Combine
+import GossipCoreKit
 
 /// Plays and stops the actual alarm — behind a protocol so `RingManager`'s dedupe / auto-stop
 /// logic is testable without making noise.
@@ -10,144 +11,109 @@ protocol Ringer: AnyObject {
     func stop()
 }
 
-/// Handles `device.ring` (see `schema/message-types.md`) on the Mac: a paired device asks this
-/// Mac to ring at full volume so it can be found, or to stop. One-shot trigger, so no resync loop,
-/// but idempotent: `start` while already ringing is a no-op, `stop` while silent is a no-op, and a
-/// duplicate/late `start` (identified by its per-attempt `ringId`, kept in a bounded
-/// recently-handled cache like `media.command`'s `commandId`) can never restart a ring the user
-/// already stopped. Rings stop on their own after `autoStopInterval`.
+/// Handles `device.ring` (see `schema/message-types.md`) on the Mac: a paired device asks this Mac to ring at full volume so
+/// it can be found, or to stop. One-shot trigger, so no resync loop, and idempotent: `start` while already ringing is a
+/// no-op, `stop` while silent is a no-op, and a duplicate/late `start` (identified by its per-attempt `ringId`, kept in a
+/// bounded recently-handled cache) can never restart a ring the user already stopped. Rings stop on their own after 30 s.
 ///
-/// Whenever this Mac starts or stops ringing — a `stop` message, the auto-stop, or the local Stop
-/// window — it reports `device.ring_state` back to whoever started the ring, so that device's ring
-/// button can show "ringing" and clear again.
+/// Whenever this Mac starts or stops ringing — a `stop` message, the auto-stop, or the local Stop window — it reports
+/// `device.ring_state` back to whoever started the ring, so that device's ring button can show "ringing" and clear again.
 ///
-/// Also the sending half: `toggleRing(deviceId)` for the ring button — starts a ring, or stops it if
-/// that peer is already ringing — tracked in `ringingPeers`. A peer's entry also expires after
-/// `peerRingingExpiry` (just past the auto-stop) as the self-healing backstop if a `ring_state`
-/// report is ever lost.
+/// Also the sending half: `toggleRing(deviceId)` for the ring button — starts a ring, or stops it if that peer is already
+/// ringing — tracked in `ringingPeers`; a peer's entry also expires after 35 s as the self-healing backstop if a
+/// `ring_state` report is ever lost.
+///
+/// All of that decision logic is the core's `Ring` (`desktop/core/src/features/ring.rs`), shared with every platform; this
+/// class plays the alarm, shows the window and drives the core's clock once a second.
 final class RingManager: ObservableObject {
-    static let autoStopInterval: TimeInterval = 30
-    private static let recentCacheSize = 64
-
-    static let peerRingingExpiry: TimeInterval = 35
-
     @Published private(set) var isRinging = false
     /// Peers this Mac has asked to ring that haven't reported stopping (or expired).
     @Published private(set) var ringingPeers: Set<String> = []
-    private var peerExpiry: [String: DispatchWorkItem] = [:]
-    /// Who started the ring currently playing here — the device `ring_state` reports go to.
-    private var requesterId: String?
 
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
     private let ringer: Ringer
-    private let autoStopAfter: TimeInterval
-    private let peerRingingExpiry: TimeInterval
+    private let logic = GossipCoreKit.Ring()
+    private let now: () -> Int64
     private let sendOverride: ((Envelope) -> Void)?
-    private var recentRingIds: [String] = []
-    private var autoStop: DispatchWorkItem?
+    private var timer: Timer?
     /// Shown while ringing so the user can silence it from the Mac itself.
     private var alertWindow: NSWindow?
     private let showsAlert: Bool
 
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared,
-         ringer: Ringer = SystemAlarmRinger(), autoStopAfter: TimeInterval = RingManager.autoStopInterval,
-         peerRingingExpiry: TimeInterval = RingManager.peerRingingExpiry, showsAlert: Bool = true,
+         ringer: Ringer = SystemAlarmRinger(), showsAlert: Bool = true,
+         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+         runsClock: Bool = true,
          sendEnvelope: ((Envelope) -> Void)? = nil) {
         self.sendOverride = sendEnvelope
-        self.peerRingingExpiry = peerRingingExpiry
         self.transportManager = transportManager
         self.identity = identity
         self.ringer = ringer
-        self.autoStopAfter = autoStopAfter
         self.showsAlert = showsAlert
+        self.now = now
         transportManager.router.register(prefix: "device.ring") { [weak self] envelope in
             DispatchQueue.main.async { self?.handle(envelope) }
         }
         transportManager.router.register(prefix: "device.ring_state") { [weak self] envelope in
             DispatchQueue.main.async { self?.handleRingState(envelope) }
         }
-    }
-
-    /// Main-thread only.
-    func handle(_ envelope: Envelope) {
-        guard let action = envelope.payload["action"]?.stringValue,
-              let ringId = envelope.payload["ringId"]?.stringValue else { return }
-        switch action {
-        case "start":
-            if recentRingIds.contains(ringId) { return }  // duplicate / late redelivery
-            recentRingIds.append(ringId)
-            if recentRingIds.count > Self.recentCacheSize { recentRingIds.removeFirst() }
-            guard !isRinging else { return }
-            isRinging = true
-            requesterId = envelope.senderId
-            ringer.start()
-            reportState(ringing: true)
-            if showsAlert { showAlert() }
-            let work = DispatchWorkItem { [weak self] in self?.stopRinging() }
-            autoStop = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + autoStopAfter, execute: work)
-        case "stop":
-            stopRinging()
-        default:
-            break
+        if runsClock {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
         }
     }
 
+    deinit { timer?.invalidate() }
+
+    /// Main-thread only.
+    func handle(_ envelope: Envelope) {
+        guard let json = try? JSONEncoder().encode(envelope.payload),
+              let effects = try? logic.onRing(sender: envelope.senderId, payloadJson: String(decoding: json, as: UTF8.self), nowMs: now()) else { return }
+        carryOut(effects)
+    }
+
     /// Silences the ring (also wired to the alert window's Stop button). No-op when not ringing.
-    func stopRinging() {
-        autoStop?.cancel(); autoStop = nil
-        guard isRinging else { return }
-        isRinging = false
-        ringer.stop()
-        alertWindow?.close(); alertWindow = nil
-        reportState(ringing: false)
-        requesterId = nil
-    }
+    func stopRinging() { carryOut(logic.stopRinging()) }
 
-    private func send(_ envelope: Envelope) {
-        if let sendOverride { sendOverride(envelope) } else { try? transportManager?.send(envelope: envelope) }
-    }
-
-    private func reportState(ringing: Bool) {
-        guard let requesterId else { return }
-        let envelope = Envelope(type: "device.ring_state", senderId: identity.deviceId, recipientId: requesterId,
-                                payload: .object(["ringing": .bool(ringing)]))
-        send(envelope)
-    }
+    /// Auto-stop and peer-entry expiry; driven once a second (and directly by tests).
+    func tick() { carryOut(logic.tick(nowMs: now())) }
 
     // MARK: - Sending
 
-    static func payload(action: String, ringId: String = UUID().uuidString) -> JSONValue {
-        .object(["action": .string(action), "ringId": .string(ringId)])
-    }
-
-    /// Presses the ring button for `deviceId`: stops it if it's ringing, otherwise starts a ring.
-    /// Main-thread only.
+    /// Presses the ring button for `deviceId`: stops it if it's ringing, otherwise starts a ring. Main-thread only.
     func toggleRing(_ deviceId: String) {
-        let stopping = ringingPeers.contains(deviceId)
-        let envelope = Envelope(type: "device.ring", senderId: identity.deviceId, recipientId: deviceId,
-                                payload: Self.payload(action: stopping ? "stop" : "start"))
-        send(envelope)
-        setPeerRinging(deviceId, !stopping)
+        carryOut(logic.toggle(peer: deviceId, ringId: UUID().uuidString, nowMs: now()))
     }
 
     /// Main-thread only.
     func handleRingState(_ envelope: Envelope) {
-        guard let ringing = envelope.payload["ringing"]?.boolValue else { return }
-        setPeerRinging(envelope.senderId, ringing)
+        guard let json = try? JSONEncoder().encode(envelope.payload),
+              let effects = try? logic.onRingState(sender: envelope.senderId, payloadJson: String(decoding: json, as: UTF8.self), nowMs: now()) else { return }
+        carryOut(effects)
     }
 
-    private func setPeerRinging(_ deviceId: String, _ ringing: Bool) {
-        peerExpiry.removeValue(forKey: deviceId)?.cancel()
-        if ringing {
-            ringingPeers.insert(deviceId)
-            let work = DispatchWorkItem { [weak self] in self?.setPeerRinging(deviceId, false) }
-            peerExpiry[deviceId] = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + peerRingingExpiry, execute: work)
-        } else {
-            ringingPeers.remove(deviceId)
+    private func carryOut(_ effects: [GossipCoreKit.RingEffect]) {
+        for effect in effects {
+            switch effect {
+            case .startRinger: ringer.start()
+            case .stopRinger: ringer.stop()
+            case .showAlert: if showsAlert { showAlert() }
+            case .closeAlert: alertWindow?.close(); alertWindow = nil
+            case .send(let message): send(message)
+            case .peersChanged: break
+            }
         }
+        isRinging = logic.isRinging()
+        let peers = Set(logic.ringingPeers())
+        if peers != ringingPeers { ringingPeers = peers }
+    }
+
+    private func send(_ message: GossipCoreKit.Outgoing) {
+        guard let payload = try? JSONDecoder().decode(JSONValue.self, from: Data(message.payloadJson.utf8)) else { return }
+        let envelope = Envelope(type: message.kind, senderId: identity.deviceId, recipientId: message.recipient, payload: payload)
+        if let sendOverride { sendOverride(envelope) } else { try? transportManager?.send(envelope: envelope) }
     }
 
     private func showAlert() {

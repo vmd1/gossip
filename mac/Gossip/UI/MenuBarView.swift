@@ -64,7 +64,8 @@ struct MenuBarView: View {
                         HStack(spacing: 8) {
                             // Green = connected directly, blue = reachable over the mesh, grey = not connected.
                             let connectivity = DeviceConnectivity.classify(
-                                device.deviceId, directIds: transportManager.connectedDeviceIds, meshIds: transportManager.meshReachableDeviceIds
+                                device.deviceId, directIds: transportManager.connectedDeviceIds, meshIds: transportManager.meshReachableDeviceIds,
+                                relayedIds: transportManager.relayedDeviceIds
                             )
                             Image(systemName: device.deviceType.symbolName)
                                 .foregroundStyle(Self.color(for: connectivity))
@@ -94,6 +95,7 @@ struct MenuBarView: View {
                     } else {
                         let window = SettingsWindow(
                             featureSettings: featureSettings,
+                            transportManager: transportManager,
                             pairingViewModel: pairingViewModel,
                             notificationMirrorManager: notificationMirrorManager
                         )
@@ -215,6 +217,11 @@ struct MenuBarView: View {
     private func mirrorButton(for device: TrustedDevice) -> some View {
         let isThisDevice = screenMirrorController.mirroringDeviceId == device.deviceId
         switch (screenMirrorController.state, isThisDevice) {
+        case (.idle, _) where transportManager.isRelayed(device.deviceId):
+            Button {} label: { Image(systemName: "rectangle.on.rectangle") }
+                .buttonStyle(.borderless)
+                .disabled(true)
+                .help("Screen mirroring needs \(device.deviceName) to be on the same network")
         case (.idle, _):
             Button { startMirroring(for: device) } label: { Image(systemName: "rectangle.on.rectangle") }
                 .buttonStyle(.borderless)
@@ -289,6 +296,7 @@ struct MenuBarView: View {
     static func color(for connectivity: Connectivity) -> Color {
         switch connectivity {
         case .direct: return .green
+        case .relayed: return .teal
         case .mesh: return .blue
         case .none: return .secondary
         }
@@ -297,6 +305,7 @@ struct MenuBarView: View {
     static func description(of connectivity: Connectivity) -> String {
         switch connectivity {
         case .direct: return "Connected"
+        case .relayed: return "Connected through the relay (screen mirroring and Universal Control need the same network)"
         case .mesh: return "Connected through another device"
         case .none: return "Not connected"
         }
@@ -501,6 +510,7 @@ struct PairingSheetView: View {
 
     /// The safety code typed by the user; Confirm stays disabled until it matches (see `PairingCode.entryMatches`).
     @State private var enteredCode = ""
+    @State private var typedPairingCode = ""
 
     private var failureReason: String? {
         if case .failed(let reason) = pairingViewModel.state { return reason }
@@ -529,6 +539,51 @@ struct PairingSheetView: View {
                 Text("Waiting for phone to connect…")
                     .foregroundStyle(.secondary)
                 ProgressView()
+                Divider()
+                Text("No camera? Pair with a code instead.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("This Mac is new: show a code") { pairingViewModel.showCode() }
+                    .buttonStyle(.link)
+                Button("Add a new device: type its code here") { pairingViewModel.beginEnteringCode() }
+                    .buttonStyle(.link)
+            case .showingCode(let code, let attemptsLeft):
+                Text("Type this code on your other device")
+                    .font(.headline)
+                Text(code)
+                    .font(.system(size: 40, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+                Text("On the device that is already paired, choose to add a device by code and type it. Only do this on a device you own.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                if let attemptsLeft {
+                    Text("A wrong code was entered (\(attemptsLeft) tries left).")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                ProgressView()
+                Button("Cancel") { pairingViewModel.reset(); onDismiss() }
+            case .enteringCode:
+                Text("Type the code shown on the new device")
+                    .font(.headline)
+                TextField("ABCD-EFGH", text: $typedPairingCode)
+                    .font(.system(.title2, design: .monospaced))
+                    .multilineTextAlignment(.center)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 200)
+                    .onSubmit { pairingViewModel.submitCode(typedPairingCode) }
+                HStack {
+                    Button("Cancel") { pairingViewModel.reset(); onDismiss() }
+                    Button("Pair") { pairingViewModel.submitCode(typedPairingCode); typedPairingCode = "" }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(typedPairingCode.filter { $0.isLetter || $0.isNumber }.count < 8)
+                }
+            case .searching:
+                Text("Looking for the new device…")
+                    .font(.headline)
+                ProgressView()
+                Button("Cancel") { pairingViewModel.reset(); onDismiss() }
             case .confirmingTrust(let deviceName, let code):
                 Text("Trust this device?")
                     .font(.headline)

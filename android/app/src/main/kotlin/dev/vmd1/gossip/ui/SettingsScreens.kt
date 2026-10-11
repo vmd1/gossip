@@ -55,6 +55,7 @@ enum class SettingsPage(val parent: SettingsPage?) {
     NOTIFICATIONS(ROOT),
     NOTIFICATION_APPS(NOTIFICATIONS),
     FEATURES(ROOT),
+    RELAY(ROOT),
     HOTSPOT(ROOT),
     PERMISSIONS(ROOT)
 }

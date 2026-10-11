@@ -3,22 +3,8 @@ import CryptoKit
 @testable import Gossip
 
 final class AuditHardeningTests: XCTestCase {
-    func testRawFrameHashIsBoundIntoThePayloadAndChecked() {
-        let raw = Data([1, 2, 3, 4])
-        let env = Envelope(type: "clipboard.update", senderId: "s", hasRawFollowup: true)
-        let bound = TransportManager.bindingRawFrame(raw, to: env)
-        XCTAssertTrue(TransportManager.rawFrameMatches(raw, envelope: bound))
-        XCTAssertFalse(TransportManager.rawFrameMatches(Data([1, 2, 3, 5]), envelope: bound))
-        XCTAssertFalse(TransportManager.rawFrameMatches(raw, envelope: env))
-    }
-
-    func testEnvelopesWithHugeIdsOrStaleTimestampsAreRejected() {
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        XCTAssertTrue(TransportManager.isWellFormed(Envelope(type: "a.b", senderId: UUID().uuidString), now: now))
-        XCTAssertFalse(TransportManager.isWellFormed(Envelope(id: String(repeating: "x", count: 65), type: "a.b", senderId: "s"), now: now))
-        XCTAssertFalse(TransportManager.isWellFormed(Envelope(type: "a.b", senderId: "s", ts: now - 16 * 60 * 1000), now: now))
-        XCTAssertFalse(TransportManager.isWellFormed(Envelope(type: "a.b", senderId: "s", ts: now + 16 * 60 * 1000), now: now))
-    }
+    // Envelope shape checks, raw-frame hash binding, replay windows and the other wire-level hardening moved into the
+    // Rust engine along with the code (see desktop/core/tests/engine.rs); the cases below are what stays in the app.
 
     func testFingerprintAcceptsBothAdvertisementFormats() {
         let key = Data((0..<32).map { UInt8($0) })
