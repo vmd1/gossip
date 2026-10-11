@@ -173,7 +173,8 @@ pub enum Event {
         envelope: Envelope,
         raw: Option<Vec<u8>>,
     },
-    /// Any validated message from a device proves it is reachable, even when relayed.
+    /// A validated message from a device arrived through another device (not straight from its sender), so the
+    /// sender is reachable through the mesh.
     Heard {
         device_id: String,
     },
@@ -1113,7 +1114,10 @@ impl<E: Env> Core<E> {
         if !envelope.is_well_formed(now) || !self.is_authentic(&envelope) {
             return discard(self, envelope);
         }
-        if envelope.sender_id != self.identity.device_id {
+        // Evidence that a device is reachable *through the mesh*: a copy that came from someone else. A message that
+        // arrived straight from its sender says nothing once that link is gone, and counting it made a device whose
+        // link just dropped look "connected through another device" for minutes.
+        if envelope.sender_id != self.identity.device_id && envelope.sender_id != arrived_from {
             out.push(Action::Event(Event::Heard {
                 device_id: envelope.sender_id.clone(),
             }));
