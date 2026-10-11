@@ -206,7 +206,7 @@ class HotspotGattServer(
             val sharedSecretKey = HotspotGattProtocol.deriveSharedSecretKey(
                 identityKeyStore.x25519KeyPair.privateKey,
                 requester.publicKey
-            )
+            ) ?: return@launch
 
             val prefs = OnboardingPreferences(context)
             if (!dev.vmd1.gossip.features.settings.FeatureSettings.getInstance(context)

@@ -2,7 +2,13 @@ package dev.vmd1.gossip.features.universalcontrol
 
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import uniffi.gossip_ffi.ControlAction as CoreAction
+import uniffi.gossip_ffi.ControlDisplayInfo as CoreInfo
+import uniffi.gossip_ffi.ControlEdge as CoreEdge
+import uniffi.gossip_ffi.ControlFrame as CoreFrame
 import uniffi.gossip_ffi.StreamCipher
+import uniffi.gossip_ffi.controlFrameDecode
+import uniffi.gossip_ffi.controlFrameEncode
 import uniffi.gossip_ffi.StreamProfile
 
 /**
@@ -55,87 +61,68 @@ sealed class ControlFrame {
      *  the last `Enter` when it was read ([applied], unsigned 32-bit). */
     data class CursorPos(val token: Int, val x: Int, val y: Int, val applied: Long) : ControlFrame()
 
-    fun encode(): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
-        fun u8(v: Int) = out.write(v and 0xff)
-        fun u16(v: Int) { u8(v shr 8); u8(v) }
-        fun display(d: ControlDisplayInfo) {
-            u16(d.width.coerceIn(0, 65535)); u16(d.height.coerceIn(0, 65535))
-            u8(d.rotation.coerceIn(0, 255)); u8(d.backend.coerceIn(0, 255))
+    /** The wire bytes; the codec is the core's (`desktop/core/src/features/control.rs`), shared with every platform. */
+    fun encode(): ByteArray = controlFrameEncode(toCore())
+
+    private fun toCore(): CoreFrame {
+        fun info(d: ControlDisplayInfo) = CoreInfo(
+            d.width.coerceIn(0, 65535).toUShort(), d.height.coerceIn(0, 65535).toUShort(),
+            d.rotation.coerceIn(0, 255).toUByte(), d.backend.coerceIn(0, 255).toUByte()
+        )
+        return when (this) {
+            is Hello -> CoreFrame.Hello(sessionId)
+            is Enter -> CoreFrame.Enter(
+                when (edge) { ControlEdge.LEFT -> CoreEdge.LEFT; ControlEdge.RIGHT -> CoreEdge.RIGHT; ControlEdge.TOP -> CoreEdge.TOP; ControlEdge.BOTTOM -> CoreEdge.BOTTOM },
+                position.coerceIn(0, 65535).toUShort()
+            )
+            Leave -> CoreFrame.Leave
+            is MouseMove -> CoreFrame.MouseMove(dx.toShort(), dy.toShort())
+            is Buttons -> CoreFrame.Buttons(mask.toUByte())
+            is Scroll -> CoreFrame.Scroll(dx.toShort(), dy.toShort())
+            is Key -> CoreFrame.Key(usage.toUShort(), down, modifiers.toUByte())
+            is Text -> CoreFrame.Text(text)
+            Ping -> CoreFrame.Ping
+            is CursorQuery -> CoreFrame.CursorQuery(token.toUByte())
+            is Action -> CoreFrame.Action(
+                when (action) { ControlAction.HOME -> CoreAction.HOME; ControlAction.APP_SWITCH -> CoreAction.APP_SWITCH; ControlAction.NOTIFICATIONS -> CoreAction.NOTIFICATIONS; ControlAction.BACK -> CoreAction.BACK }
+            )
+            is HelloAck -> CoreFrame.HelloAck(info(info))
+            is DisplayInfo -> CoreFrame.DisplayInfo(info(info))
+            is Error -> CoreFrame.Error(reason)
+            Pong -> CoreFrame.Pong
+            is CursorPos -> CoreFrame.CursorPos(token.toUByte(), x.coerceIn(0, 65535).toUShort(), y.coerceIn(0, 65535).toUShort(), applied.toUInt())
         }
-        when (this) {
-            is Hello -> { u8(KIND_HELLO); out.write(sessionId.toByteArray(Charsets.UTF_8)) }
-            is Enter -> { u8(KIND_ENTER); u8(edge.raw); u16(position) }
-            Leave -> u8(KIND_LEAVE)
-            is MouseMove -> { u8(KIND_MOUSE_MOVE); u16(dx); u16(dy) }
-            is Buttons -> { u8(KIND_BUTTONS); u8(mask) }
-            is Scroll -> { u8(KIND_SCROLL); u16(dx); u16(dy) }
-            is Key -> { u8(KIND_KEY); u16(usage); u8(if (down) 1 else 0); u8(modifiers) }
-            is Text -> { u8(KIND_TEXT); out.write(text.toByteArray(Charsets.UTF_8)) }
-            Ping -> u8(KIND_PING)
-            is CursorQuery -> { u8(KIND_CURSOR_QUERY); u8(token) }
-            is Action -> { u8(KIND_ACTION); u8(action.raw) }
-            is HelloAck -> { u8(KIND_HELLO_ACK); display(info) }
-            is DisplayInfo -> { u8(KIND_DISPLAY_INFO); display(info) }
-            is Error -> { u8(KIND_ERROR); out.write(reason.toByteArray(Charsets.UTF_8)) }
-            Pong -> u8(KIND_PONG)
-            is CursorPos -> { u8(KIND_CURSOR_POS); u8(token); u16(x.coerceIn(0, 65535)); u16(y.coerceIn(0, 65535)); u16((applied ushr 16).toInt()); u16(applied.toInt()) }
-        }
-        return out.toByteArray()
     }
 
     companion object {
-        const val KIND_HELLO = 0x01
-        const val KIND_ENTER = 0x10
-        const val KIND_LEAVE = 0x11
-        const val KIND_MOUSE_MOVE = 0x12
-        const val KIND_BUTTONS = 0x13
-        const val KIND_SCROLL = 0x14
-        const val KIND_KEY = 0x15
-        const val KIND_TEXT = 0x16
-        const val KIND_PING = 0x17
-        const val KIND_CURSOR_QUERY = 0x18
-        const val KIND_ACTION = 0x19
-        const val KIND_HELLO_ACK = 0x81
-        const val KIND_DISPLAY_INFO = 0x82
-        const val KIND_ERROR = 0x84
-        const val KIND_PONG = 0x85
-        const val KIND_CURSOR_POS = 0x86
-
         /** Returns null for an unknown kind or a malformed payload (the caller ignores it). */
-        fun decode(data: ByteArray): ControlFrame? {
-            if (data.isEmpty()) return null
-            val b = ByteBuffer.wrap(data, 1, data.size - 1) // big-endian by default
-            fun rest() = ByteArray(b.remaining()).also { b.get(it) }
-            fun u8() = b.get().toInt() and 0xff
-            fun u16() = b.short.toInt() and 0xffff
-            fun i16() = b.short.toInt()
-            fun display(): ControlDisplayInfo? =
-                if (b.remaining() != 6) null else ControlDisplayInfo(u16(), u16(), u8(), u8())
-            return try {
-                when (data[0].toInt() and 0xff) {
-                    KIND_HELLO -> Hello(String(rest(), Charsets.UTF_8))
-                    KIND_ENTER -> if (b.remaining() != 3) null else ControlEdge.from(u8())?.let { Enter(it, u16()) }
-                    KIND_LEAVE -> if (b.hasRemaining()) null else Leave
-                    KIND_MOUSE_MOVE -> if (b.remaining() != 4) null else MouseMove(i16(), i16())
-                    KIND_BUTTONS -> if (b.remaining() != 1) null else Buttons(u8())
-                    KIND_SCROLL -> if (b.remaining() != 4) null else Scroll(i16(), i16())
-                    KIND_KEY -> if (b.remaining() != 4) null else {
-                        val usage = u16(); val down = u8(); val mods = u8()
-                        if (down > 1) null else Key(usage, down == 1, mods)
-                    }
-                    KIND_TEXT -> Text(String(rest(), Charsets.UTF_8))
-                    KIND_PING -> if (b.hasRemaining()) null else Ping
-                    KIND_CURSOR_QUERY -> if (b.remaining() != 1) null else CursorQuery(u8())
-                    KIND_ACTION -> if (b.remaining() != 1) null else ControlAction.from(u8())?.let { Action(it) }
-                    KIND_HELLO_ACK -> display()?.let { HelloAck(it) }
-                    KIND_DISPLAY_INFO -> display()?.let { DisplayInfo(it) }
-                    KIND_ERROR -> Error(String(rest(), Charsets.UTF_8))
-                    KIND_PONG -> if (b.hasRemaining()) null else Pong
-                    KIND_CURSOR_POS -> if (b.remaining() != 9) null else CursorPos(u8(), u16(), u16(), (u16().toLong() shl 16) or u16().toLong())
-                    else -> null
-                }
-            } catch (_: java.nio.BufferUnderflowException) { null }
+        fun decode(data: ByteArray): ControlFrame? = controlFrameDecode(data)?.let(::fromCore)
+
+        private fun fromCore(f: CoreFrame): ControlFrame {
+            fun info(d: CoreInfo) = ControlDisplayInfo(d.width.toInt(), d.height.toInt(), d.rotation.toInt(), d.backend.toInt())
+            return when (f) {
+                is CoreFrame.Hello -> Hello(f.sessionId)
+                is CoreFrame.Enter -> Enter(
+                    when (f.edge) { CoreEdge.LEFT -> ControlEdge.LEFT; CoreEdge.RIGHT -> ControlEdge.RIGHT; CoreEdge.TOP -> ControlEdge.TOP; CoreEdge.BOTTOM -> ControlEdge.BOTTOM },
+                    f.position.toInt()
+                )
+                CoreFrame.Leave -> Leave
+                is CoreFrame.MouseMove -> MouseMove(f.dx.toInt(), f.dy.toInt())
+                is CoreFrame.Buttons -> Buttons(f.mask.toInt())
+                is CoreFrame.Scroll -> Scroll(f.dx.toInt(), f.dy.toInt())
+                is CoreFrame.Key -> Key(f.usage.toInt(), f.down, f.modifiers.toInt())
+                is CoreFrame.Text -> Text(f.text)
+                CoreFrame.Ping -> Ping
+                is CoreFrame.CursorQuery -> CursorQuery(f.token.toInt())
+                is CoreFrame.Action -> Action(
+                    when (f.action) { CoreAction.HOME -> ControlAction.HOME; CoreAction.APP_SWITCH -> ControlAction.APP_SWITCH; CoreAction.NOTIFICATIONS -> ControlAction.NOTIFICATIONS; CoreAction.BACK -> ControlAction.BACK }
+                )
+                is CoreFrame.HelloAck -> HelloAck(info(f.info))
+                is CoreFrame.DisplayInfo -> DisplayInfo(info(f.info))
+                is CoreFrame.Error -> Error(f.reason)
+                CoreFrame.Pong -> Pong
+                is CoreFrame.CursorPos -> CursorPos(f.token.toInt(), f.x.toInt(), f.y.toInt(), f.applied.toLong())
+            }
         }
     }
 }
