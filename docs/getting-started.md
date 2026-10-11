@@ -62,6 +62,11 @@ Everything you need to go from nothing to a working Mac ↔ Android setup.
 - **Android ↔ Android**
   - on one device: tap **Show QR to Pair** (during setup: **Show My QR Code**)
   - on the other: scan it with **Pair New Device**
+- **Can't scan a QR code?** (no camera, or no camera permission) pair with a code instead
+  - on the new device: choose **Pair with a code** (Android: **No camera? Pair with a code**, then **This device is new: show a code**; Mac: **This Mac is new: show a code**) and it shows an 8-character code
+  - on a device that is already paired: choose **Add a new device: type its code** and type it (case and the dash don't matter)
+  - you always type the code into the device that is already paired; both devices must be on the same network
+  - the code works for 5 minutes and stops after 5 wrong tries; only use it for a device you own
 - pairing is encrypted and happens once per pair
 - devices you already trust share their lists, so after you pair a third device with one of them, the others learn about it automatically
 - remove a device any time with **Forget This Device…** in its menu

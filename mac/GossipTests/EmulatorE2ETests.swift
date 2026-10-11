@@ -180,6 +180,25 @@ final class EmulatorE2ETests: XCTestCase {
         pong = try XCTUnwrap(waitForMessage("e2e.pong", after: pongs, timeout: 30)); pongs += 1
         XCTAssertEqual(pong.payload["big"]?.stringValue?.count, big.count)
 
+        // ---- 2b. Synchronised state slots (the core's central reconciliation), both directions and a clear. ----
+        func slot(_ device: String, _ name: String) -> JSONValue? {
+            transport.state(of: device, slot: name).flatMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
+        }
+        wait("the Android slot to arrive") { slot(androidId, "e2e.android") == .object(["n": .number(1)]) }
+        transport.setState(slot: "e2e.mac", valueJSON: #"{"k":"v","unicode":"日本"}"#)
+        pause(1)
+        var slotState = try query(transport, androidId)
+        XCTAssertEqual(slotState["macSlot"]?.stringValue.flatMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) },
+                       .object(["k": .string("v"), "unicode": .string("日本")]), "the Mac's slot reached Android")
+        try transport.send(envelope: Envelope(type: "e2e.setstate", senderId: identity.deviceId, recipientId: androidId, payload: .object(["value": .object(["n": .number(2)])])))
+        wait("the changed Android slot to arrive") { slot(androidId, "e2e.android") == .object(["n": .number(2)]) }
+        transport.setState(slot: "e2e.mac", valueJSON: nil)
+        pause(1)
+        slotState = try query(transport, androidId)
+        XCTAssertEqual(slotState["macSlot"]?.stringValue, "null", "clearing a slot propagates")
+        try transport.send(envelope: Envelope(type: "e2e.setstate", senderId: identity.deviceId, recipientId: androidId, payload: .object(["value": .null])))
+        wait("the cleared Android slot to arrive") { slot(androidId, "e2e.android") == nil }
+
         // ---- 3. Raw follow-up frames, both directions. ----
         let raw = Data((0..<(3 * 1024 * 1024)).map { UInt8(truncatingIfNeeded: $0 &* 2654435761 >> 7) })
         let rawEnvelope = Envelope(type: "e2e.raw", senderId: identity.deviceId, recipientId: androidId, hasRawFollowup: true, payload: .object([:]))

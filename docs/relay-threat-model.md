@@ -54,4 +54,8 @@ The relay is untrusted for content and trusted only for availability and for not
 - IP-based limits are only as good as the trusted-proxy configuration: enable `TRUSTED_PROXY` only behind a proxy that overwrites the forwarded header, otherwise all clients share the proxy's IP (or an attacker spoofs it).
 - All state is in memory: a restart resets rate-limit windows, quotas, known keys (new PoW is required again) and verifiers (a topic is re-registered by the next joiner). Acceptable for v1; a restarting attacker-visible window exists for squatting an unclaimed topic, mitigated by topic ids being secret.
 - Single instance: no horizontal scaling; per-IP limits are per instance.
-- Required before launch (see plan): TLS proxy with its own limits, alerts on every reject reason, spending cap and abuse contact, load tests that exercise each limit including shedding, staged rollout.
+- Required before launch (see plan): TLS proxy with its own limits, alerts on every reject reason, spending cap and abuse contact (set `ABUSE_CONTACT`; the relay serves it at `/abuse` and `/.well-known/security.txt`), load tests that exercise each limit including shedding, staged rollout.
+
+## Pairing by code is never offered over the relay
+
+A pairing code (`pair.code.*`, see `docs/wire-protocol.md`) has only 40 bits, which is safe only because each guess needs a live run against the device showing it and that device allows five. Through the relay anyone who learned a topic could run guesses from anywhere, and the device showing the code could not tell how many different sources were guessing, so the core refuses a code exchange on a relayed link (`dial_code` takes only direct connections, and a shower never accepts the first frame over a virtual link).

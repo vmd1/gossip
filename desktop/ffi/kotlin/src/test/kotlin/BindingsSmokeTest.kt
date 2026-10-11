@@ -88,6 +88,19 @@ class BindingsSmokeTest {
         assertEquals(1uL, net.nodes[phone].core.topicEpoch())
         val minted = (net.nodes[mac].events + net.nodes[phone].events).filterIsInstance<Action.TopicChanged>().first { it.epoch == 1uL }
         assertEquals(32, minted.secret.size)
+        val shown = net.nodes[phone].core.startCodePairing()
+        assertEquals(9, shown.length)
+        assertTrue(net.nodes[phone].core.codePairingActive())
+        assertTrue(net.nodes[mac].core.isValidPairingCode(shown.lowercase()))
+        assertFalse(net.nodes[mac].core.isValidPairingCode("ABC"))
+        assertFailsWith<GossipException> { net.nodes[phone].core.setState("bad name", "1") }
+        assertFailsWith<GossipException> { net.nodes[phone].core.setState("s", "{not json") }
+        net.pump(phone, net.nodes[phone].core.setState("s", "{\"n\":1}"))
+        assertEquals("{\"n\":1}", net.nodes[phone].core.getState(net.nodes[phone].id.deviceId, "s"))
+        net.pump(phone, net.nodes[phone].core.setState("s", null))
+        assertEquals(null, net.nodes[phone].core.getState(net.nodes[phone].id.deviceId, "s"))
+        net.nodes[phone].core.stopCodePairing()
+        assertFalse(net.nodes[phone].core.codePairingActive())
         assertEquals("disabled", net.nodes[mac].core.relayStatus())
         val connect = net.nodes[mac].core.relayConfigure(true, "wss://relay.example.test").filterIsInstance<Action.RelayConnect>().single()
         assertEquals("wss://relay.example.test/connect", connect.url)

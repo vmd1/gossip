@@ -458,7 +458,6 @@ class SyncForegroundService : Service() {
                 // until the *next* playback/metadata change, which might be a long
                 // time or never — mediaControlBridge.start() only ever published
                 // once, at service startup, with no reconnect-triggered resend.
-                mediaControlBridge.resyncNowPlaying()
                 // Same reasoning as dndSyncManager.reportInitialSyncState above: a
                 // peer that reconnects (or missed the original event-driven report
                 // to any race) shouldn't have to wait for this phone's *next*
@@ -474,7 +473,6 @@ class SyncForegroundService : Service() {
         runFallbackDialLoop(trustedDevices)
         runDndResyncLoop()
         runRosterResyncLoop()
-        runMediaResyncLoop()
         runHotspotStateResyncLoop()
         runBatteryResyncLoop()
     }
@@ -582,7 +580,7 @@ class SyncForegroundService : Service() {
     /** Self-healing backstop for `hotspot.state_update`, on top of the event-driven
      *  publish (a local `WIFI_AP_STATE_CHANGED_ACTION`) and the on-connect resend above:
      *  periodically re-sends this phone's current hotspot state while connected. Mirrors
-     *  [runDndResyncLoop]/[runMediaResyncLoop] — a no-op on a tablet/Mac (never
+     *  [runDndResyncLoop] — a no-op on a tablet/Mac (never
      *  originates this) and cheap on a phone regardless of whether the state has
      *  actually changed recently. */
     private fun runHotspotStateResyncLoop() {
@@ -625,23 +623,6 @@ class SyncForegroundService : Service() {
                 delay(DND_RESYNC_INTERVAL_MS)
                 if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
                     dndSyncManager.reportInitialSyncState()
-                }
-            }
-        }
-    }
-
-    /** Self-healing backstop for `media.nowplaying`, on top of the event-driven publish
-     *  (a playback/metadata change) and the on-connect resend above: periodically
-     *  re-sends this device's current now-playing snapshot while connected. Mirrors
-     *  [runDndResyncLoop] — a no-op both when nothing is playing and when a peer
-     *  already has this exact snapshot, since it's the same publish a real change
-     *  would trigger. */
-    private fun runMediaResyncLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                delay(DND_RESYNC_INTERVAL_MS)
-                if (transportManager.connectionState.value == ConnectionState.CONNECTED) {
-                    mediaControlBridge.resyncNowPlaying()
                 }
             }
         }

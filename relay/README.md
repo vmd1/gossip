@@ -80,6 +80,7 @@ All defaults live in `src/config.ts`.
 | `MAX_CONNECTIONS`, `MAX_TOPICS`, `SHED_RATIO` | 10000, 5000, 0.9 | global caps; at `SHED_RATIO` of either, new topics and new keys are refused first |
 | `TRUSTED_PROXY`, `TRUSTED_PROXY_HEADER`, `TRUSTED_PROXY_HOPS` | false, x-forwarded-for, 1 | take the client IP from the Nth-from-last header entry, only when enabled |
 | `KILL_SWITCH`, `KILL_SWITCH_FILE` | false, unset | see below |
+| `ABUSE_CONTACT` | unset | Where to report abuse, e.g. `abuse@vmd1.dev`. When set, served as plain text at `/abuse` and as `Contact: mailto:...` at `/.well-known/security.txt`. Also publish it in your domain registrar/WHOIS data and keep that mailbox monitored. |
 | `BAN_FILE`, `BAN_RELOAD_MS` | unset, 30000 | ban list file and reload interval |
 | `METRICS_PORT`, `METRICS_HOST` | 0 (off), 127.0.0.1 | ops-only listener for `/metrics` |
 | `METRICS_PUBLIC`, `METRICS_TOKEN` | false, unset | serve `/metrics` on the public port; optional bearer token |

@@ -7,7 +7,6 @@ repo="$(cd "$here/.." && pwd)"
 out="$here/target/interop"
 mkdir -p "$out"
 swiftc -O -o "$out/swift-harness" \
-  "$repo/mac/Gossip/Crypto/NoiseSession.swift" \
   "$repo/mac/Gossip/Transport/Envelope.swift" \
   "$repo/mac/Gossip/Transport/EnvelopeSigning.swift" \
   "$repo/mac/Gossip/Features/Hotspot/HotspotGattProtocol.swift" \

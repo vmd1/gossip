@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -339,11 +341,184 @@ class TransportManager(
                 if (event.task == "trust.roster_update") sendRoster(event.peer)
             }
             is CoreBridge.BridgeAction.DeviceRevoked -> Unit
+            is CoreBridge.BridgeAction.StateChanged -> _stateChanges.emit(
+                StateChange(
+                    event.deviceId, event.slot,
+                    event.valueJson?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) }.getOrNull() },
+                    event.version
+                )
+            )
+            is CoreBridge.BridgeAction.CodePairingSucceeded -> onCodePairingSucceeded(event.peer)
+            is CoreBridge.BridgeAction.CodePairingWrongCode -> _codePairing.tryEmit(CodePairingEvent.WrongCode(event.attemptsLeft.toInt()))
+            is CoreBridge.BridgeAction.CodePairingTooManyAttempts -> {
+                discovery.setPairingMode(false)
+                _codePairing.tryEmit(CodePairingEvent.TooManyAttempts)
+            }
+            is CoreBridge.BridgeAction.CodePairingExpired -> {
+                discovery.setPairingMode(false)
+                _codePairing.tryEmit(CodePairingEvent.Expired)
+            }
+            is CoreBridge.BridgeAction.CodePairingRejected -> codeLinkEnded()
             else -> Unit
         }
     }
 
     private val promptJobs = ConcurrentHashMap<ULong, Job>()
+
+    // ---- Synchronised state -----------------------------------------------------------------------------------
+
+    /** Another device's state slot changed; [value] is `null` when it was cleared (or the device was revoked). */
+    class StateChange(val deviceId: String, val slot: String, val value: kotlinx.serialization.json.JsonElement?, val version: ULong)
+
+    private val _stateChanges = MutableSharedFlow<StateChange>(extraBufferCapacity = 64)
+
+    /** Every change to another device's state slots, in order. */
+    val stateChanges: SharedFlow<StateChange> = _stateChanges.asSharedFlow()
+
+    /**
+     * Sets (or, with `null`, clears) one of this device's own state slots. The core announces the change, sends it to every
+     * device that connects later and repairs it periodically, so a feature only reports its current state and never runs
+     * its own resync loop. A no-op when the slot already holds this value.
+     */
+    fun setState(slot: String, value: kotlinx.serialization.json.JsonElement?) {
+        try {
+            runEngine { bridge.setState(slot, value?.toString()) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not set state $slot: ${e.message}")
+        }
+    }
+
+    /** A slot's current value: this device's own, or the latest received from [deviceId]. */
+    fun state(deviceId: String, slot: String): kotlinx.serialization.json.JsonElement? =
+        engineLock.withLock { bridge.state(deviceId, slot) }
+            ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) }.getOrNull() }
+
+    // ---- Pairing by code --------------------------------------------------------------------------------------
+
+    sealed class CodePairingEvent {
+        /** Pairing finished: this device and [peer] now trust each other. */
+        class Succeeded(val peer: HandshakePeerInfo) : CodePairingEvent()
+
+        /** Showing a code: someone typed a wrong one. */
+        class WrongCode(val attemptsLeft: Int) : CodePairingEvent()
+        object TooManyAttempts : CodePairingEvent()
+        object Expired : CodePairingEvent()
+
+        /** Typed a code: the device did not accept it. */
+        object Rejected : CodePairingEvent()
+
+        /** Typed a code: no device on this network is showing one. */
+        object NoDeviceFound : CodePairingEvent()
+    }
+
+    private val _codePairing = MutableSharedFlow<CodePairingEvent>(extraBufferCapacity = 16)
+    val codePairingEvents: SharedFlow<CodePairingEvent> = _codePairing.asSharedFlow()
+
+    /** Typing side: how many exchange attempts are in flight, and whether the current entry has finished. */
+    private val codeLock = Any()
+    private var codeLinksPending = 0
+    private var codeEntryFinished = true
+    private var codeCandidates = emptyMap<String, DiscoveredPeer>()
+
+    /** This is the new device: shows a code (`ABCD-EFGH`) and tells the network it is waiting for one. */
+    fun startCodePairing(): String {
+        val code = engineLock.withLock { bridge.startCodePairing() }
+        discovery.setPairingMode(true)
+        return code
+    }
+
+    fun stopCodePairing() {
+        engineLock.withLock { bridge.stopCodePairing() }
+        discovery.setPairingMode(false)
+    }
+
+    /**
+     * This is the already-paired device: [code] was typed here. Finds the device showing one on the network and runs the
+     * exchange; the outcome arrives on [codePairingEvents].
+     */
+    fun enterCode(code: String) {
+        if (!engineLock.withLock { bridge.isValidPairingCode(code) }) {
+            _codePairing.tryEmit(CodePairingEvent.Rejected)
+            return
+        }
+        synchronized(codeLock) { codeEntryFinished = false }
+        scope.launch {
+            val candidates = withTimeoutOrNull(CODE_SEARCH_MS) {
+                val found = LinkedHashMap<String, DiscoveredPeer>()
+                discovery.discover().first { event ->
+                    if (event is DiscoveryEvent.Found && event.peer.pairing && event.peer.host != null) {
+                        val id = event.peer.deviceId
+                        if (id != null && id != identityKeyStore.deviceId && !connectedDeviceIds.value.contains(id)) found[id] = event.peer
+                    }
+                    found.isNotEmpty()
+                }
+                // Give a second device that is also showing a code a moment to turn up, then stop looking.
+                delay(CODE_SETTLE_MS)
+                found.values.toList()
+            }
+            if (candidates.isNullOrEmpty()) {
+                synchronized(codeLock) { codeEntryFinished = true }
+                _codePairing.tryEmit(CodePairingEvent.NoDeviceFound)
+                return@launch
+            }
+            codeCandidates = candidates.associateBy { it.deviceId!! }
+            // Normally there is exactly one. With several, each is tried: a device that is not the right one counts the
+            // wrong code against its own limit and refuses.
+            for (candidate in candidates.take(3)) tryCodeOn(candidate, code)
+        }
+    }
+
+    private fun tryCodeOn(candidate: DiscoveredPeer, code: String) {
+        val target = candidate.deviceId ?: return
+        synchronized(codeLock) { codeLinksPending += 1 }
+        scope.launch {
+            val socket = try {
+                Socket().apply { connect(InetSocketAddress(candidate.host, candidate.port), CONNECT_TIMEOUT_MS) }
+            } catch (e: IOException) {
+                Log.w(TAG, "Connect to ${candidate.host}:${candidate.port} for pairing by code failed", e)
+                codeLinkEnded()
+                return@launch
+            }
+            val link = Link(nextConn.getAndIncrement().toULong(), socket, dialTarget = null, inboundHost = null)
+            links[link.conn] = link
+            try {
+                engineLock.withLock { carryOut(bridge.dialCode(link.conn, target, code)) }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start pairing by code with $target: ${e.message}")
+                closeLink(link.conn, notifyEngine = false)
+                codeLinkEnded()
+                return@launch
+            }
+            link.startWriter()
+            link.startReader()
+        }
+    }
+
+    /** One attempt ended without success; when the last does, the user is told the code was not accepted. */
+    private fun codeLinkEnded() {
+        val tellUser = synchronized(codeLock) {
+            codeLinksPending = maxOf(0, codeLinksPending - 1)
+            (codeLinksPending == 0 && !codeEntryFinished).also { if (it) codeEntryFinished = true }
+        }
+        if (tellUser) _codePairing.tryEmit(CodePairingEvent.Rejected)
+    }
+
+    private fun onCodePairingSucceeded(peer: HandshakePeerInfo) {
+        val typingSide = synchronized(codeLock) {
+            (!codeEntryFinished).also { if (it) { codeEntryFinished = true; codeLinksPending = 0 } }
+        }
+        discovery.setPairingMode(engineLock.withLock { bridge.codePairingActive() })
+        onNewDevicePaired?.invoke(peer)
+        _codePairing.tryEmit(CodePairingEvent.Succeeded(peer))
+        // Trusted now: connect the normal way (the typing side knows where the device is).
+        if (typingSide) {
+            val candidate = codeCandidates[peer.deviceId]
+            val trusted = trustedDevicesStore.getDevice(peer.deviceId)
+            if (candidate?.host != null && trusted != null) {
+                connect(candidate.host, candidate.port, trusted.publicKey, peer.deviceId)
+            }
+        }
+    }
 
     // ---- Sockets --------------------------------------------------------------------------------------------------
 
@@ -854,6 +1029,8 @@ class TransportManager(
         private const val LISTEN_BIND_ATTEMPTS = 5
         private const val LISTEN_BIND_RETRY_DELAY_MS = 500L
         private const val CONNECT_TIMEOUT_MS = 10_000
+        private const val CODE_SEARCH_MS = 10_000L
+        private const val CODE_SETTLE_MS = 1_200L
         private const val TICK_INTERVAL_MS = 1_000L
 
         /** The engine's virtual connection ids for peers reached through the relay start here (`desktop/README.md`). */

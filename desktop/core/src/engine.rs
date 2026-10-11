@@ -25,6 +25,7 @@ use serde_json::{Map, Value};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+use crate::crypto::code_pake::PakeSession;
 use crate::crypto::noise::{Handshake, NoiseError, Role, StaticKeypair, Transport};
 use crate::crypto::{pairing, sign};
 use crate::env::Env;
@@ -33,11 +34,16 @@ use crate::limits::{InboundRateLimiter, PendingFrameQueue};
 use crate::mesh::{self, SeenCache};
 use crate::reconcile::{Due, Reconciler};
 use crate::relay::{self, RelayClient, RelayOut, RelayState, RouteTag};
+use crate::state_sync::{LocalState, RemoteState};
 use crate::topic::{Topic, TopicSecret};
 use crate::trust::{SelfEntry, TrustSnapshot, TrustStore, TrustedDevice};
 use crate::wire::envelope::{Envelope, DEFAULT_TTL};
 use crate::wire::frame::{self, FrameDecoder, MAX_HANDSHAKE_FRAME, MAX_TRANSPORT_FRAME};
 use crate::wire::handshake::{self, DeviceType, HandshakeIdentity};
+
+mod code_pairing;
+mod state_sync;
+pub use code_pairing::{CodePairingError, CodePairingEvent};
 
 /// Opaque handle for one transport connection, chosen by the shell.
 pub type ConnId = u64;
@@ -179,6 +185,16 @@ pub enum Event {
     },
     /// A reconciliation resend is due; the owning feature answers it.
     ReconcileDue(Due),
+    /// A device's state slot changed (or was cleared, `value: None`): see [`Core::set_state`]. Only ever for other
+    /// devices' slots; the shell already knows its own.
+    StateChanged {
+        device_id: String,
+        slot: String,
+        value: Option<Value>,
+        version: u64,
+    },
+    /// Progress of a pairing by code (see [`Core::start_code_pairing`] and [`Core::dial_code`]).
+    CodePairing(CodePairingEvent),
     /// This device joined the relay topic; `members` other devices are present.
     RelayJoined {
         members: usize,
@@ -249,6 +265,14 @@ enum Stage {
     AwaitingConfirm,
     /// Responder, trusted: handshake done, waiting for the first transport frame to prove key possession.
     AwaitingProof,
+    /// Code pairing, device showing the code: answered the first message, waiting for the other side's proof.
+    CodeShowerAwaitProof,
+    /// Code pairing, device showing the code: paired; waiting for the other side to hang up.
+    CodeShowerDone,
+    /// Code pairing, device where the code was typed: sent the first message, waiting for the reply.
+    CodeEntererAwaitB,
+    /// Code pairing, device where the code was typed: sent its proof, waiting for the other side's identity.
+    CodeEntererAwaitDone,
     Live,
 }
 
@@ -275,6 +299,10 @@ struct Conn {
     rate: InboundRateLimiter,
     queued: PendingFrameQueue,
     raw_pending: Option<RawPending>,
+    /// Code pairing: the key exchange for this connection, and the device on the other end (the one the code was
+    /// typed for, or the one that typed it).
+    pake: Option<PakeSession>,
+    code_peer: Option<String>,
     /// Set for a virtual link through the relay: the remote device's route tag.
     relay_tag: Option<RouteTag>,
     opened_ms: i64,
@@ -299,6 +327,8 @@ impl Conn {
             rate: InboundRateLimiter::default(),
             queued: PendingFrameQueue::default(),
             raw_pending: None,
+            pake: None,
+            code_peer: None,
             relay_tag: None,
             opened_ms: now,
             stage_since_ms: now,
@@ -321,6 +351,11 @@ pub struct Core<E: Env> {
     seen: SeenCache,
     reconciler: Reconciler,
     armed_pairing: Option<(String, i64)>,
+    /// A code this device is showing so another device can pair with it by typing it.
+    code_show: Option<code_pairing::CodeShow>,
+    /// This device's synchronised state slots, and what it holds of other devices' (see `crate::state_sync`).
+    local_state: LocalState,
+    remote_state: RemoteState,
     prompt_active: bool,
     relay: RelayClient,
     topic: Option<Topic>,
@@ -358,6 +393,9 @@ impl<E: Env> Core<E> {
             seen: SeenCache::default(),
             reconciler: Reconciler::default(),
             armed_pairing: None,
+            code_show: None,
+            local_state: LocalState::default(),
+            remote_state: RemoteState::default(),
             prompt_active: false,
             relay,
             topic: None,
@@ -587,6 +625,17 @@ impl<E: Env> Core<E> {
             self.prompt_active = false;
             out.push(Action::Event(Event::PairingPromptCancelled { conn }));
         }
+        if matches!(
+            c.stage,
+            Stage::CodeEntererAwaitB | Stage::CodeEntererAwaitDone
+        ) {
+            // The device did not accept the code (or went away): the user is told to check it and try again.
+            out.push(Action::Event(Event::CodePairing(
+                CodePairingEvent::Rejected {
+                    device_id: c.code_peer.clone(),
+                },
+            )));
+        }
         if let Some(target) = &c.dial_target {
             self.release_dial(target, c.relay_tag.is_some());
             if c.relay_tag.is_some() {
@@ -718,7 +767,17 @@ impl<E: Env> Core<E> {
             return;
         };
         match stage {
-            Stage::AwaitingHello => self.handle_hello(conn, &payload, out),
+            Stage::AwaitingHello => {
+                if self.is_code_pairing_start(&payload) {
+                    self.code_shower_handle_a(conn, &payload, out)
+                } else {
+                    self.handle_hello(conn, &payload, out)
+                }
+            }
+            Stage::CodeShowerAwaitProof => self.code_shower_handle_proof(conn, &payload, out),
+            Stage::CodeEntererAwaitB => self.code_enterer_handle_b(conn, &payload, out),
+            Stage::CodeEntererAwaitDone => self.code_enterer_handle_done(conn, &payload, out),
+            Stage::CodeShowerDone => {} // anything more from a finished pairing is ignored until it hangs up
             Stage::AwaitingAck => self.handle_ack(conn, &payload, out),
             Stage::AwaitingConfirm => {
                 let queued = self
@@ -953,8 +1012,10 @@ impl<E: Env> Core<E> {
         if !self.ensure_topic(out) {
             self.send_topic_to(&peer.device_id, out);
         }
+        // Our synchronised state goes to the new peer at once; the periodic digest repairs anything later.
+        self.send_state_to(&peer.device_id, out);
         for due in self.reconciler.on_peer_connected(&peer.device_id) {
-            if due.task != TOPIC_TASK {
+            if due.task != TOPIC_TASK && due.task != state_sync::STATE_TASK {
                 out.push(Action::Event(Event::ReconcileDue(due)));
             }
         }
@@ -1119,6 +1180,9 @@ impl<E: Env> Core<E> {
             "trust.roster_update" => return self.handle_roster_update(envelope, out),
             "trust.revoke" => return self.handle_revoke(envelope, out),
             "mesh.topic" => return self.handle_mesh_topic(conn, envelope, out),
+            "state.update" | "state.digest" | "state.request" => {
+                return self.handle_state_message(envelope, out)
+            }
             _ => {}
         }
         // A feature turned off on this device never reaches its handlers.
@@ -1187,6 +1251,7 @@ impl<E: Env> Core<E> {
         out.push(Action::Event(Event::DeviceRevoked {
             device_id: device_id.clone(),
         }));
+        self.forget_state_of(&device_id, out);
         if let Some(conn) = self.peers.get(&device_id).copied() {
             self.drop_conn(conn, true, out);
         }
@@ -1217,6 +1282,7 @@ impl<E: Env> Core<E> {
         let already_revoked = self.trust.revoked_at(device_id).is_some();
         self.trust.revoke(device_id, now);
         out.push(Action::Event(Event::TrustChanged(self.trust.snapshot())));
+        self.forget_state_of(device_id, &mut out);
         if let Some(conn) = self.peers.get(device_id).copied() {
             self.drop_conn(conn, true, &mut out);
         }
@@ -1376,6 +1442,8 @@ impl<E: Env> Core<E> {
             self.armed_pairing = None;
         }
 
+        self.code_pairing_tick(now, &mut out);
+
         let relay_outs = self.relay.tick(now, &mut self.env);
         self.apply_relay(relay_outs, &mut out);
         self.relay_poll(&mut out);
@@ -1384,7 +1452,13 @@ impl<E: Env> Core<E> {
         let mut to_ping = Vec::new();
         for (&conn, c) in &self.conns {
             match c.stage {
-                Stage::AwaitingHello | Stage::AwaitingAck | Stage::AwaitingProof => {
+                Stage::AwaitingHello
+                | Stage::AwaitingAck
+                | Stage::AwaitingProof
+                | Stage::CodeShowerAwaitProof
+                | Stage::CodeShowerDone
+                | Stage::CodeEntererAwaitB
+                | Stage::CodeEntererAwaitDone => {
                     if now - c.stage_since_ms > HANDSHAKE_TIMEOUT_MS
                         && now - c.opened_ms > HANDSHAKE_TIMEOUT_MS
                     {
@@ -1426,7 +1500,9 @@ impl<E: Env> Core<E> {
         }
 
         for due in self.reconciler.tick(now, !self.peers.is_empty()) {
-            if due.task == TOPIC_TASK {
+            if due.task == state_sync::STATE_TASK {
+                self.broadcast_state_digest(&mut out);
+            } else if due.task == TOPIC_TASK {
                 self.resend_topic_to_all(&mut out);
             } else {
                 out.push(Action::Event(Event::ReconcileDue(due)));

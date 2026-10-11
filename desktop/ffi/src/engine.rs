@@ -247,6 +247,65 @@ impl GossipCore {
         self.lock().disarm_pairing();
     }
 
+    // ---- Synchronised state ------------------------------------------------------------------------------------
+
+    /// Sets one of this device's state slots (`value_json` is the JSON value; `None` clears it) and lets the core keep
+    /// every other device's copy correct: it is announced on change, sent to every newly connected device, and
+    /// repaired by a periodic digest. Setting the value the slot already holds does nothing, so a feature can report
+    /// its current state whenever it likes. Slot names are 1 to 64 characters of a-z, 0-9, `.`, `_`, `-`.
+    pub fn set_state(
+        &self,
+        slot: String,
+        value_json: Option<String>,
+    ) -> Result<Vec<Action>, GossipError> {
+        let value = match value_json {
+            Some(text) => Some(
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|e| GossipError::invalid(format!("value is not valid JSON: {e}")))?,
+            ),
+            None => None,
+        };
+        Ok(actions(self.lock().set_state(&slot, value)?))
+    }
+
+    /// A slot's current value as JSON: this device's own, or the latest received from `device_id`.
+    pub fn get_state(&self, device_id: String, slot: String) -> Option<String> {
+        self.lock().state(&device_id, &slot).map(|v| v.to_string())
+    }
+
+    // ---- Pairing by code ---------------------------------------------------------------------------------------
+
+    /// The new device calls this and shows the returned code (`ABCD-EFGH`). While it is active
+    /// (`code_pairing_active`) the shell should advertise that this device is in pairing mode.
+    pub fn start_code_pairing(&self) -> String {
+        self.lock().start_code_pairing()
+    }
+
+    pub fn stop_code_pairing(&self) {
+        self.lock().stop_code_pairing();
+    }
+
+    pub fn code_pairing_active(&self) -> bool {
+        self.lock().code_pairing_active()
+    }
+
+    /// The code was typed on this (already paired) device. `conn` is a fresh connection to `target`, a device found
+    /// advertising pairing mode; the first message comes back as a `Send`. Progress arrives as `CodePairing*`
+    /// actions; on success both devices trust each other and the connection is closed.
+    pub fn dial_code(
+        &self,
+        conn: u64,
+        target: String,
+        code: String,
+    ) -> Result<Vec<Action>, GossipError> {
+        Ok(actions(self.lock().dial_code(conn, &target, &code)?))
+    }
+
+    /// Whether `code` is a well-formed pairing code (so the UI can enable its Pair button).
+    pub fn is_valid_pairing_code(&self, code: String) -> bool {
+        gossip_core::crypto::code_pake::normalize_code(&code).is_some()
+    }
+
     /// The user answered a `PairingPrompt`.
     pub fn confirm_pairing(&self, conn: u64, accepted: bool) -> Vec<Action> {
         actions(self.lock().confirm_pairing(conn, accepted))

@@ -26,6 +26,11 @@ final class MediaControlManagerTests: XCTestCase {
         XCTAssertEqual(state?.packageName, "com.spotify.music")
     }
 
+    func testOnlyReachableDevicesShowACard() {
+        XCTAssertEqual(MediaControlManager.shownDevices(reported: ["a", "b"], reachable: ["b", "c"]), ["b"])
+        XCTAssertTrue(MediaControlManager.shownDevices(reported: ["a"], reachable: []).isEmpty)
+    }
+
     func testParseNowPlayingHandlesMissingOptionalArt() throws {
         let payload: JSONValue = .object([
             "title": .string("T"),

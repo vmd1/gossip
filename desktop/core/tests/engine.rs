@@ -233,6 +233,8 @@ fn kinds(node: &Node) -> Vec<&'static str> {
             Event::ReconcileDue(_) => "reconcile",
             Event::TopicChanged { .. } => "topic",
             Event::RelayJoined { .. } | Event::RelayDown | Event::RelayError { .. } => "relay",
+            Event::CodePairing(_) => "code-pairing",
+            Event::StateChanged { .. } => "state",
         })
         .collect()
 }
@@ -1037,4 +1039,441 @@ fn set_trust_replaces_the_table_including_tombstones() {
     assert!(!net.nodes[a].core.trust().is_trusted(&id_of(9)));
     assert_eq!(net.nodes[a].core.trust().revoked_at(&id_of(9)), Some(T0));
     let _ = TrustSnapshot::default();
+}
+
+// ---- Pairing by code ---------------------------------------------------------------------------------------------
+
+impl Net {
+    /// `enterer` opens a connection to `shower` and starts a code pairing on it.
+    fn open_code(
+        &mut self,
+        enterer: usize,
+        shower: usize,
+        code: &str,
+    ) -> Result<(ConnId, ConnId), CodePairingError> {
+        let (a, b) = (self.next_conn, self.next_conn + 1);
+        self.next_conn += 2;
+        self.links.insert((enterer, a), (shower, b));
+        self.links.insert((shower, b), (enterer, a));
+        let accept = self.nodes[shower].core.connection_accepted(b).unwrap();
+        self.pump(shower, accept);
+        let target = self.nodes[shower].core.device_id().to_owned();
+        let dial = self.nodes[enterer].core.dial_code(a, &target, code)?;
+        self.pump(enterer, dial);
+        Ok((a, b))
+    }
+
+    fn code_events(&self, node: usize) -> Vec<CodePairingEvent> {
+        self.nodes[node]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CodePairing(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn two_devices() -> (Net, usize, usize) {
+    let mut net = Net::new();
+    let existing = net.add(1, DeviceType::Mac);
+    let new = net.add(2, DeviceType::AndroidPhone);
+    (net, existing, new)
+}
+
+#[test]
+fn typing_the_shown_code_pairs_both_devices_and_they_then_connect() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    assert_eq!(shown.len(), 9, "ABCD-EFGH");
+    assert!(net.nodes[new].core.code_pairing_active());
+
+    // The user types it in lower case, without the dash.
+    let typed = shown.replace('-', "").to_lowercase();
+    net.open_code(existing, new, &typed).unwrap();
+
+    for (node, other) in [(existing, new), (new, existing)] {
+        let events = net.code_events(node);
+        let peer = match events.last() {
+            Some(CodePairingEvent::Succeeded { peer }) => peer,
+            other => panic!("expected success, got {other:?}"),
+        };
+        assert_eq!(peer.device_id, id_of(if other == new { 2 } else { 1 }));
+        assert!(net.nodes[node].core.trust().is_trusted(&peer.device_id));
+        assert_eq!(peer.noise_public_key, net.noise_pub(other));
+    }
+    assert!(
+        net.links.is_empty(),
+        "the pairing connection is closed afterwards"
+    );
+
+    // Now they are trusted, so the normal handshake works with no prompt.
+    net.open(existing, new, None);
+    assert!(net.nodes[existing].core.is_connected(&id_of(2)));
+    assert!(net.nodes[new].core.is_connected(&id_of(1)));
+}
+
+#[test]
+fn a_wrong_code_pairs_nothing_and_costs_an_attempt() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    let wrong = if shown.starts_with('A') {
+        "BBBBBBBB"
+    } else {
+        "AAAAAAAA"
+    };
+    net.open_code(existing, new, wrong).unwrap();
+    assert_eq!(
+        net.code_events(new),
+        vec![CodePairingEvent::WrongCode { attempts_left: 4 }]
+    );
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Rejected { .. }]
+    ));
+    assert!(!net.nodes[existing].core.trust().is_trusted(&id_of(2)));
+    assert!(!net.nodes[new].core.trust().is_trusted(&id_of(1)));
+    assert!(net.nodes[new].core.code_pairing_active(), "still usable");
+}
+
+#[test]
+fn five_wrong_codes_kill_the_code_even_for_the_right_one() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    let right = shown.replace('-', "");
+    let wrong = if right.starts_with('A') {
+        "BBBBBBBB"
+    } else {
+        "AAAAAAAA"
+    };
+    for _ in 0..5 {
+        net.open_code(existing, new, wrong).unwrap();
+    }
+    assert!(net
+        .code_events(new)
+        .contains(&CodePairingEvent::TooManyAttempts));
+    assert!(!net.nodes[new].core.code_pairing_active());
+
+    net.nodes[existing].events.clear();
+    net.open_code(existing, new, &right).unwrap();
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Rejected { .. }]
+    ));
+    assert!(!net.nodes[existing].core.trust().is_trusted(&id_of(2)));
+}
+
+#[test]
+fn a_device_not_showing_a_code_refuses_every_attempt() {
+    let (mut net, existing, new) = two_devices();
+    net.open_code(existing, new, "ABCDEFGH").unwrap();
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Rejected { .. }]
+    ));
+    assert!(
+        net.code_events(new).is_empty(),
+        "no attempt is even counted"
+    );
+    assert!(!net.nodes[new].core.trust().is_trusted(&id_of(1)));
+}
+
+#[test]
+fn an_unused_code_expires() {
+    let (mut net, existing, new) = two_devices();
+    let shown = net.nodes[new].core.start_code_pairing();
+    net.set_time(T0 + 301_000);
+    let tick = net.nodes[new].core.tick();
+    net.pump(new, tick);
+    assert_eq!(net.code_events(new), vec![CodePairingEvent::Expired]);
+    assert!(!net.nodes[new].core.code_pairing_active());
+
+    net.open_code(existing, new, &shown.replace('-', ""))
+        .unwrap();
+    assert!(!net.nodes[existing].core.trust().is_trusted(&id_of(2)));
+}
+
+#[test]
+fn repeating_the_exchange_is_a_no_op_but_only_for_the_same_device() {
+    let mut net = Net::new();
+    let existing = net.add(1, DeviceType::Mac);
+    let new = net.add(2, DeviceType::AndroidPhone);
+    let other = net.add(3, DeviceType::AndroidTablet);
+    let shown = net.nodes[new].core.start_code_pairing();
+    let code = shown.replace('-', "");
+    net.open_code(existing, new, &code).unwrap();
+    let after_first = net.nodes[new].core.trust_snapshot();
+
+    // A lost reply: the same device tries again with the same code.
+    net.nodes[new].events.clear();
+    net.nodes[existing].events.clear();
+    net.open_code(existing, new, &code).unwrap();
+    assert_eq!(
+        net.nodes[new].core.trust_snapshot(),
+        after_first,
+        "unchanged"
+    );
+    assert!(
+        !net.nodes[new]
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::TrustChanged(_))),
+        "no trust change reported again"
+    );
+    assert!(net.code_events(new).is_empty(), "no second success shown");
+    assert!(matches!(
+        net.code_events(existing).as_slice(),
+        [CodePairingEvent::Succeeded { .. }]
+    ));
+
+    // Someone else with the right code is refused while that window is open.
+    net.open_code(other, new, &code).unwrap();
+    assert!(!net.nodes[other].core.trust().is_trusted(&id_of(2)));
+    assert!(!net.nodes[new].core.trust().is_trusted(&id_of(3)));
+}
+
+#[test]
+fn dial_code_rejects_bad_input_and_relayed_connections() {
+    let (mut net, existing, new) = two_devices();
+    let target = id_of(2);
+    let core = &mut net.nodes[existing].core;
+    assert_eq!(
+        core.dial_code(1, &target, "SHORT").err(),
+        Some(CodePairingError::BadCode)
+    );
+    assert_eq!(
+        core.dial_code(1, &target, "ABCDEF0H").err(),
+        Some(CodePairingError::BadCode)
+    );
+    assert_eq!(
+        core.dial_code(1, "not-a-uuid", "ABCDEFGH").err(),
+        Some(CodePairingError::BadTarget)
+    );
+    assert_eq!(
+        core.dial_code(u64::MAX, &target, "ABCDEFGH").err(),
+        Some(CodePairingError::NotDirect)
+    );
+    let _ = new;
+}
+
+#[test]
+fn a_stalled_code_exchange_times_out() {
+    let (mut net, existing, new) = two_devices();
+    net.nodes[new].core.start_code_pairing();
+    // The shower accepts the connection but nothing ever arrives.
+    let b = 77;
+    let accept = net.nodes[new].core.connection_accepted(b).unwrap();
+    net.pump(new, accept);
+    net.set_time(T0 + 16_000);
+    let tick = net.nodes[new].core.tick();
+    assert!(
+        tick.iter()
+            .any(|a| matches!(a, Action::Close { conn } if *conn == b)),
+        "the idle connection is closed"
+    );
+    let _ = existing;
+}
+
+// ---- Central state sync ------------------------------------------------------------------------------------------
+
+impl Net {
+    fn state_changes(&self, node: usize) -> Vec<(String, String, Option<Value>)> {
+        self.nodes[node]
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::StateChanged {
+                    device_id,
+                    slot,
+                    value,
+                    ..
+                } => Some((device_id.clone(), slot.clone(), value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn set_state(&mut self, node: usize, slot: &str, value: Option<Value>) {
+        let out = self.nodes[node].core.set_state(slot, value).unwrap();
+        self.pump(node, out);
+    }
+
+    fn tick_all(&mut self) {
+        for n in 0..self.nodes.len() {
+            let out = self.nodes[n].core.tick();
+            self.pump(n, out);
+        }
+    }
+}
+
+fn line_of_three() -> (Net, usize, usize, usize) {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    let b = net.add(2, DeviceType::Mac);
+    let c = net.add(3, DeviceType::AndroidTablet);
+    net.pair(a, b);
+    net.pair(c, b);
+    net.introduce(b);
+    (net, a, b, c)
+}
+
+#[test]
+fn a_state_change_reaches_every_device_and_repeating_it_is_a_no_op() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "Song"})));
+    for node in [b, c] {
+        assert_eq!(
+            net.state_changes(node),
+            vec![(
+                id_of(1),
+                "media.nowplaying".to_owned(),
+                Some(json!({"title": "Song"}))
+            )],
+            "node {node} saw the update once"
+        );
+        assert_eq!(
+            net.nodes[node].core.state(&id_of(1), "media.nowplaying"),
+            Some(json!({"title": "Song"}))
+        );
+    }
+    // Reporting the same state again (a feature doing it on a timer) sends nothing and changes nothing.
+    let again = net.nodes[a]
+        .core
+        .set_state("media.nowplaying", Some(json!({"title": "Song"})))
+        .unwrap();
+    assert!(again.is_empty());
+}
+
+#[test]
+fn clearing_a_slot_is_state_too() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "Song"})));
+    net.set_state(a, "media.nowplaying", None);
+    for node in [b, c] {
+        let changes = net.state_changes(node);
+        assert_eq!(changes.last().unwrap().2, None, "the clear arrived");
+        assert_eq!(
+            net.nodes[node].core.state(&id_of(1), "media.nowplaying"),
+            None
+        );
+    }
+}
+
+#[test]
+fn a_device_that_connects_later_is_sent_everything() {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    let b = net.add(2, DeviceType::Mac);
+    // The phone has state before it is connected to anybody: setting it must not fail.
+    net.set_state(a, "notification.active", Some(json!({"ids": ["x", "y"]})));
+    net.set_state(a, "media.nowplaying", None);
+    net.pair(a, b);
+    assert_eq!(
+        net.nodes[b].core.state(&id_of(1), "notification.active"),
+        Some(json!({"ids": ["x", "y"]}))
+    );
+}
+
+#[test]
+fn the_periodic_digest_repairs_a_device_that_missed_an_update() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "One"})));
+    // A new device d joins through b only after the update, so b never forwards it (a's update was already sent).
+    let d = net.add(4, DeviceType::AndroidTablet);
+    net.pair(d, b);
+    net.introduce(b);
+    assert_eq!(
+        net.nodes[d].core.state(&id_of(1), "media.nowplaying"),
+        None,
+        "d missed it"
+    );
+
+    // A minute later a's digest goes out; d notices it lacks the slot, asks a (through b), and a answers. Time moves in
+    // steps so heartbeats keep the links alive, as the shell's one-second tick does.
+    for step in 1..=8 {
+        net.set_time(T0 + step * 10_000);
+        net.tick_all();
+    }
+    assert_eq!(
+        net.nodes[d].core.state(&id_of(1), "media.nowplaying"),
+        Some(json!({"title": "One"})),
+        "repaired by the digest"
+    );
+    let _ = c;
+}
+
+#[test]
+fn an_older_update_cannot_undo_a_newer_one() {
+    let (mut net, a, b, _c) = line_of_three();
+    net.set_state(a, "s", Some(json!(1)));
+    net.set_state(a, "s", Some(json!(2)));
+    // Replay the first update to b by hand (a duplicate delivery or a relay race).
+    let stale = {
+        let mut slot = serde_json::Map::new();
+        slot.insert("slot".into(), "s".into());
+        slot.insert("version".into(), 1u64.into());
+        slot.insert("value".into(), json!(1));
+        let mut payload = serde_json::Map::new();
+        payload.insert("slots".into(), Value::Array(vec![Value::Object(slot)]));
+        net.nodes[a]
+            .core
+            .new_envelope("state.update")
+            .broadcast()
+            .with_payload(payload)
+    };
+    net.send(a, stale).unwrap();
+    assert_eq!(net.nodes[b].core.state(&id_of(1), "s"), Some(json!(2)));
+}
+
+#[test]
+fn a_feature_turned_off_neither_sends_nor_applies_its_slots() {
+    let (mut net, a, b, _c) = line_of_three();
+    let mut off = FeatureSettings::all_enabled();
+    off.set_enabled(Feature::Media, false);
+    net.nodes[b].core.set_features(off);
+    net.set_state(a, "media.nowplaying", Some(json!(1)));
+    net.set_state(a, "notification.active", Some(json!({"ids": []})));
+    assert_eq!(net.nodes[b].core.state(&id_of(1), "media.nowplaying"), None);
+    assert!(net.nodes[b]
+        .core
+        .state(&id_of(1), "notification.active")
+        .is_some());
+
+    // And its own slot is stored but not announced while the feature is off.
+    let out = net.nodes[b]
+        .core
+        .set_state("media.nowplaying", Some(json!(2)))
+        .unwrap();
+    assert!(out.is_empty());
+}
+
+#[test]
+fn a_revoked_devices_state_is_dropped() {
+    let (mut net, a, b, c) = line_of_three();
+    net.set_state(a, "media.nowplaying", Some(json!({"title": "Song"})));
+    let out = net.nodes[b].core.revoke_device(&id_of(1));
+    net.pump(b, out);
+    assert_eq!(net.nodes[b].core.state(&id_of(1), "media.nowplaying"), None);
+    assert!(net
+        .state_changes(b)
+        .iter()
+        .any(|(dev, slot, value)| dev == &id_of(1)
+            && slot == "media.nowplaying"
+            && value.is_none()));
+    let _ = c;
+}
+
+#[test]
+fn invalid_slots_are_refused() {
+    let mut net = Net::new();
+    let a = net.add(1, DeviceType::AndroidPhone);
+    assert!(net.nodes[a]
+        .core
+        .set_state("Bad Name", Some(json!(1)))
+        .is_err());
+    assert!(net.nodes[a]
+        .core
+        .set_state("big", Some(Value::String("x".repeat(300_000))))
+        .is_err());
 }

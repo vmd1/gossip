@@ -57,6 +57,25 @@ data class NotificationRemovedPayload(val id: String) {
     )
 }
 
+/** The value of the `notification.active` state slot (android -> mesh, see `docs/plans/state-sync.md`): the ids of every
+ *  notification the phone is currently mirroring, so a receiver can drop any mirrored copy that is no longer in the list
+ *  (a `notification.removed` that was lost to a disconnect or race). Receivers only act on notifications they have held
+ *  for a few seconds, so a snapshot that raced a newer `notification.posted` never removes it. */
+@Serializable
+data class NotificationSyncPayload(val ids: List<String>) {
+    fun toJson(): JsonObject = Json.encodeToJsonElement(serializer(), this).jsonObject
+
+    companion object {
+        /** A phone with more active notifications than this reports nothing rather than send a huge list;
+         *  receivers then simply keep what they have. */
+        const val MAX_IDS = 200
+        private val json = Json { ignoreUnknownKeys = true }
+
+        fun fromJson(value: kotlinx.serialization.json.JsonElement): NotificationSyncPayload =
+            json.decodeFromJsonElement(serializer(), value)
+    }
+}
+
 /** `notification.reply` payload (mac -> android / android -> android).
  *
  *  [attemptId] uniquely identifies this *reply attempt*, not the notification (`id` is

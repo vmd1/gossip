@@ -3,7 +3,8 @@ import Combine
 
 /// `type` values this unit registers in `schema/message-types.md`.
 enum MediaMessageType {
-    static let nowPlaying = "media.nowplaying"
+    /// The synchronised state slot a phone keeps its now-playing state in.
+    static let nowPlayingSlot = "media.nowplaying"
     static let command = "media.command"
 }
 
@@ -48,29 +49,59 @@ final class MediaControlManager: ObservableObject {
     private weak var transportManager: TransportManager?
     private let identity: IdentityKeyStore
 
+    private var cancellables = Set<AnyCancellable>()
+
     init(transportManager: TransportManager, identity: IdentityKeyStore = .shared) {
         self.transportManager = transportManager
         self.identity = identity
-        transportManager.router.register(prefix: MediaMessageType.nowPlaying) { [weak self] envelope in
-            guard let state = Self.parseNowPlaying(envelope.payload) else { return }
-            DispatchQueue.main.async {
-                self?.nowPlayingByDevice[envelope.senderId] = state
-                self?.mostRecentDeviceId = envelope.senderId
-            }
+        // Now-playing is a synchronised state slot (`media.nowplaying`, see `docs/plans/state-sync.md`): the core keeps it
+        // correct across reconnects and drops it when the phone clears it, so there is no resync or expiry logic here.
+        transportManager.addOnStateChanged { [weak self] change in
+            guard change.slot == MediaMessageType.nowPlayingSlot else { return }
+            self?.apply(deviceId: change.deviceId, valueJSON: change.valueJSON)
         }
+        // A phone that is no longer reachable stops showing its card; the card comes back with the phone.
+        transportManager.$meshReachableDeviceIds
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
+
+    private func apply(deviceId: String, valueJSON: String?) {
+        let state = valueJSON
+            .flatMap { try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
+            .flatMap(Self.parseNowPlaying)
+        if let state {
+            nowPlayingByDevice[deviceId] = state
+            mostRecentDeviceId = deviceId
+        } else {
+            // Cleared: the phone has no media session any more.
+            nowPlayingByDevice.removeValue(forKey: deviceId)
+            if mostRecentDeviceId == deviceId { mostRecentDeviceId = nowPlayingByDevice.keys.sorted().first }
+        }
+    }
+
+    /// Devices whose card is shown: one that reported and is currently reachable.
+    static func shownDevices(reported: Set<String>, reachable: Set<String>) -> Set<String> {
+        reported.intersection(reachable)
+    }
+
+    private var shown: Set<String> {
+        Self.shownDevices(reported: Set(nowPlayingByDevice.keys), reachable: transportManager?.meshReachableDeviceIds ?? [])
     }
 
     /// The now-playing state currently shown/controlled by the menu bar UI.
     var nowPlaying: NowPlayingState? {
-        guard let deviceId = effectiveSelectedDeviceId else { return nil }
+        guard let deviceId = effectiveSelectedDeviceId, shown.contains(deviceId) else { return nil }
         return nowPlayingByDevice[deviceId]
     }
 
     private var effectiveSelectedDeviceId: String? {
-        if let selectedDeviceId, nowPlayingByDevice[selectedDeviceId] != nil {
+        if let selectedDeviceId, shown.contains(selectedDeviceId) {
             return selectedDeviceId
         }
-        return mostRecentDeviceId
+        if let mostRecentDeviceId, shown.contains(mostRecentDeviceId) { return mostRecentDeviceId }
+        return shown.sorted().first
     }
 
     // MARK: - Parsing (pure, unit-testable without a live transport)

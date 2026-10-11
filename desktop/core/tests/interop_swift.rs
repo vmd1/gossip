@@ -1,4 +1,4 @@
-//! Interoperability with the Mac app's real code: the actual `NoiseSession.swift`, `Envelope.swift` and
+//! Interoperability with the Mac app's real code: the actual `Envelope.swift` and
 //! `EnvelopeSigning.swift`, compiled into a small harness (`desktop/scripts/build-swift-interop.sh`). This is a
 //! stronger check than shared vectors because nothing about the Swift side is re-derived from a spec.
 //!
@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use ed25519_dalek::SigningKey;
-use gossip_core::crypto::noise::{Handshake, StaticKeypair};
 use gossip_core::crypto::sign;
 use gossip_core::wire::envelope::Envelope;
 use serde_json::json;
@@ -74,90 +73,6 @@ impl Drop for Swift {
 
 fn h(b: &[u8]) -> String {
     hex::encode(b)
-}
-
-const IDENTITY: &[u8] = br#"{"deviceId":"11111111-1111-1111-1111-111111111111","deviceName":"Interop","deviceType":"mac","signingPublicKey":"ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ="}"#;
-
-/// Messages of assorted sizes in both directions after the handshake, including one far above 64 KiB (the apps
-/// carry clipboard images in single transport frames).
-fn exchange_transport(swift: &mut Swift, rust: &mut gossip_core::crypto::noise::Transport) {
-    let sizes = [0usize, 1, 15, 16, 17, 1000, 65_535, 65_536, 1 << 20];
-    for (i, size) in sizes.iter().enumerate() {
-        let msg: Vec<u8> = (0..*size).map(|n| (n * 7 + i) as u8).collect();
-        let ct = rust.encrypt(&msg).unwrap();
-        assert_eq!(
-            swift.cmd(&format!("DEC {}", h(&ct))),
-            h(&msg),
-            "rust -> swift, {size} bytes"
-        );
-        let ct = hex::decode(swift.cmd(&format!("ENC {}", h(&msg)))).unwrap();
-        assert_eq!(
-            rust.decrypt(&ct).unwrap(),
-            msg,
-            "swift -> rust, {size} bytes"
-        );
-    }
-}
-
-#[test]
-fn swift_initiator_rust_responder() {
-    let Some(mut swift) = Swift::start() else {
-        return;
-    };
-    let swift_static = StaticKeypair::from_secret_bytes([0x21; 32]);
-    let rust_static = StaticKeypair::from_secret_bytes([0x42; 32]);
-
-    swift.cmd(&format!(
-        "INIT {} {}",
-        h(&swift_static.secret_bytes()),
-        h(&rust_static.public_bytes())
-    ));
-    let msg1 = hex::decode(swift.cmd(&format!("M1 {}", h(IDENTITY)))).unwrap();
-
-    let mut hs = Handshake::responder(&rust_static, &[]);
-    assert_eq!(
-        hs.read_message1(&msg1).unwrap(),
-        IDENTITY,
-        "Rust must read what the Mac app's initiator wrote"
-    );
-    assert_eq!(hs.remote_static(), Some(swift_static.public_bytes()));
-    let (msg2, mut transport) = hs.write_message2(b"{\"reply\":true}", [7; 32]).unwrap();
-
-    assert_eq!(
-        swift.cmd(&format!("R2 {}", h(&msg2))),
-        h(b"{\"reply\":true}"),
-        "the Mac app must read Rust's message 2"
-    );
-    assert_eq!(swift.cmd("PEER"), h(&rust_static.public_bytes()));
-    exchange_transport(&mut swift, &mut transport);
-}
-
-#[test]
-fn rust_initiator_swift_responder() {
-    let Some(mut swift) = Swift::start() else {
-        return;
-    };
-    let swift_static = StaticKeypair::from_secret_bytes([0x33; 32]);
-    let rust_static = StaticKeypair::from_secret_bytes([0x55; 32]);
-
-    swift.cmd(&format!("RESP {}", h(&swift_static.secret_bytes())));
-    let mut hs = Handshake::initiator(&rust_static, swift_static.public_bytes(), &[]);
-    let msg1 = hs.write_message1(IDENTITY, [9; 32]).unwrap();
-
-    assert_eq!(
-        swift.cmd(&format!("R1 {}", h(&msg1))),
-        h(IDENTITY),
-        "the Mac app must read Rust's message 1"
-    );
-    assert_eq!(swift.cmd("PEER"), h(&rust_static.public_bytes()));
-    let msg2 = hex::decode(swift.cmd(&format!("M2 {}", h(b"ack-payload")))).unwrap();
-
-    let (payload, mut transport) = hs.read_message2(&msg2).unwrap();
-    assert_eq!(
-        payload, b"ack-payload",
-        "Rust must read what the Mac app's responder wrote"
-    );
-    exchange_transport(&mut swift, &mut transport);
 }
 
 fn envelopes() -> Vec<Envelope> {

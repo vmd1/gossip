@@ -108,7 +108,10 @@ class TransportE2eTest {
                     put("macHasSigningKey", JsonPrimitive(trusted.getDevice(e.senderId)?.signingPublicKey != null))
                     put("dnd", JsonPrimitive(dnd.get()))
                     put("clipboard", JsonPrimitive(clipboard.get()))
+                    // The Mac's synchronised slot as this device sees it ("null" when unset or cleared).
+                    put("macSlot", JsonPrimitive(transport.state(e.senderId, "e2e.mac")?.toString() ?: "null"))
                 })
+                "e2e.setstate" -> transport.setState("e2e.android", e.payload["value"]?.takeIf { it !is kotlinx.serialization.json.JsonNull })
                 "e2e.sendraw" -> scope.launch {
                     // Android -> Mac with a raw follow-up frame: a recognisable pattern the Mac can check.
                     val raw = ByteArray((e.payload["size"] as JsonPrimitive).content.toInt()) { (it * 31 + 7).toByte() }
@@ -151,6 +154,8 @@ class TransportE2eTest {
         withTimeout(60_000) { firstFromMac.await() }
         trusted.clearProvisional(macId)
         log("paired; code=${transport.pairingCodeFor(macKey)}")
+        // A synchronised state slot of our own: the core must deliver it to the Mac.
+        transport.setState("e2e.android", buildJsonObject { put("n", JsonPrimitive(1)) })
 
         reply("e2e.hello", macId, buildJsonObject {
             put("pairingCode", JsonPrimitive(transport.pairingCodeFor(macKey)))

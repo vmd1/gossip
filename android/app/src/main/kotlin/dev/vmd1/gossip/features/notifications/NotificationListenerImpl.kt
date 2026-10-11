@@ -111,6 +111,7 @@ class NotificationListenerImpl : NotificationListenerService() {
 
         active = this
         ensureHandlersRegistered()
+        publishActive()
     }
 
     private val replyEnvelopeHandler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
@@ -160,26 +161,7 @@ class NotificationListenerImpl : NotificationListenerService() {
         super.onNotificationPosted(sbn)
         if (!isPhone) return
         ensureHandlersRegistered()
-        // Settings → Notifications → Apps: the user can switch individual apps off.
-        if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return
-        // Never mirror our own persistent "Gossip is running" foreground-service
-        // notification specifically — but DO mirror any other notification this app
-        // posts (e.g. a manual "Send Test Notification" button), so that button is
-        // actually useful for testing the mirroring pipeline end to end.
-        if (sbn.packageName == packageName && sbn.id == SyncForegroundService.NOTIFICATION_ID) return
-        // Never re-mirror a notification this app itself posted to mirror some OTHER
-        // device's notification — see EXTRA_IS_MIRROR's doc for why this must be a
-        // content-based check, not a package/id exclusion like the one above.
-        if (sbn.notification.extras.getBoolean(EXTRA_IS_MIRROR, false)) return
-        if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return
-        // Media playback notifications (Spotify, YouTube Music, etc.) are already covered
-        // end to end by the dedicated media.nowplaying/media.command pipeline
-        // (MediaControlBridge -> Mac's NowPlayingView), which has real transport controls
-        // and updates live with playback position — a mirrored copy of the notification
-        // itself would just be redundant clutter, and would re-post on every playback
-        // tick as the notification's progress/timestamp changes. `EXTRA_MEDIA_SESSION` is
-        // the same signal the system itself uses to identify a `MediaStyle` notification.
-        if (sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return
+        if (!shouldMirror(sbn)) return
 
         val id = sbn.key
         val notification = sbn.notification
@@ -187,7 +169,6 @@ class NotificationListenerImpl : NotificationListenerService() {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val body = (extras.getCharSequence(Notification.EXTRA_TEXT)
             ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
-        if (title.isEmpty() && body.isEmpty()) return
 
         val replyAction = findReplyAction(notification)
         if (replyAction != null) {
@@ -209,6 +190,46 @@ class NotificationListenerImpl : NotificationListenerService() {
         send(payload.toEnvelope(senderId = deviceId()))
     }
 
+    /** Whether [sbn] is one this phone mirrors to the mesh. The same test decides what is sent as
+     *  `notification.posted` and what is listed in `notification.sync`, so the two never disagree. */
+    private fun shouldMirror(sbn: StatusBarNotification): Boolean {
+        // Settings → Notifications → Apps: the user can switch individual apps off.
+        if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return false
+        // Never mirror our own persistent "Gossip is running" foreground-service notification specifically, but DO
+        // mirror any other notification this app posts (e.g. a manual "Send Test Notification" button), so that
+        // button is actually useful for testing the mirroring pipeline end to end.
+        if (sbn.packageName == packageName && sbn.id == SyncForegroundService.NOTIFICATION_ID) return false
+        // Never re-mirror a notification this app itself posted to mirror some OTHER device's notification, see
+        // EXTRA_IS_MIRROR's doc for why this must be a content-based check, not a package/id exclusion.
+        if (sbn.notification.extras.getBoolean(EXTRA_IS_MIRROR, false)) return false
+        if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return false
+        // Media playback notifications are already covered end to end by the dedicated media.nowplaying and
+        // media.command pipeline, so a mirrored copy would just be redundant clutter.
+        if (sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return false
+        val extras = sbn.notification.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val body = (extras.getCharSequence(Notification.EXTRA_TEXT)
+            ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
+        return title.isNotEmpty() || body.isNotEmpty()
+    }
+
+    /** Reports which notifications are currently mirrored as the `notification.active` state slot (see
+     *  `docs/plans/state-sync.md`): the core sends it to every device that connects later and repairs it periodically, so a
+     *  receiver that missed a `notification.removed` drops its copy. Called after every post and removal, and when the
+     *  listener connects; a no-op when the list is unchanged. A phone with more than [NotificationSyncPayload.MAX_IDS] active
+     *  notifications reports nothing rather than a huge list, and receivers keep what they have. */
+    private fun publishActive() {
+        if (!isPhone || scope == null) return
+        val keys = try {
+            activeNotifications?.filter { shouldMirror(it) }?.map { it.key }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not list active notifications: ${e.message}")
+            null
+        } ?: return
+        if (keys.size > NotificationSyncPayload.MAX_IDS) return
+        TransportManagerHolder.instance?.setState(ACTIVE_SLOT, NotificationSyncPayload(keys).toJson())
+    }
+
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         super.onNotificationRemoved(sbn)
         if (!isPhone) return
@@ -216,6 +237,7 @@ class NotificationListenerImpl : NotificationListenerService() {
         replyTargets.remove(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
         send(payload.toEnvelope(senderId = deviceId()))
+        publishActive()
     }
 
     // MARK: - notification.dismiss (mac -> android)
@@ -333,5 +355,8 @@ class NotificationListenerImpl : NotificationListenerService() {
     companion object {
         /** The connected listener instance, so [SyncForegroundService] can nudge it once the transport exists. */
         @Volatile var active: NotificationListenerImpl? = null
+
+        /** The synchronised state slot listing the notifications this phone is mirroring. */
+        const val ACTIVE_SLOT = "notification.active"
     }
 }

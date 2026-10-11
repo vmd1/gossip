@@ -25,6 +25,11 @@ pub const TASKS: &[Task] = &[
         name: "mesh.topic",
         interval_ms: 300_000,
     },
+    // Handled inside the engine (the digest of the synchronised state slots, `crate::state_sync`).
+    Task {
+        name: "state.digest",
+        interval_ms: 60_000,
+    },
     Task {
         name: "ble.beacon_key",
         interval_ms: 300_000,

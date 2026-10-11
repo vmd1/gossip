@@ -188,6 +188,9 @@ final class TransportManager: ObservableObject {
         var peerIPAddress: String?
         /// Same host as `peerIPAddress` but with any `%zone` kept — needed to dial IPv6 link-local peers.
         var peerHostWithZone: String?
+        /// Pairing by code: this connection carries the exchange for a code typed here, aimed at `codeTarget`.
+        var pairingCode: String?
+        var codeTarget: String?
 
         init(conn: UInt64, connection: NWConnection, dialTarget: String?) {
             self.conn = conn
@@ -196,6 +199,8 @@ final class TransportManager: ObservableObject {
         }
     }
 
+    /// The latest Bonjour results (queue only), for finding a device that is showing a pairing code.
+    private var discoveredPeers: [DiscoveredPeer] = []
     private var links: [UInt64: Link] = [:]
     private var linkByDevice: [String: UInt64] = [:]
     /// Devices with an outbound socket still connecting (before the engine's own dial guard applies).
@@ -409,6 +414,7 @@ final class TransportManager: ObservableObject {
     }
 
     private func handleDiscoveredPeers(_ discovered: [DiscoveredPeer]) {
+        discoveredPeers = discovered
         for candidate in discovered {
             guard let trusted = trustedDevices.device(for: candidate.deviceId),
                   let keyData = Data(base64Encoded: trusted.publicKeyBase64),
@@ -518,6 +524,158 @@ final class TransportManager: ObservableObject {
     /// Caps on simultaneously pending (not yet handshaken) inbound connections, overall and per source IP.
     static let maxPendingInbound = 32
     static let maxPendingInboundPerHost = 4
+
+    // MARK: - Synchronised state
+
+    /// Another device's state slot changed; `valueJSON == nil` means it was cleared (or the device was revoked).
+    struct StateChange {
+        let deviceId: String
+        let slot: String
+        let valueJSON: String?
+        let version: UInt64
+    }
+
+    private var stateHandlers: [(StateChange) -> Void] = []
+
+    /// Registers a handler for other devices' state changes, called on the main queue.
+    func addOnStateChanged(_ handler: @escaping (StateChange) -> Void) {
+        onQueue { stateHandlers.append(handler) }
+    }
+
+    /// Sets (`valueJSON` is the JSON value) or clears (`nil`) one of this device's own state slots. The core announces the
+    /// change, sends it to every device that connects later and repairs it periodically, so a feature only reports its
+    /// current state and never runs its own resync.
+    func setState(slot: String, valueJSON: String?) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                self.process(try self.bridge.setState(slot: slot, valueJSON: valueJSON))
+            } catch {
+                gossipError("Gossip: could not set state \(slot): \(error)")
+            }
+        }
+    }
+
+    /// A slot's current value as JSON text: this device's own or the latest received from `deviceId`.
+    func state(of deviceId: String, slot: String) -> String? {
+        onQueue { bridge.state(deviceId: deviceId, slot: slot) }
+    }
+
+    // MARK: - Pairing by code
+
+    enum CodePairingEvent {
+        /// Pairing finished: this device and the peer now trust each other.
+        case succeeded(HandshakePeerInfo)
+        /// Showing a code: someone typed a wrong one.
+        case wrongCode(attemptsLeft: Int)
+        case tooManyAttempts
+        case expired
+        /// Typed a code: the device did not accept it.
+        case rejected
+        /// Typed a code: no device on this network is showing one.
+        case noDeviceFound
+    }
+
+    /// Called on the main queue.
+    var onCodePairingEvent: ((CodePairingEvent) -> Void)?
+
+    private var codeLinksPending = 0
+    private var codeEntryFinished = true
+    private static let codeSearchSeconds = 10
+
+    /// For end-to-end tests: pretends Bonjour found `peer` (a device behind a port forward is not visible to it).
+    func injectDiscoveredPeerForTesting(_ peer: DiscoveredPeer) {
+        queue.async { [weak self] in self?.discoveredPeers.append(peer) }
+    }
+
+    /// This is the new device: shows a code (`ABCD-EFGH`) and tells the network it is waiting for one.
+    func startCodePairing() -> String {
+        let code: String = onQueue { bridge.startCodePairing() }
+        discovery.setPairingMode(true)
+        return code
+    }
+
+    func stopCodePairing() {
+        onQueue { bridge.stopCodePairing() }
+        discovery.setPairingMode(false)
+    }
+
+    /// This is the already-paired device: `code` was typed here. Finds the device showing one on the network and runs
+    /// the exchange; the outcome arrives through `onCodePairingEvent`.
+    func enterCode(_ code: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard self.bridge.isValidPairingCode(code) else { self.emitCodeEvent(.rejected); return }
+            self.codeEntryFinished = false
+            self.tryCode(code, secondsLeft: Self.codeSearchSeconds)
+        }
+    }
+
+    private func tryCode(_ code: String, secondsLeft: Int) {
+        guard !codeEntryFinished else { return }
+        let myId = identity.deviceId
+        let candidates = discoveredPeers.filter { $0.pairing && $0.deviceId != myId && !bridge.isConnected(deviceId: $0.deviceId) }
+        guard !candidates.isEmpty else {
+            if secondsLeft <= 0 {
+                codeEntryFinished = true
+                emitCodeEvent(.noDeviceFound)
+            } else {
+                discovery.redeliverPeers()
+                queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.tryCode(code, secondsLeft: secondsLeft - 1) }
+            }
+            return
+        }
+        // Normally there is exactly one. With several, each is tried: a device that is not the right one counts the wrong
+        // code against its own limit and refuses.
+        for candidate in candidates.prefix(3) {
+            let connection = NWConnection(to: candidate.endpoint, using: .tcp)
+            let link = Link(conn: allocateConn(), connection: connection, dialTarget: nil)
+            link.pairingCode = code
+            link.codeTarget = candidate.deviceId
+            links[link.conn] = link
+            codeLinksPending += 1
+            connection.stateUpdateHandler = { [weak self] state in self?.handleCodeLinkState(state, link: link) }
+            connection.start(queue: queue)
+            scheduleConnectTimeout(for: link)
+        }
+    }
+
+    private func handleCodeLinkState(_ state: NWConnection.State, link: Link) {
+        guard links[link.conn] === link else { return }
+        switch state {
+        case .ready:
+            guard !link.engineAware, let code = link.pairingCode, let target = link.codeTarget else { return }
+            link.engineAware = true
+            do {
+                process(try bridge.dialCode(conn: link.conn, target: target, code: code))
+            } catch {
+                gossipError("Gossip: could not start pairing by code: \(error)")
+                dropLink(link.conn, notifyEngine: false)
+                codeLinkEnded()
+                return
+            }
+            startReceiveLoop(link)
+        case .failed:
+            let hadCode = link.pairingCode != nil
+            dropLink(link.conn, notifyEngine: true)
+            if hadCode { codeLinkEnded() }
+        default:
+            break
+        }
+    }
+
+    /// One attempt ended without success; when the last does, the user is told the code was not accepted.
+    private func codeLinkEnded() {
+        codeLinksPending = max(0, codeLinksPending - 1)
+        if codeLinksPending == 0, !codeEntryFinished {
+            codeEntryFinished = true
+            emitCodeEvent(.rejected)
+        }
+    }
+
+    private func emitCodeEvent(_ event: CodePairingEvent) {
+        DispatchQueue.main.async { [weak self] in self?.onCodePairingEvent?(event) }
+    }
 
     // MARK: - Pairing gate
 
@@ -724,6 +882,38 @@ final class TransportManager: ObservableObject {
 
             case .deviceRevoked:
                 break // the trust snapshot that accompanies it already updated the store
+
+            case .stateChanged(let deviceId, let slot, let valueJSON, let version):
+                let change = StateChange(deviceId: deviceId, slot: slot, valueJSON: valueJSON, version: version)
+                let handlers = stateHandlers
+                DispatchQueue.main.async { handlers.forEach { $0(change) } }
+
+            case .codePairingSucceeded(let peer):
+                if !codeEntryFinished {
+                    // The typing side: the other attempts are no longer needed.
+                    codeEntryFinished = true
+                    for (conn, link) in links where link.pairingCode != nil { dropLink(conn, notifyEngine: true) }
+                    codeLinksPending = 0
+                }
+                discovery.setPairingMode(bridge.codePairingActive)
+                newDevicePairedHandlers.forEach { $0(peer) }
+                emitCodeEvent(.succeeded(peer))
+                // Trusted now: connect the normal way without waiting for the next Bonjour change.
+                discovery.redeliverPeers()
+
+            case .codePairingWrongCode(let left):
+                emitCodeEvent(.wrongCode(attemptsLeft: Int(left)))
+
+            case .codePairingTooManyAttempts:
+                discovery.setPairingMode(false)
+                emitCodeEvent(.tooManyAttempts)
+
+            case .codePairingExpired:
+                discovery.setPairingMode(false)
+                emitCodeEvent(.expired)
+
+            case .codePairingRejected:
+                codeLinkEnded()
 
             case .reconcileDue(let task, let peer):
                 // Only trust gossip is scheduled by the engine for now; each feature still runs its own resync timer.
