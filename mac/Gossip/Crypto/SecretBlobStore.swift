@@ -41,8 +41,13 @@ struct FileBlobStore: SecretBlobStore {
 }
 
 /// Stores the blob as a generic-password item in the login Keychain, so other processes of the same user can't read
-/// it, or silently rewrite it, without macOS's access prompt. The item's ACL trusts the app that created it, and macOS
-/// asks again after each rebuild of an app that has no developer team identity (the access list is keyed to the code hash).
+/// it, or silently rewrite it, without macOS's access prompt.
+///
+/// An item added the plain way gets a *partition list* naming the code hash (`cdhash:...`) of the build that created it
+/// (an app with no developer team ID has nothing stabler), and every rebuilt binary is then asked for the login password
+/// again, signed or not. So items are created with an explicit access list that trusts this app by its path and code
+/// signature requirement instead, which keeps other processes out and survives rebuilds signed with the same
+/// certificate. An item that still has the old kind of access list is recreated that way once (see `upgradeAccessIfNeeded`).
 ///
 /// The Keychain is the only place the secret lives: there is no file fallback. If the Keychain refuses a read of an item
 /// that exists (the user denied the prompt, the Keychain is locked), `read()` returns nil and writes are refused until
@@ -52,17 +57,22 @@ final class KeychainBlobStore: SecretBlobStore {
     private let account: String
     private let lock = NSLock()
     private var unreadableItemExists = false
+    private let defaults: UserDefaults
 
-    init(service: String = "dev.vmd1.gossip", account: String) {
+    init(service: String = "dev.vmd1.gossip", account: String, defaults: UserDefaults = .standard) {
         self.service = service
         self.account = account
+        self.defaults = defaults
     }
+
+    private var upgradedKey: String { "keychain.accessUpgraded.\(service).\(account)" }
 
     func read() -> Data? {
         lock.lock(); defer { lock.unlock() }
         switch copyItem() {
         case .success(let data):
             unreadableItemExists = false
+            upgradeAccessIfNeeded(data)
             return data
         case .notFound:
             unreadableItemExists = false
@@ -121,8 +131,42 @@ final class KeychainBlobStore: SecretBlobStore {
         let update = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if update == errSecSuccess { return true }
         guard update == errSecItemNotFound else { return false }
+        return add(data, withOwnAccess: true) || add(data, withOwnAccess: false)
+    }
+
+    private func add(_ data: Data, withOwnAccess: Bool) -> Bool {
         var add = baseQuery
         add[kSecValueData as String] = data
+        if withOwnAccess {
+            guard let access = Self.ownAccess(label: "\(service) \(account)") else { return false }
+            add[kSecAttrAccess as String] = access
+        }
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// An access list that trusts only this app (by path and code signature requirement), so rebuilds signed with the
+    /// same certificate keep access without a prompt and other processes still get one.
+    private static func ownAccess(label: String) -> SecAccess? {
+        var me: SecTrustedApplication?
+        guard SecTrustedApplicationCreateFromPath(nil, &me) == errSecSuccess, let me else { return nil }
+        var access: SecAccess?
+        guard SecAccessCreate(label as CFString, [me] as CFArray, &access) == errSecSuccess else { return nil }
+        return access
+    }
+
+    /// Items created before this change carry a partition list tied to one build's code hash. Recreates the item once,
+    /// with the data already in hand and only after the new copy reads back, so a failure keeps the old item.
+    private func upgradeAccessIfNeeded(_ data: Data) {
+        guard !defaults.bool(forKey: upgradedKey) else { return }
+        defer { defaults.set(true, forKey: upgradedKey) }
+        guard let access = Self.ownAccess(label: "\(service) \(account)") else { return }
+        var query = baseQuery
+        query[kSecReturnRef as String] = true
+        var ref: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &ref) == errSecSuccess, let ref else { return }
+        // SecKeychainItemSetAccess replaces the access list in place, so nothing is deleted.
+        if SecKeychainItemSetAccess(ref as! SecKeychainItem, access) != errSecSuccess {
+            gossipError("Could not update the Keychain access list for \(account)")
+        }
     }
 }

@@ -31,6 +31,19 @@ final class KeychainBlobStoreTests: XCTestCase {
         XCTAssertEqual(KeychainBlobStore(service: service, account: account).read(), Data("secret".utf8))
     }
 
+    func testAnItemWithTheOldAccessListIsUpgradedOnceAndStaysReadable() {
+        // An item added the plain way, as earlier builds did, carries a partition list tied to one build's code hash.
+        XCTAssertEqual(SecItemAdd([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service as Any,
+                                   kSecAttrAccount as String: account, kSecValueData as String: Data("old".utf8)] as CFDictionary, nil), errSecSuccess)
+        let defaults = UserDefaults(suiteName: "kb-\(UUID().uuidString)")!
+        let store = KeychainBlobStore(service: service, account: account, defaults: defaults)
+        XCTAssertEqual(store.read(), Data("old".utf8))
+        XCTAssertTrue(defaults.bool(forKey: "keychain.accessUpgraded.\(service!).\(account)"))
+        XCTAssertEqual(KeychainBlobStore(service: service, account: account, defaults: defaults).read(), Data("old".utf8))
+        XCTAssertTrue(store.write(Data("new".utf8)))
+        XCTAssertEqual(store.read(), Data("new".utf8))
+    }
+
     func testIdentityPersistsThroughKeychainBlob() {
         let first = IdentityKeyStore(blob: KeychainBlobStore(service: service, account: account))
         let id = first.deviceId
