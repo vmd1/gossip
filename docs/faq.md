@@ -20,7 +20,8 @@
 ## Privacy and security
 
 - **Where does my data go?**
-  - devices talk directly to each other over your local network; there is no cloud service and no relay in the middle
+  - devices talk directly to each other over your local network; there is no cloud service
+  - away from home, the optional relay (off by default, Settings → Relay) carries your devices' traffic end to end encrypted: it can see network addresses, timing and volume but cannot read or change anything (see the [relay threat model](relay-threat-model.md))
   - nothing is sent to the project's authors
 - **Is the connection encrypted?**
   - yes: devices authenticate and encrypt every session with the Noise `IK` handshake (see [architecture](architecture.md))
