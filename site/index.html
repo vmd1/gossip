@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gossip — Mac and Android, working as one</title>
-<meta name="description" content="Gossip links a Mac with Android phones and tablets over your local network: notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control. No account, no cloud.">
+<meta name="description" content="Gossip links a Mac with Android phones and tablets: notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control. Direct on your local network, or through an optional end-to-end encrypted relay when you are away. No account.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="stylesheet" href="style.css">
@@ -18,6 +18,7 @@
       <ul>
         <li><a href="#features">Features</a></li>
         <li><a href="#how">How it works</a></li>
+        <li><a href="#relay">Away from home</a></li>
         <li><a href="#install">Install</a></li>
         <li><a href="#guides">Guides</a></li>
         <li><a href="https://github.com/vmd1/gossip">GitHub</a></li>
@@ -31,7 +32,7 @@
   <div class="wrap">
     <img src="icon.png" alt="Gossip app icon" width="112" height="112">
     <h1>Your Mac and your Android devices, working as one.</h1>
-    <p class="lede">Gossip is a Mac ↔ Android continuity app: notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control. Everything stays on your local network — no account, no cloud.</p>
+    <p class="lede">Gossip is a Mac ↔ Android continuity app: notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control. Your devices talk directly on your local network, and through an optional end-to-end encrypted relay when you are away — no account, no cloud service holding your data.</p>
     <div class="cta">
       <a class="btn" href="https://github.com/vmd1/gossip/releases/latest">Download the latest release</a>
       <a class="btn secondary" href="#install">Install steps</a>
@@ -66,18 +67,18 @@
     <p class="sub">Your devices talk directly to each other. There is no server in the middle.</p>
     <div class="two how">
       <div>
-        <h3>Local only</h3>
+        <h3>Local first</h3>
         <ul>
-          <li>Devices find each other on the same local network and connect directly over TCP.</li>
-          <li>No account, no sign-in, no cloud relay. Nothing is sent to the project's authors.</li>
-          <li>Off your home network, a per-device fallback IP (for example a Tailscale address) can be set; a general off-network mode is only on the <a href="https://github.com/vmd1/gossip/blob/main/ROADMAP.md">roadmap</a>.</li>
+          <li>Devices find each other on the same local network and connect directly over TCP. That is always preferred.</li>
+          <li>No account, no sign-in. Nothing is sent to the project's authors.</li>
+          <li>Away from your home network, an optional <a href="#relay">relay</a> keeps paired devices connected. You can also set a per-device fallback IP (for example a Tailscale address).</li>
         </ul>
       </div>
       <div>
         <h3>Trust and encryption</h3>
         <ul>
           <li>Sessions use the Noise <code>IK</code> handshake, and messages are signed.</li>
-          <li>You pair by scanning a QR code that carries the public key of the device showing it.</li>
+          <li>You pair by scanning a QR code that carries the public key of the device showing it, or by typing an 8-character code shown on the new device.</li>
           <li>Only a device you paired, or one a device you trust vouches for, is accepted; an unknown device must be confirmed on screen.</li>
           <li>Universal Control input and the screen-mirroring stream each use their own encrypted channel straight to the device, keyed through the Noise session.</li>
         </ul>
@@ -86,10 +87,40 @@
   </div>
 </section>
 
-<section class="alt" id="install" aria-labelledby="install-h">
+<section class="alt" id="relay" aria-labelledby="relay-h">
+  <div class="wrap">
+    <h2 id="relay-h">Away from home: the relay</h2>
+    <p class="sub">Off your home network, Gossip can connect your paired devices through a relay. It is off by default and you switch it on in <strong>Settings → Relay</strong> on each device.</p>
+    <div class="two how">
+      <div>
+        <h3>How it behaves</h3>
+        <ul>
+          <li>Used only when a paired device cannot be reached directly. On the same network your devices still talk straight to each other, and the connection moves back to the local network as soon as it is available.</li>
+          <li>Most features keep working: notifications, clipboard, Do Not Disturb, media, battery and Find my device. Screen mirroring and Universal Control stay on the same network, because they are too heavy and latency-sensitive to relay, and Bluetooth features need the devices nearby.</li>
+          <li>The relay address is looked up from a small public directory, so it can move without an app update. The last answer is kept, and a custom address in Settings overrides it. Relay settings follow your devices: change them on one and the others adopt them.</li>
+          <li>Pairing a new device always happens on the same network.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>What the relay can and cannot see</h3>
+        <ul>
+          <li>Everything is end-to-end encrypted between your devices with the same Noise sessions and pinned keys as on the local network. The relay cannot read, change, replay or forge your data.</li>
+          <li>It can see metadata: which network addresses connect, when, and how much data flows. It can also drop traffic or refuse service, and your devices fall back to the local network.</li>
+          <li>It keeps no accounts, and its logs hold event names and counters only, with addresses shortened.</li>
+          <li>It is rate and size limited to keep one user from hogging it, and it publishes an abuse contact at <code>/abuse</code>.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note" role="note">
+      <p><strong>Run your own.</strong> The relay is open source and ships as a small multi-arch Docker image (<code>ghcr.io/vmd1/gossip/relay</code>). Point every device at it with the custom address in Settings → Relay. <a href="https://github.com/vmd1/gossip/blob/main/relay/README.md">Relay setup</a> · <a href="https://github.com/vmd1/gossip/blob/main/docs/relay-threat-model.md">Threat model</a></p>
+    </div>
+  </div>
+</section>
+
+<section id="install" aria-labelledby="install-h">
   <div class="wrap">
     <h2 id="install-h">Install and set up</h2>
-    <p class="sub">Requirements: macOS 14 or newer, Android 10 or newer, and both devices on the same local network.</p>
+    <p class="sub">Requirements: macOS 14 or newer and Android 10 or newer. Both devices need to be on the same local network to pair; the optional relay covers the rest.</p>
     <ol class="steps">
       <li>
         <h3>Install the Mac app</h3>
@@ -103,6 +134,7 @@
       <li>
         <h3>Pair them</h3>
         <p>Mac: menu bar icon → <strong>Pair New Device…</strong> shows a QR code. Android: <strong>Pair New Device</strong> (or <strong>Scan a QR Code</strong> during setup), then confirm on both screens.</p>
+        <p>No camera? Choose <strong>Pair with a code</strong>: the new device shows an 8-character code, and you type it into a device that is already paired.</p>
       </li>
       <li>
         <h3>Set up Shizuku (heavily recommended)</h3>
@@ -120,7 +152,7 @@
   </div>
 </section>
 
-<section id="guides" aria-labelledby="guides-h">
+<section class="alt" id="guides" aria-labelledby="guides-h">
   <div class="wrap">
     <h2 id="guides-h">Guides</h2>
     <p class="sub">The full documentation lives in the repository.</p>
@@ -130,6 +162,8 @@
       <li><a href="https://github.com/vmd1/gossip/blob/main/docs/universal-control.md"><strong>Universal Control</strong><span>Set up, shortcuts, limits.</span></a></li>
       <li><a href="https://github.com/vmd1/gossip/blob/main/docs/faq.md"><strong>FAQ</strong><span>Common questions.</span></a></li>
       <li><a href="https://github.com/vmd1/gossip/blob/main/docs/troubleshooting.md"><strong>Troubleshooting</strong><span>Fixes for the usual problems.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/relay/README.md"><strong>Relay</strong><span>Run your own relay: settings, Docker image, operations.</span></a></li>
+      <li><a href="https://github.com/vmd1/gossip/blob/main/docs/relay-threat-model.md"><strong>Relay threat model</strong><span>What the relay can and cannot do.</span></a></li>
       <li><a href="https://github.com/vmd1/gossip/blob/main/docs/building-and-signing.md"><strong>Building and signing</strong><span>Build from source, tests, signing, releases.</span></a></li>
     </ul>
   </div>
