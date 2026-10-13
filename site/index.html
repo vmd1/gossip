@@ -17,6 +17,7 @@
     <nav aria-label="Primary">
       <ul>
         <li><a href="#features">Features</a></li>
+        <li><a href="#screens">Screenshots</a></li>
         <li><a href="#how">How it works</a></li>
         <li><a href="#relay">Away from home</a></li>
         <li><a href="#install">Install</a></li>
@@ -69,7 +70,20 @@
   </div>
 </section>
 
-<section id="how" aria-labelledby="how-h">
+<section id="screens" aria-labelledby="screens-h">
+  <div class="wrap">
+    <h2 id="screens-h">On Android</h2>
+    <p class="sub">Pairing, permissions, per-feature switches and relay settings, as they appear on a phone.</p>
+    <ul class="shots">
+      <li><img src="img/pairing-android.png" alt="Android pairing screen showing a QR code and a 'Pair with a code' link" width="270" height="600" loading="lazy"><span>Pair with a QR code or a typed code</span></li>
+      <li><img src="img/permissions-android.png" alt="Android setup screen listing optional permissions, each with a Grant button" width="270" height="600" loading="lazy"><span>Every permission is optional</span></li>
+      <li><img src="img/features-android.png" alt="Android Features screen with an on/off switch for each feature" width="270" height="600" loading="lazy"><span>A switch for every feature</span></li>
+      <li><img src="img/relay-android.png" alt="Android Relay settings screen with the relay switched off" width="270" height="600" loading="lazy"><span>The relay is off until you turn it on</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="alt" id="how" aria-labelledby="how-h">
   <div class="wrap">
     <h2 id="how-h">How it works</h2>
     <p class="sub">Your devices talk directly to each other. There is no server in the middle.</p>
@@ -95,7 +109,7 @@
   </div>
 </section>
 
-<section class="alt" id="relay" aria-labelledby="relay-h">
+<section id="relay" aria-labelledby="relay-h">
   <div class="wrap">
     <h2 id="relay-h"><svg class="ico inline" aria-hidden="true"><use href="icons.svg#relay"/></svg>Away from home: the relay</h2>
     <p class="sub">Off your home network, Gossip can connect your paired devices through a relay. It is off by default and you switch it on in <strong>Settings → Relay</strong> on each device.</p>
@@ -124,7 +138,7 @@
   </div>
 </section>
 
-<section id="install" aria-labelledby="install-h">
+<section class="alt" id="install" aria-labelledby="install-h">
   <div class="wrap">
     <h2 id="install-h">Install and set up</h2>
     <p class="sub">Requirements: macOS 14 or newer and Android 10 or newer. Both devices need to be on the same local network to pair; the optional relay covers the rest.</p>
@@ -159,7 +173,7 @@
   </div>
 </section>
 
-<section class="alt" id="guides" aria-labelledby="guides-h">
+<section id="guides" aria-labelledby="guides-h">
   <div class="wrap">
     <h2 id="guides-h">Guides</h2>
     <p class="sub">The full documentation lives in the repository.</p>

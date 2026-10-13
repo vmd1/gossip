@@ -38,6 +38,13 @@ Direct on your local network, optionally relayed (end-to-end encrypted) when you
 | 🔋 | **Battery sync** | See every device's battery, with low-battery alerts. |
 | 🛡️ | **Multi-device trust** | Pair two devices once and every device they already trust learns about the new one. |
 
+<p align="center">
+<img src="site/img/pairing-android.png" width="190" alt="Pairing with a QR code">
+<img src="site/img/permissions-android.png" width="190" alt="Optional permissions">
+<img src="site/img/features-android.png" width="190" alt="Per-feature switches">
+<img src="site/img/relay-android.png" width="190" alt="Relay settings">
+</p>
+
 Every feature has its own per-device switch in Settings. How this compares with Apple Continuity, and what's coming next, is in the [roadmap](ROADMAP.md).
 
 ## Install

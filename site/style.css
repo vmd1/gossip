@@ -120,3 +120,8 @@ footer ul { list-style: none; display: flex; flex-wrap: wrap; gap: var(--s3); ma
   .two { grid-template-columns: 1fr; }
   .facts { grid-template-columns: 1fr 1fr; }
 }
+
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--s4); list-style: none; padding: 0; margin: 0; }
+.shots li { text-align: center; }
+.shots img { display: block; width: 100%; max-width: 270px; height: auto; margin: 0 auto var(--s3); border: 1px solid var(--border); border-radius: 22px; box-shadow: 0 8px 28px rgba(0,0,0,.14); }
+.shots span { color: var(--muted); font-size: .95rem; }
