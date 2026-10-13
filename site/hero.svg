@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 460" role="img" aria-labelledby="t d">
+  <title id="t">A Mac, an Android phone and an Android tablet connected to each other</title>
+  <desc id="d">Illustration: the three devices are joined by direct links, with a dashed link to an optional relay in the cloud when away from home.</desc>
+  <style>
+    :root { --ink:#1d1d1f; --muted:#6e6e73; --panel:#ffffff; --edge:#c9c9d0; --screen:#eef3fb; --accent:#0066cc; --glow:#0a84ff; --bar:#dfe6f2; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ink:#f5f5f7; --muted:#a0a0a8; --panel:#232327; --edge:#4a4a52; --screen:#16213a; --accent:#5eb0ff; --glow:#5eb0ff; --bar:#2b3550; }
+    }
+    .panel { fill: var(--panel); stroke: var(--edge); stroke-width: 2; }
+    .screen { fill: var(--screen); }
+    .bar { fill: var(--bar); }
+    .acc { fill: var(--accent); }
+    .link { stroke: var(--accent); stroke-width: 3; fill: none; stroke-linecap: round; }
+    .relay { stroke: var(--muted); stroke-width: 2.5; fill: none; stroke-dasharray: 3 9; stroke-linecap: round; }
+    .label { fill: var(--ink); font: 600 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; text-anchor: middle; }
+    .small { fill: var(--muted); font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; text-anchor: middle; }
+    .cursor { fill: var(--ink); stroke: var(--panel); stroke-width: 1.5; stroke-linejoin: round; }
+    .halo { fill: var(--glow); opacity: .12; }
+  </style>
+
+  <!-- links (drawn first so the devices sit on top) -->
+  <path class="link" d="M300 230 C 380 230, 400 230, 470 230"/>
+  <path class="link" d="M300 290 C 400 330, 560 340, 660 300"/>
+  <!-- optional relay -->
+  <path class="relay" d="M180 150 C 230 70, 360 56, 410 56"/>
+  <path class="relay" d="M486 56 C 560 56, 690 80, 706 215"/>
+  <g transform="translate(410 38)">
+    <path class="panel" d="M52 40a22 22 0 01-2-43 28 28 0 0153-6 20 20 0 014 49z" transform="translate(-26 18)"/>
+    <text class="small" x="26" y="56">optional relay</text>
+  </g>
+
+  <!-- Mac -->
+  <g transform="translate(60 150)">
+    <rect class="panel" x="0" y="0" width="240" height="160" rx="12"/>
+    <rect class="screen" x="10" y="10" width="220" height="132" rx="6"/>
+    <rect class="bar" x="10" y="10" width="220" height="14" rx="6"/>
+    <rect class="acc" x="24" y="44" width="92" height="10" rx="5"/>
+    <rect class="bar" x="24" y="64" width="150" height="8" rx="4"/>
+    <rect class="bar" x="24" y="80" width="118" height="8" rx="4"/>
+    <rect class="bar" x="24" y="96" width="136" height="8" rx="4"/>
+    <path class="cursor" d="M196 112l0 20 5-5 4 9 4-2-4-9 7 0z"/>
+    <path class="panel" d="M-18 168h276l-14 18H-4z"/>
+    <text class="label" x="120" y="222">Mac</text>
+  </g>
+
+  <!-- Android tablet -->
+  <g transform="translate(470 170)">
+    <rect class="panel" x="0" y="0" width="190" height="120" rx="14"/>
+    <rect class="screen" x="9" y="9" width="172" height="102" rx="7"/>
+    <rect class="acc" x="22" y="24" width="64" height="9" rx="4.5"/>
+    <rect class="bar" x="22" y="42" width="120" height="8" rx="4"/>
+    <rect class="bar" x="22" y="58" width="96" height="8" rx="4"/>
+    <rect class="bar" x="22" y="74" width="108" height="8" rx="4"/>
+    <text class="label" x="95" y="150">Android tablet</text>
+  </g>
+
+  <!-- Android phone -->
+  <g transform="translate(660 215)">
+    <rect class="panel" x="0" y="0" width="92" height="170" rx="18"/>
+    <rect class="screen" x="7" y="9" width="78" height="152" rx="12"/>
+    <rect class="acc" x="18" y="28" width="42" height="8" rx="4"/>
+    <rect class="bar" x="18" y="46" width="56" height="7" rx="3.5"/>
+    <rect class="bar" x="18" y="60" width="44" height="7" rx="3.5"/>
+    <rect class="bar" x="18" y="74" width="50" height="7" rx="3.5"/>
+    <text class="label" x="46" y="202">Android phone</text>
+  </g>
+</svg>

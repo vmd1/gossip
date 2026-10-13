@@ -1,69 +1,120 @@
+<div align="center">
+
+<img src="site/icon.png" alt="Gossip" width="96" height="96">
+
 # Gossip
 
+**Your Mac and your Android devices, working as one.**
+
+Notifications, clipboard, Do Not Disturb, media, screen mirroring and Universal Control between a Mac and Android phones and tablets.
+Direct on your local network, optionally relayed (end-to-end encrypted) when you're away. No account.
+
+[![Latest release](https://img.shields.io/github/v/release/vmd1/gossip?label=release)](https://github.com/vmd1/gossip/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Mac](https://github.com/vmd1/gossip/actions/workflows/mac.yml/badge.svg)](https://github.com/vmd1/gossip/actions/workflows/mac.yml)
 [![Android](https://github.com/vmd1/gossip/actions/workflows/android.yml/badge.svg)](https://github.com/vmd1/gossip/actions/workflows/android.yml)
 
-Mac ↔ Android continuity: make your Mac, phone and tablet behave like one system.
-Open source under the [Apache 2.0 license](LICENSE) — issues and PRs welcome.
+[**Download**](https://github.com/vmd1/gossip/releases/latest) · [Website](https://gossip.vmd1.dev) · [Getting started](docs/getting-started.md) · [FAQ](docs/faq.md) · [Roadmap](ROADMAP.md)
 
-## What it does
+<img src="site/hero.svg" alt="A Mac, an Android tablet and an Android phone linked together, with an optional relay for when you are away" width="720">
 
-- **Universal Control** — push the Mac's cursor off a screen edge and keep going on your phone or tablet, with the Mac's mouse and keyboard
-- **Screen mirroring** — mirror and control an Android screen from the Mac, with audio
-- **Notification mirroring** — see phone notifications on the Mac, reply inline, dismiss in sync
-- **Clipboard sync** — copy on one device, paste on another (text and images)
-- **Do Not Disturb / Focus sync** — turn it on in one place, it follows everywhere
-- **Media remote** — see what's playing and control playback on any device
-- **Instant Hotspot** — turn on your phone's hotspot from the Mac and join it automatically
-- **Lock on leave** — lock a Mac or tablet when your phone walks out of Bluetooth range
-- **Find my device** — make a paired device ring at full volume
-- **Battery sync** — see every device's battery, with low-battery alerts
-- **Multi-device trust** — pair two devices once and every device they already trust learns about the new one
+</div>
 
-Each feature has its own per-device switch in Settings. The full list, mapped against Apple Continuity, is in [ROADMAP.md](ROADMAP.md).
+---
 
-## Requirements
+## Features
 
-- **Mac:** macOS 14 or newer; the prebuilt app is Apple Silicon only (Intel: building from source is untested)
-- **Android:** Android 10 or newer
-- **Network:** both devices on the same local network (no account, no cloud — see the [FAQ](docs/faq.md))
-- **Shizuku (heavily recommended):** the app works without it, but screen mirroring, Universal Control, Instant Hotspot on Android 16+ and background clipboard reading all need it — see [Setting up Shizuku](docs/setup-shizuku.md)
+| | Feature | What it does |
+|---|---|---|
+| 🖱️ | **Universal Control** | Push the Mac's cursor off a screen edge and keep going on your phone or tablet, with the Mac's mouse and keyboard. *Needs Shizuku.* |
+| 📱 | **Screen mirroring** | Mirror and control an Android screen from the Mac, with audio. *Needs Shizuku.* |
+| 🔔 | **Notification mirroring** | See phone notifications on the Mac, reply inline, dismiss in sync. |
+| 📋 | **Clipboard sync** | Copy on one device, paste on another: text and images. |
+| 🌙 | **Do Not Disturb / Focus sync** | Turn it on in one place and it follows everywhere. |
+| ▶️ | **Media remote** | See what's playing and control playback on any device. |
+| 📶 | **Instant Hotspot** | Turn on your phone's hotspot from the Mac and join it automatically. *Android 16+ needs Shizuku.* |
+| 🔒 | **Lock on leave** | Lock a Mac or tablet when your phone walks out of Bluetooth range. |
+| 📍 | **Find my device** | Make a paired device ring at full volume. |
+| 🔋 | **Battery sync** | See every device's battery, with low-battery alerts. |
+| 🛡️ | **Multi-device trust** | Pair two devices once and every device they already trust learns about the new one. |
 
-## Quick start
+Every feature has its own per-device switch in Settings. How this compares with Apple Continuity, and what's coming next, is in the [roadmap](ROADMAP.md).
 
-- **Install the Mac app**
-  - download `Gossip-Mac-AppleSilicon.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest), unzip it and move `Gossip.app` to `/Applications`
-  - the first launch is blocked by Gatekeeper (the app is not notarized): open **System Settings → Privacy & Security** and choose **Open Anyway**
-- **Install the Android app**
-  - download `Gossip-Android-universal.apk` from the same release and install it
-  - allow "install unknown apps" for the app you opened it with
-- **Pair them**
-  - Mac: menu bar icon → **Pair New Device…** shows a QR code
-  - Android: **Pair New Device** (or **Scan a QR Code** during setup), then confirm on both screens
-- **Set up Shizuku** on the Android device (heavily recommended) — [Setting up Shizuku](docs/setup-shizuku.md)
-- **Grant permissions** on each device as prompted — each one unlocks one feature and all are skippable
+## Install
 
-The step-by-step version, with every permission explained, is in [Getting started](docs/getting-started.md).
+**Requirements:** macOS 14+ (the prebuilt app is Apple Silicon only) · Android 10+ · both devices on the same network to pair.
 
-## Guides
+<table>
+<tr>
+<td width="33%" valign="top">
 
-- [Getting started](docs/getting-started.md) — install, first run, permissions, pairing, optional setup
-- [Setting up Shizuku](docs/setup-shizuku.md) — what it is, which features need it, how to start it
-- [Universal Control](docs/universal-control.md) — set up, shortcuts, limits
-- [FAQ](docs/faq.md) — common questions
-- [Troubleshooting](docs/troubleshooting.md) — fixes for the usual problems
-- [Building and signing](docs/building-and-signing.md) — build from source, tests, signing, releases
+**1. Mac**
 
-## For contributors
+Download `Gossip-Mac-AppleSilicon.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest), unzip, and move `Gossip.app` to `/Applications`.
 
-- **Layout**
-  - Mac app: Swift, in `mac/Gossip`
-  - Android app: Kotlin, in `android/app/src/main/kotlin/dev/vmd1/gossip`
-  - the two share no code or compiler — [`schema/message-types.md`](schema/message-types.md) is the single source of truth keeping them in sync
-- **Technical docs**
-  - [`docs/architecture.md`](docs/architecture.md) — how the two apps fit together
-  - [`docs/wire-protocol.md`](docs/wire-protocol.md) — byte-level framing over the socket
-  - [`schema/message-types.md`](schema/message-types.md) — the message type registry
-  - [`docs/adr/`](docs/adr) — architecture decision records
-- **Build and test:** see [Building and signing](docs/building-and-signing.md)
+The app isn't notarized: on first launch choose **System Settings → Privacy & Security → Open Anyway**.
+
+</td>
+<td width="33%" valign="top">
+
+**2. Android**
+
+Download `Gossip-Android-universal.apk` from the same release and install it. Allow "install unknown apps" for the app you opened it with.
+
+</td>
+<td width="33%" valign="top">
+
+**3. Pair**
+
+Mac menu bar icon → **Pair New Device…** shows a QR code. On Android choose **Scan a QR Code**, then confirm on both screens.
+
+No camera? Use **Pair with a code** and type the 8-character code.
+
+</td>
+</tr>
+</table>
+
+Then set up [**Shizuku**](docs/setup-shizuku.md) on the Android device (heavily recommended: mirroring, Universal Control, Instant Hotspot on Android 16+ and background clipboard reading need it) and grant permissions as prompted; each unlocks one feature and all are skippable. The full walkthrough is in [Getting started](docs/getting-started.md).
+
+> [!IMPORTANT]
+> Keep every device on the **same version**. Update the Mac app and all your Android devices together.
+
+## How it works
+
+- **Local first.** Devices find each other on the local network and connect directly over TCP. No account, no cloud, nothing sent to the project's authors.
+- **Away from home.** An optional relay (Settings → Relay, off by default) keeps paired devices connected. Everything is end-to-end encrypted between your devices; the relay only sees metadata. Run [your own](relay/README.md) if you prefer. Screen mirroring and Universal Control stay on the same network.
+- **Trust and encryption.** Noise `IK` sessions with pinned keys. You pair by QR code or typed code, and only devices you paired (or that a trusted device vouches for) are accepted.
+
+More in the [architecture overview](docs/architecture.md), the [relay threat model](docs/relay-threat-model.md) and the [FAQ](docs/faq.md).
+
+## Documentation
+
+| For users | For contributors |
+|---|---|
+| [Getting started](docs/getting-started.md): install, first run, permissions, pairing | [Architecture](docs/architecture.md): how the apps fit together |
+| [Setting up Shizuku](docs/setup-shizuku.md): which features need it, how to start it | [Wire protocol](docs/wire-protocol.md): framing, handshake, relay |
+| [Universal Control](docs/universal-control.md): setup, shortcuts, limits | [Message types](schema/message-types.md): the registry both apps follow |
+| [FAQ](docs/faq.md) and [Troubleshooting](docs/troubleshooting.md) | [Building and signing](docs/building-and-signing.md): build, test, release |
+| [Relay](relay/README.md): run your own | [ADRs](docs/adr) and the [roadmap](ROADMAP.md) |
+
+<details>
+<summary><b>Repository layout</b></summary>
+
+| Path | What's there |
+|---|---|
+| `mac/Gossip` | Mac app (Swift) |
+| `android/app/src/main/kotlin/dev/vmd1/gossip` | Android app (Kotlin) |
+| `desktop/core` | Shared Rust core: transport, trust, state sync, pairing, feature logic |
+| `relay/` | Relay server (TypeScript) and Docker image; also serves the website |
+| `schema/` | Message type registry, the contract between the apps |
+| `site/` | The project website |
+
+</details>
+
+## Contributing
+
+Issues and pull requests are welcome. Build and test instructions are in [Building and signing](docs/building-and-signing.md).
+
+## License
+
+[Apache 2.0](LICENSE)
