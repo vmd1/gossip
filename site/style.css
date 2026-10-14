@@ -125,3 +125,6 @@ footer ul { list-style: none; display: flex; flex-wrap: wrap; gap: var(--s3); ma
 .shots li { text-align: center; }
 .shots img { display: block; width: 100%; max-width: 270px; height: auto; margin: 0 auto var(--s3); border: 1px solid var(--border); border-radius: 22px; box-shadow: 0 8px 28px rgba(0,0,0,.14); }
 .shots span { color: var(--muted); font-size: .95rem; }
+.shots.wide { grid-template-columns: 1.4fr 1fr 1fr; align-items: start; }
+.shots.wide img { max-width: 100%; border: 0; border-radius: 0; box-shadow: none; filter: drop-shadow(0 8px 20px rgba(0,0,0,.2)); }
+@media (max-width: 720px) { .shots.wide { grid-template-columns: 1fr; } }

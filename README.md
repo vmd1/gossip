@@ -39,6 +39,11 @@ Direct on your local network, optionally relayed (end-to-end encrypted) when you
 | 🛡️ | **Multi-device trust** | Pair two devices once and every device they already trust learns about the new one. |
 
 <p align="center">
+<img src="site/img/mac-menu.png" width="330" alt="The Gossip menu bar dropdown">
+<img src="site/img/mac-settings-features.png" width="230" alt="Mac Settings with per-feature switches">
+</p>
+
+<p align="center">
 <img src="site/img/pairing-android.png" width="190" alt="Pairing with a QR code">
 <img src="site/img/permissions-android.png" width="190" alt="Optional permissions">
 <img src="site/img/features-android.png" width="190" alt="Per-feature switches">
