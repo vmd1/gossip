@@ -1,0 +1,11 @@
+version: "1"
+
+build:
+  engine: static
+  output_dir: site
+
+serving:
+  headers:
+    - pattern: "^/img/"
+      headers:
+        Cache-Control: "public, max-age=86400"
