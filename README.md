@@ -40,6 +40,7 @@ Direct on your local network, optionally relayed (end-to-end encrypted) when you
 
 <p align="center">
 <img src="site/img/mac-menu.png" width="330" alt="The Gossip menu bar dropdown">
+<img src="site/img/mac-pairing.png" width="200" alt="Pair New Device on the Mac (QR code blurred)">
 <img src="site/img/mac-settings-features.png" width="230" alt="Mac Settings with per-feature switches">
 </p>
 
