@@ -38,6 +38,12 @@ final class DNDSyncManager {
     /// The decision logic, shared with every platform (`desktop/core/src/features/dnd.rs`).
     private let logic: GossipCoreKit.Dnd
     private let lock = NSLock()
+    private let shortcutQueue = DispatchQueue(label: "dev.vmd1.gossip.dnd.shortcuts")
+    private let shortcutLock = NSLock()
+    private var shortcutsInFlight = 0
+    private var lastShortcutFinishedMs: Int64 = 0
+    /// How long after our Shortcut exits a Focus-change callback is still treated as its echo.
+    private static let echoSettleMs: Int64 = 5_000
 
     /// The DND/Focus state this Mac is believed to be in. Persisted (not just in-memory): macOS has no API to *read* current
     /// Focus state, so on a fresh launch this is the only way this Mac has any idea what it's in. Still only a best-effort
@@ -74,6 +80,10 @@ final class DNDSyncManager {
         guard let enabled = Self.parseState(from: url) else {
             gossipError("Gossip: dnd URL missing/invalid 'state' query item: \(url)")
             return false
+        }
+        if isOwnShortcutActive() {
+            gossipError("Gossip: ignoring dnd URL (\(enabled ? "on" : "off")) — echo of our own Shortcut")
+            return true
         }
         lock.lock(); defer { lock.unlock() }
         carryOut(logic.localChanged(enabled: enabled, nowMs: Self.nowMs()))
@@ -142,14 +152,37 @@ final class DNDSyncManager {
     /// Runs a user-created Shortcut by exact name via the `shortcuts` CLI — the only way
     /// to change Focus/DND state on macOS in the absence of a public API. See
     /// `DNDSetupView` for the required Shortcut setup.
+    ///
+    /// Shortcuts run one at a time, in order, on `shortcutQueue`. Launching them concurrently let a quick on/off pair finish
+    /// out of order (leaving Focus opposite to what was requested), and each finished run fires a Focus automation whose
+    /// `connect://dnd` callback can land well after the core's 3 s cooldown (which starts when the apply is *decided*, not
+    /// when the Shortcut finishes) and be mistaken for a user change, which republishes it and makes the peer flip back.
     private func runShortcut(named name: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
-        process.arguments = ["run", name]
-        do {
-            try process.run()
-        } catch {
-            gossipError("Gossip: failed to run Shortcut \"\(name)\": \(error)")
+        shortcutLock.lock()
+        shortcutsInFlight += 1
+        shortcutLock.unlock()
+        shortcutQueue.async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            process.arguments = ["run", name]
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                gossipError("Gossip: failed to run Shortcut \"\(name)\": \(error)")
+            }
+            guard let self else { return }
+            self.shortcutLock.lock()
+            self.shortcutsInFlight -= 1
+            self.lastShortcutFinishedMs = Self.nowMs()
+            self.shortcutLock.unlock()
         }
+    }
+
+    /// True while one of our own Shortcuts is running or finished moments ago, so a Focus change reported now is the echo of
+    /// what we just did rather than something the user did.
+    private func isOwnShortcutActive() -> Bool {
+        shortcutLock.lock(); defer { shortcutLock.unlock() }
+        return shortcutsInFlight > 0 || Self.nowMs() - lastShortcutFinishedMs < Self.echoSettleMs
     }
 }
