@@ -15,10 +15,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -526,7 +528,7 @@ fun ConnectHomeScreen(
                 MessagesSettingsContent()
             }
 
-            SettingsPage.CLIPBOARD_HISTORY -> {
+            SettingsPage.CLIPBOARD_HISTORY, SettingsPage.CLIPBOARD_HOME -> {
                 val clipContext = androidx.compose.ui.platform.LocalContext.current
                 SettingsPageScaffold("Clipboard history", onBack = { settingsPage = page.parent }, scroll = false) {
                     ClipboardHistoryContent { text ->
@@ -646,11 +648,19 @@ fun ConnectHomeScreen(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 Text("Gossip", style = MaterialTheme.typography.headlineMedium)
-                androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.ROOT }) {
-                    androidx.compose.material3.Icon(
-                        Icons.Default.Settings,
-                        contentDescription = "Settings"
-                    )
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.CLIPBOARD_HOME }) {
+                        androidx.compose.material3.Icon(
+                            Icons.Default.ContentPaste,
+                            contentDescription = "Clipboard history"
+                        )
+                    }
+                    androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.ROOT }) {
+                        androidx.compose.material3.Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Settings"
+                        )
+                    }
                 }
             }
             ConnectionStatusCard(connectionState)

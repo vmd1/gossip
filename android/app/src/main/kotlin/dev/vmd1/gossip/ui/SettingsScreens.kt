@@ -60,6 +60,8 @@ enum class SettingsPage(val parent: SettingsPage?) {
     RELAY(ROOT),
     HOTSPOT(FEATURES),
     CLIPBOARD_HISTORY(FEATURES),
+    /** The same page opened from the home screen's button, so Back returns home rather than to Features. */
+    CLIPBOARD_HOME(null),
     MESSAGES(FEATURES),
     PERMISSIONS(ROOT)
 }
