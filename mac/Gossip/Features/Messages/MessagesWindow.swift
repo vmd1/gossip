@@ -12,36 +12,41 @@ private enum MessagesStyle {
     static let selection = Color.accentColor
 }
 
-/// A rounded bubble with the small tail Apple's Messages draws on the last bubble of a run.
-private struct BubbleShape: Shape {
+/// An Apple Messages bubble: rounded body with the small curled tail on the last bubble of a run. Drawn for an incoming
+/// bubble (tail bottom-left); an outgoing bubble is the mirror image.
+struct BubbleShape: Shape {
     let outgoing: Bool
     let tail: Bool
 
     func path(in rect: CGRect) -> Path {
-        let tailWidth: CGFloat = tail ? 6 : 0
-        let body = CGRect(x: outgoing ? rect.minX : rect.minX + tailWidth, y: rect.minY,
-                          width: rect.width - tailWidth, height: rect.height)
-        var path = Path(roundedRect: body, cornerRadius: min(18, body.height / 2), style: .continuous)
-        guard tail else { return path }
-        var t = Path()
-        if outgoing {
-            let x = body.maxX
-            t.move(to: CGPoint(x: x - 14, y: body.maxY))
-            t.addCurve(to: CGPoint(x: x + 5.5, y: body.maxY + 0.5), control1: CGPoint(x: x - 4, y: body.maxY - 0.5), control2: CGPoint(x: x + 2, y: body.maxY + 1))
-            t.addCurve(to: CGPoint(x: x - 3, y: body.maxY - 8), control1: CGPoint(x: x + 1.5, y: body.maxY - 3), control2: CGPoint(x: x - 1.5, y: body.maxY - 5.5))
+        var p = Path()
+        let w = rect.width, h = rect.height
+        let r = min(18, h / 2)
+        if tail {
+            p.move(to: CGPoint(x: 20, y: h))
+            p.addLine(to: CGPoint(x: w - r, y: h))
+            p.addCurve(to: CGPoint(x: w, y: h - r), control1: CGPoint(x: w - r * 0.5, y: h), control2: CGPoint(x: w, y: h - r * 0.5))
+            p.addLine(to: CGPoint(x: w, y: r))
+            p.addCurve(to: CGPoint(x: w - r, y: 0), control1: CGPoint(x: w, y: r * 0.5), control2: CGPoint(x: w - r * 0.5, y: 0))
+            p.addLine(to: CGPoint(x: 5 + r, y: 0))
+            p.addCurve(to: CGPoint(x: 5, y: r), control1: CGPoint(x: 5 + r * 0.5, y: 0), control2: CGPoint(x: 5, y: r * 0.5))
+            p.addLine(to: CGPoint(x: 5, y: h - 10))
+            p.addCurve(to: CGPoint(x: 0, y: h), control1: CGPoint(x: 5, y: h - 1), control2: CGPoint(x: 0, y: h))
+            p.addLine(to: CGPoint(x: -1, y: h))
+            p.addCurve(to: CGPoint(x: 12, y: h - 4), control1: CGPoint(x: 4, y: h + 1), control2: CGPoint(x: 8, y: h - 1))
+            p.addCurve(to: CGPoint(x: 20, y: h), control1: CGPoint(x: 15, y: h), control2: CGPoint(x: 20, y: h))
+            p.closeSubpath()
         } else {
-            let x = body.minX
-            t.move(to: CGPoint(x: x + 14, y: body.maxY))
-            t.addCurve(to: CGPoint(x: x - 5.5, y: body.maxY + 0.5), control1: CGPoint(x: x + 4, y: body.maxY - 0.5), control2: CGPoint(x: x - 2, y: body.maxY + 1))
-            t.addCurve(to: CGPoint(x: x + 3, y: body.maxY - 8), control1: CGPoint(x: x - 1.5, y: body.maxY - 3), control2: CGPoint(x: x + 1.5, y: body.maxY - 5.5))
+            p.addRoundedRect(in: CGRect(x: 5, y: 0, width: w - 5, height: h), cornerSize: CGSize(width: r, height: r), style: .continuous)
         }
-        t.closeSubpath()
-        path.addPath(t)
-        return path
+        if outgoing {
+            p = p.applying(CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -w, y: 0))
+        }
+        return p
     }
 }
 
-private struct Avatar: View {
+struct Avatar: View {
     let title: String
     let isNumber: Bool
     var size: CGFloat = 40
@@ -53,7 +58,9 @@ private struct Avatar: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(LinearGradient(colors: [Color(white: 0.68), Color(white: 0.52)], startPoint: .top, endPoint: .bottom))
+            Circle().fill(LinearGradient(
+                colors: isNumber ? [Color(white: 0.70), Color(white: 0.50)] : [Color(red: 0.55, green: 0.50, blue: 0.85), Color(red: 0.34, green: 0.30, blue: 0.62)],
+                startPoint: .top, endPoint: .bottom))
             if isNumber || initials.isEmpty {
                 Image(systemName: "person.fill").font(.system(size: size * 0.5)).foregroundStyle(.white)
             } else {
@@ -239,7 +246,7 @@ struct MessagesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) { conversation }
-                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 104) // room for the floating header
+                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 112) // room for the floating header
                 }
                 .onChange(of: manager.messages) { _, new in
                     if let last = new.last?.id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) } }
@@ -256,12 +263,12 @@ struct MessagesView: View {
     /// The avatar over a glass name capsule, centred at the top of the conversation where the title bar is, like Apple's
     /// Messages. Floats above the messages, which blur out beneath it.
     private var conversationHeader: some View {
-        VStack(spacing: -14) {
+        VStack(spacing: -4) {
             if let t = manager.openThread {
-                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 62)
+                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 56)
                     .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
                     .zIndex(1) // in front of the name capsule it overlaps
-                GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1) }
+                GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1).padding(.top, 10) }
             } else {
                 GlassCapsule { Text("New Message").font(.system(size: 13, weight: .semibold)) }
                     .padding(.top, 14)
@@ -303,7 +310,7 @@ struct MessagesView: View {
             .font(.system(size: 13.5))
             .foregroundStyle(m.outgoing ? Color.white : Color.primary)
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .padding(m.outgoing ? .trailing : .leading, tail ? 6 : 0)
+            .padding(m.outgoing ? .trailing : .leading, 5)
             .background(
                 BubbleShape(outgoing: m.outgoing, tail: tail)
                     .fill(m.outgoing ? (m.failed ? MessagesStyle.failed : MessagesStyle.sms) : MessagesStyle.incoming)
@@ -356,7 +363,7 @@ private struct ThreadRow: View {
             Avatar(title: thread.title, isNumber: isPhoneNumber(thread.title), size: 38)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(thread.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(thread.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
                     Spacer(minLength: 4)
                     Text(listStamp(thread.date)).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -400,6 +407,7 @@ enum MessagesWindow {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
                              styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
             w.title = "Messages"
+            w.titleVisibility = .hidden // the conversation header and the sidebar already say what this is
             w.titlebarAppearsTransparent = true
             w.isReleasedWhenClosed = false
             w.delegate = closeObserver
