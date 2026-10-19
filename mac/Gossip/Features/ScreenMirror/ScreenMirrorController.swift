@@ -29,6 +29,8 @@ final class ScreenMirrorController: ObservableObject {
     /// Which trusted device (by Gossip `deviceId`) the whole-screen mirror targets, so the menu can show
     /// "Stop Mirroring" on the right row.
     @Published private(set) var mirroringDeviceId: String?
+    /// Bumps whenever an app window opens or closes, so the picker's "open" dots refresh.
+    @Published private(set) var windowsVersion = 0
 
     /// A launchable app on a phone (`screen.apps`), for "Open App Window".
     struct PhoneApp: Identifiable, Equatable {
@@ -125,6 +127,11 @@ final class ScreenMirrorController: ObservableObject {
 
     private var fullSession: Session? { sessions.values.first { !$0.isApp } }
 
+    /// Whether `package` is already open (or opening) as a window from `deviceId`; the picker marks those apps.
+    func isAppOpen(_ package: String, on deviceId: String) -> Bool {
+        sessions.values.contains { $0.deviceId == deviceId && $0.app == package }
+    }
+
     /// App windows currently open (or opening).
     var openAppWindowCount: Int { sessions.values.filter(\.isApp).count }
 
@@ -164,6 +171,7 @@ final class ScreenMirrorController: ObservableObject {
     private func begin(_ s: Session) {
         registerRouterIfNeeded(s.transport)
         sessions[s.id] = s
+        windowsVersion += 1
         if !s.isApp { state = .starting; mirroringDeviceId = s.deviceId }
         sendStart(s)
         s.retryTimer = Timer.scheduledTimer(withTimeInterval: Self.retryInterval, repeats: true) { [weak self, weak s] timer in
@@ -404,6 +412,7 @@ final class ScreenMirrorController: ObservableObject {
     private func teardown(_ s: Session, keepWindow: Bool = false) {
         guard sessions[s.id] === s else { return }
         sessions[s.id] = nil
+        windowsVersion += 1
         resizeWork[s.id]?.cancel(); resizeWork[s.id] = nil
         s.retryTimer?.invalidate()
         s.client?.close()
