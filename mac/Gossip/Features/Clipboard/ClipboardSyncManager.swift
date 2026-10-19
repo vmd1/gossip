@@ -42,6 +42,20 @@ final class ClipboardSyncManager: ObservableObject {
         }
     }
 
+    /// Writes a history entry back to the pasteboard. Records the new `changeCount` so the poll doesn't treat it as a
+    /// fresh copy; it is already in the history (and moves to the top via `record`).
+    func copyFromHistory(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        lastChangeCount = pasteboard.changeCount
+        ClipboardHistoryStore.shared.record(text, remote: false)
+        if FeatureSettings.shared.isEnabled(.clipboard),
+           let value = guardLogic.outgoingText(me: identity.deviceId, text: text, sensitive: false) {
+            transportManager.setState(slot: GossipCoreKit.clipboardTextSlot(), valueJSON: value)
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Starts polling the pasteboard. Call when the transport becomes connected. Publishes whatever is on the pasteboard now
@@ -86,6 +100,7 @@ final class ClipboardSyncManager: ObservableObject {
         if let text = pasteboard.string(forType: .string) {
             if let value = guardLogic.outgoingText(me: identity.deviceId, text: text, sensitive: sensitive) {
                 transportManager.setState(slot: GossipCoreKit.clipboardTextSlot(), valueJSON: value)
+                ClipboardHistoryStore.shared.record(text, remote: false)
             }
             return
         }
@@ -116,6 +131,7 @@ final class ClipboardSyncManager: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        ClipboardHistoryStore.shared.record(text, remote: true)
 
         // Record the resulting changeCount so our own poll doesn't treat this as a new local copy and echo it back.
         lastChangeCount = pasteboard.changeCount

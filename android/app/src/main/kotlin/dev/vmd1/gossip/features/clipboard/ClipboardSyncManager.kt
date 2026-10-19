@@ -75,6 +75,7 @@ class ClipboardSyncManager(
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
     private val guardLogic = CoreClipboardGuard()
+    private val history = ClipboardHistoryStore.getInstance(context)
 
     /** The last local text observed by *either* [onLocalClipChanged] (the focus-gated listener) or [runBackgroundPollLoop]
      *  (the Shizuku-driven poll) — shared so the same genuinely-new text isn't published twice if both paths happen to
@@ -173,6 +174,7 @@ class ClipboardSyncManager(
     private fun publishText(text: String) {
         val value = guardLogic.outgoingText(deviceId, text, false) ?: return
         transportManager.setState(clipboardTextSlot(), Json.parseToJsonElement(value))
+        history.record(text, remote = false)
     }
 
     private fun sendImage(data: ByteArray) {
@@ -195,6 +197,15 @@ class ClipboardSyncManager(
     private fun onRemoteText(valueJson: String) {
         val text = runCatching { guardLogic.incomingText(valueJson) }.getOrNull() ?: return
         clipboardManager.setPrimaryClip(ClipData.newPlainText("Gossip", text))
+        history.record(text, remote = true)
+    }
+
+    /** Puts a history entry back on the clipboard and publishes it (the guard drops it if it is already the current value). */
+    fun copyFromHistory(text: String) {
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("Gossip", text))
+        lastObservedText = text
+        history.record(text, remote = false)
+        if (isEnabled()) publishText(text)
     }
 
     private fun onRemoteImageUpdate(envelope: Envelope, data: ByteArray) {

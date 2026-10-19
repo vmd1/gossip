@@ -249,7 +249,8 @@ struct ConnectApp: App {
                 hotspotStateManager: hotspotStateManager,
                 ringManager: ringManager,
                 batterySyncManager: batterySyncManager,
-                featureSettings: FeatureSettings.shared
+                featureSettings: FeatureSettings.shared,
+                clipboardSync: clipboardSyncManager
             )
         }
         .menuBarExtraStyle(.window)

@@ -469,6 +469,9 @@ fun ConnectHomeScreen(
                         settingsPage = SettingsPage.NOTIFICATIONS
                     }
                 }
+                SettingsMenuRow("Clipboard history", "Search and pin what you copied on this device") {
+                    settingsPage = SettingsPage.CLIPBOARD_HISTORY
+                }
                 SettingsMenuRow("Features", "Turn features on or off on this device") { settingsPage = SettingsPage.FEATURES }
                 SettingsMenuRow("Relay", "Stay connected when your devices are not on the same network") { settingsPage = SettingsPage.RELAY }
                 if (isPhone) {
@@ -525,6 +528,16 @@ fun ConnectHomeScreen(
 
             SettingsPage.NOTIFICATION_APPS -> SettingsPageScaffold("Forwarded apps", onBack = { settingsPage = page.parent }, scroll = false) {
                 NotificationAppsContent()
+            }
+
+            SettingsPage.CLIPBOARD_HISTORY -> {
+                val clipContext = androidx.compose.ui.platform.LocalContext.current
+                SettingsPageScaffold("Clipboard history", onBack = { settingsPage = page.parent }, scroll = false) {
+                    ClipboardHistoryContent { text ->
+                        val cm = clipContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Gossip", text))
+                    }
+                }
             }
 
             SettingsPage.FEATURES -> SettingsPageScaffold("Features", onBack = { settingsPage = page.parent }) {
@@ -671,6 +684,7 @@ fun ConnectHomeScreen(
                 batteryStates = batteryStates,
                 ringingPeers = ringingPeers,
                 onToggleRing = onToggleRing,
+                onMirror = { id, name -> dev.vmd1.gossip.features.screenmirror.ScreenViewerActivity.start(toastContext, id, name) },
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls

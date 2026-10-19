@@ -15,6 +15,7 @@ struct MenuBarView: View {
     @ObservedObject var ringManager: RingManager
     @ObservedObject var batterySyncManager: BatterySyncManager
     @ObservedObject var featureSettings: FeatureSettings
+    let clipboardSync: ClipboardSyncManager
 
     @State private var settingsWindow: SettingsWindow?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
@@ -89,6 +90,13 @@ struct MenuBarView: View {
                     NSApplication.shared.terminate(nil)
                 }
                 Spacer()
+                Button {
+                    ClipboardHistoryWindow.show { [clipboardSync] text in clipboardSync.copyFromHistory(text) }
+                } label: {
+                    Image(systemName: "list.clipboard")
+                }
+                .buttonStyle(.borderless)
+                .help("Clipboard History…")
                 Button {
                     if let existing = settingsWindow, existing.isVisible {
                         existing.makeKeyAndOrderFront(nil)

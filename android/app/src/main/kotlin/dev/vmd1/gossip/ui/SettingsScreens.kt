@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import dev.vmd1.gossip.features.clipboard.ClipboardHistoryStore
 import dev.vmd1.gossip.features.notifications.NotificationForwardSettings
 import dev.vmd1.gossip.features.settings.Feature
 import dev.vmd1.gossip.features.settings.FeatureSettings
@@ -57,6 +58,7 @@ enum class SettingsPage(val parent: SettingsPage?) {
     FEATURES(ROOT),
     RELAY(ROOT),
     HOTSPOT(ROOT),
+    CLIPBOARD_HISTORY(ROOT),
     PERMISSIONS(ROOT)
 }
 
@@ -223,5 +225,62 @@ private fun AppIcon(packageName: String) {
         Image(bitmap = bitmap, contentDescription = null, modifier = Modifier.size(36.dp))
     } else {
         androidx.compose.foundation.layout.Spacer(Modifier.size(36.dp))
+    }
+}
+
+/** Settings → Clipboard history: the on/off switch, search, copy back, pin, delete and clear. Device-local only. */
+@Composable
+fun ColumnScope.ClipboardHistoryContent(onCopy: (String) -> Unit) {
+    val store = ClipboardHistoryStore.getInstance(LocalContext.current)
+    val enabled by store.enabled.collectAsState()
+    val entries by store.entries.collectAsState()
+    var query by remember { mutableStateOf("") }
+    var confirmClear by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text("Keep clipboard history", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Stored only on this device, never sent to other devices or the relay. Off by default; turning it off deletes it.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = { store.setEnabled(it) })
+    }
+    if (!enabled) return
+    OutlinedTextField(
+        value = query, onValueChange = { query = it }, label = { Text("Search") },
+        singleLine = true, modifier = Modifier.fillMaxWidth()
+    )
+    val shown = remember(entries, query) { store.filtered(query) }
+    LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        items(shown, key = { it.id }) { entry ->
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f).clickable { onCopy(entry.text) }) {
+                    Text(entry.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        (if (entry.remote) "From another device · " else "") +
+                            android.text.format.DateUtils.getRelativeTimeSpanString(entry.date),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                TextButton(onClick = { store.togglePin(entry.id) }) { Text(if (entry.pinned) "Unpin" else "Pin") }
+                TextButton(onClick = { store.remove(entry.id) }) { Text("Delete") }
+            }
+        }
+    }
+    TextButton(onClick = { confirmClear = true }, enabled = entries.isNotEmpty()) { Text("Clear all (${entries.size})") }
+    if (confirmClear) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Delete all clipboard history?") },
+            text = { Text("This includes pinned items.") },
+            confirmButton = { TextButton(onClick = { store.clear(); confirmClear = false }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
+        )
     }
 }

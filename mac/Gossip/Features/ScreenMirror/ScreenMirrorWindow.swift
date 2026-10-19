@@ -252,7 +252,7 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
     }
 
     init(deviceName: String, videoSize: CGSize) {
-        let initial = Self.fittedSize(for: videoSize)
+        let initial = Self.fittedSize(for: videoSize, on: nil)
         super.init(
             contentRect: NSRect(origin: .zero, size: initial),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -272,6 +272,11 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
         contentAspectRatio = videoSize
         setTrafficLights(visible: false)
         center()
+        // Open on the display the user is on; `center()` uses the main display.
+        if let target = Self.screenUnderMouse(), target != screen {
+            let v = target.visibleFrame
+            setFrameOrigin(NSPoint(x: v.midX - frame.width / 2, y: v.midY - frame.height / 2))
+        }
     }
 
     private func setTrafficLights(visible: Bool) {
@@ -285,15 +290,22 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
         guard size.width > 0, size.height > 0, size != content.videoSize else { return }
         content.videoSize = size
         contentAspectRatio = size
-        setContentSize(Self.fittedSize(for: size))
+        setContentSize(Self.fittedSize(for: size, on: screen))
     }
 
     /// Roughly 80% of the screen height, preserving the video's aspect ratio.
-    private static func fittedSize(for video: CGSize) -> CGSize {
-        let maxH = (NSScreen.main?.visibleFrame.height ?? 900) * 0.8
-        let maxW = (NSScreen.main?.visibleFrame.width ?? 1400) * 0.8
+    private static func fittedSize(for video: CGSize, on screen: NSScreen?) -> CGSize {
+        let visible = (screen ?? Self.screenUnderMouse() ?? NSScreen.main)?.visibleFrame
+        let maxH = (visible?.height ?? 900) * 0.8
+        let maxW = (visible?.width ?? 1400) * 0.8
         let scale = min(maxH / video.height, maxW / video.width, 1)
         return CGSize(width: (video.width * scale).rounded(), height: (video.height * scale).rounded())
+    }
+
+    /// The display the user is working on, so a new mirror window opens there rather than on the main display.
+    static func screenUnderMouse() -> NSScreen? {
+        let p = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(p, $0.frame, false) }
     }
 
     func windowWillClose(_ notification: Notification) {
