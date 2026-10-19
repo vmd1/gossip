@@ -246,7 +246,7 @@ struct MessagesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) { conversation }
-                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 186) // room for the floating header
+                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 124) // room for the floating header
                 }
                 .onChange(of: manager.messages) { _, new in
                     if let last = new.last?.id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) } }
@@ -260,12 +260,16 @@ struct MessagesView: View {
         .overlay(alignment: .top) { conversationHeader.ignoresSafeArea(.container, edges: .top) }
     }
 
+    /// How far the avatar sits below its natural spot, overlapping the name capsule more (points).
+    private static let avatarDrop: CGFloat = 8
+
     /// The avatar over a glass name capsule, centred at the top of the conversation where the title bar is, like Apple's
     /// Messages. Floats above the messages, which blur out beneath it.
     private var conversationHeader: some View {
         VStack(spacing: -4) {
             if let t = manager.openThread {
                 Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 56)
+                    .offset(y: Self.avatarDrop) // moves only the avatar; the name stays put
                     .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
                     .zIndex(1) // in front of the name capsule it overlaps
                 GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1).padding(.top, 10) }
@@ -274,7 +278,7 @@ struct MessagesView: View {
                     .padding(.top, 14)
             }
         }
-        .padding(.top, 80)
+        .padding(.top, 6)
         .frame(maxWidth: .infinity)
         .allowsHitTesting(false)
     }

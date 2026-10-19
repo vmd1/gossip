@@ -9,8 +9,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `ConnectApp.init()` are two separate initialization paths.
     var onOpenURLs: (([URL]) -> Void)?
 
+    /// Held for the life of the app: a menu-bar app with no visible window is otherwise App Napped and its timers and
+    /// network reads throttled, and automatic/sudden termination is allowed, which looks like Gossip being killed in the background.
+    private var activity: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep, .automaticTerminationDisabled, .suddenTerminationDisabled],
+                                                         reason: "Keeping paired devices connected")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
