@@ -185,8 +185,6 @@ private struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Button("Open Messages") { MessagesWindow.show(manager: messagesManager) }
-                    .disabled(!features.isEnabled(.messages))
                 if let launcherMessage {
                     Text(launcherMessage).font(.caption).foregroundStyle(.secondary)
                 }

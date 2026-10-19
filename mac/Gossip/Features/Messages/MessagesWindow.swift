@@ -300,8 +300,26 @@ private struct ThreadRow: View {
     }
 }
 
+/// Opens the Messages window with its own Dock icon. Gossip itself is a menu-bar app with no Dock presence, so while the
+/// window is open the app becomes a regular one wearing the Messages icon (taken from the embedded "Gossip Messages"
+/// launcher), and goes back to being a menu-bar app when the window closes.
 enum MessagesWindow {
     private static var window: NSWindow?
+    private static let closeObserver = CloseObserver()
+
+    private final class CloseObserver: NSObject, NSWindowDelegate {
+        func windowWillClose(_ notification: Notification) {
+            // Back to a menu-bar app: no Dock icon, and the default icon again.
+            NSApp.applicationIconImage = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private static var icon: NSImage? {
+        let url = Bundle.main.sharedSupportURL?
+            .appendingPathComponent("\(LauncherInstaller.messagesLauncherName)/Contents/Resources/AppIcon.icns")
+        return url.flatMap { NSImage(contentsOf: $0) }
+    }
 
     static func show(manager: MessagesManager) {
         if window == nil {
@@ -310,11 +328,14 @@ enum MessagesWindow {
             w.title = "Messages"
             w.titlebarAppearsTransparent = true
             w.isReleasedWhenClosed = false
+            w.delegate = closeObserver
             w.contentView = NSHostingView(rootView: MessagesView(manager: manager))
             w.setFrameAutosaveName("GossipMessages")
             w.center()
             window = w
         }
+        NSApp.setActivationPolicy(.regular)
+        if let icon { NSApp.applicationIconImage = icon }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
