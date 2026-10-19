@@ -33,12 +33,19 @@ class ScreenMirrorStateTest {
     private var failStart = false
     private var screenEnabled = true
 
+    private val prepared = CopyOnWriteArrayList<String>()
+    private val capturedOptions = CopyOnWriteArrayList<ScrcpyServerSession.Options>()
+
     private fun state() = ScreenMirrorState(
         selfId = "phone",
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
         shizukuReady = { shizuku },
         send = { sent.add(it) },
-        sessionFactory = { id, _, _ -> FakeSession(id, failStart).also { sessions.add(it) } },
+        sessionFactory = { id, options, _ -> capturedOptions.add(options); FakeSession(id, failStart).also { sessions.add(it) } },
+        appLister = { listOf(ScreenMirrorState.AppInfo("com.example.notes", "Notes", 5L), ScreenMirrorState.AppInfo("org.demo.maps", "Maps", 9L)) },
+        iconProvider = { byteArrayOf(1, 2, 3) },
+        appChecker = { pkg -> if (pkg == "com.example.gone") "app_unavailable" else null },
+        prepareApp = { pkg -> prepared.add(pkg); if (pkg == "com.example.stuck") "app_enable_failed" else null },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
     )
@@ -185,5 +192,133 @@ class ScreenMirrorStateTest {
         assertEquals(1, sessions[0].closed)
         s.stopActive() // nothing active: harmless
         assertFalse(s.isMirroring.value)
+    }
+
+    @Test fun appWindowOptionsAreValidatedAndDefaulted() {
+        val s = state()
+        s.onScreenStart(Envelope(type = MessageType.SCREEN_START, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("sessionId", JsonPrimitive("w")); put("app", JsonPrimitive("com.example.notes")) }))
+        awaitSent(1)
+        val o = capturedOptions[0]
+        assertEquals("com.example.notes", o.startApp)
+        assertEquals("1080x2340/420", o.newDisplay)
+        assertTrue(o.isAppWindow)
+    }
+
+    @Test fun hostileAppOrSizeNeverReachesTheCommandLine() {
+        val s = state()
+        s.onScreenStart(Envelope(type = MessageType.SCREEN_START, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("sessionId", JsonPrimitive("x")); put("app", JsonPrimitive("a.b; rm -rf /")) }))
+        awaitSent(1)
+        assertEquals(null, capturedOptions[0].startApp)
+        assertEquals(null, capturedOptions[0].newDisplay)
+        assertFalse(capturedOptions[0].isAppWindow)
+        assertFalse(ScrcpyServerSession.Options.isValidDisplaySpec("1080x2340/420 && id"))
+        assertTrue(ScrcpyServerSession.Options.isValidDisplaySpec("1080x2340/420"))
+        assertFalse(ScrcpyServerSession.Options.isValidPackage("nodots"))
+    }
+
+    @Test fun appsRequestListsAppsAndIsRepeatable() {
+        val s = state()
+        val req = env(MessageType.SCREEN_APPS_REQUEST)
+        s.onAppsRequest(req); s.onAppsRequest(req)
+        awaitSent(2)
+        assertEquals(2, sent.count { it.type == MessageType.SCREEN_APPS })
+        assertEquals(sent[0].payload, sent[1].payload)
+        assertEquals(2, (sent[0].payload["apps"] as kotlinx.serialization.json.JsonArray).size)
+        assertEquals("a query never starts capture", 0, sessions.size)
+    }
+
+    @Test fun appsRequestIsRefusedWhenMirroringIsOff() {
+        screenEnabled = false
+        val s = state()
+        s.onAppsRequest(env(MessageType.SCREEN_APPS_REQUEST))
+        awaitSent(1)
+        assertEquals(0, (sent[0].payload["apps"] as kotlinx.serialization.json.JsonArray).size)
+        assertEquals("feature_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
+    }
+
+    private fun appStart(id: String, pkg: String) = Envelope(type = MessageType.SCREEN_START, senderId = "mac", recipientId = "phone",
+        payload = buildJsonObject { put("sessionId", JsonPrimitive(id)); put("app", JsonPrimitive(pkg)) })
+
+    @Test fun appWindowsRunSideBySideAndDontEndTheWholeScreenMirror() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "full"))
+        s.onScreenStart(appStart("a1", "com.example.one"))
+        s.onScreenStart(appStart("a2", "com.example.two"))
+        awaitSent(3)
+        assertEquals(3, sessions.size)
+        assertTrue(sessions.all { it.closed == 0 })
+    }
+
+    @Test fun aNewWholeScreenMirrorReplacesOnlyTheOldWholeScreenMirror() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "f1"))
+        s.onScreenStart(appStart("a1", "com.example.one"))
+        s.onScreenStart(env(MessageType.SCREEN_START, "f2"))
+        awaitSent(3)
+        Thread.sleep(100)
+        assertEquals(1, sessions[0].closed); assertEquals(0, sessions[1].closed); assertEquals(0, sessions[2].closed)
+    }
+
+    @Test fun theOldestAppWindowMakesRoomPastTheLimit() {
+        val s = state()
+        repeat(ScreenMirrorState.MAX_APP_WINDOWS + 1) { s.onScreenStart(appStart("a$it", "com.example.app$it")) }
+        awaitSent(ScreenMirrorState.MAX_APP_WINDOWS + 1)
+        Thread.sleep(100)
+        assertEquals(1, sessions[0].closed)
+        assertEquals(0, sessions[1].closed)
+    }
+
+    @Test fun anUninstalledAppIsRefusedWithAReasonAndStartsNothing() {
+        val s = state()
+        s.onScreenStart(appStart("x", "com.example.gone"))
+        awaitSent(1)
+        assertEquals("app_unavailable", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals(0, sessions.size)
+        assertTrue(prepared.isEmpty())
+    }
+
+    @Test fun anAppIsPreparedBeforeItsSessionStarts() {
+        val s = state()
+        s.onScreenStart(appStart("p", "com.example.sleepy"))
+        awaitSent(1)
+        assertEquals(listOf("com.example.sleepy"), prepared.toList())
+        assertEquals(MessageType.SCREEN_READY, sent[0].type)
+    }
+
+    @Test fun anAppThatCantBeEnabledIsReportedAndStartsNothing() {
+        val s = state()
+        s.onScreenStart(appStart("q", "com.example.stuck"))
+        awaitSent(1)
+        assertEquals("app_enable_failed", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals(0, sessions.size)
+    }
+
+    @Test fun aWholeScreenMirrorPreparesNoApp() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "w"))
+        awaitSent(1)
+        assertTrue(prepared.isEmpty())
+    }
+
+    @Test fun onlyMissingOrChangedIconsAreSent() {
+        val s = state()
+        val have = kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("com.example.notes@5"), JsonPrimitive("org.demo.maps@8")))
+        s.onAppsRequest(Envelope(type = MessageType.SCREEN_APPS_REQUEST, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("icons", JsonPrimitive(true)); put("haveIcons", have) }))
+        awaitSent(2)
+        val icons = sent.first { it.type == MessageType.SCREEN_APP_ICONS }.payload["icons"] as kotlinx.serialization.json.JsonArray
+        assertEquals("Notes is unchanged, Maps was updated", 1, icons.size)
+        assertEquals("org.demo.maps", (icons[0] as kotlinx.serialization.json.JsonObject)["package"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun noIconsAreSentWhenTheViewerHasThemAll() {
+        val s = state()
+        val have = kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("com.example.notes@5"), JsonPrimitive("org.demo.maps@9")))
+        s.onAppsRequest(Envelope(type = MessageType.SCREEN_APPS_REQUEST, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("icons", JsonPrimitive(true)); put("haveIcons", have) }))
+        Thread.sleep(300)
+        assertEquals(0, sent.count { it.type == MessageType.SCREEN_APP_ICONS })
     }
 }

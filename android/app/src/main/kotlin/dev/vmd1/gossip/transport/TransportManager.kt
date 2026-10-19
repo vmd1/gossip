@@ -145,6 +145,11 @@ class TransportManager(
 
     fun isRelayed(deviceId: String): Boolean = connectionPath(deviceId) == ConnectionPath.RELAYED
 
+    /** The network address of the direct socket to [deviceId] (what an Android screen-mirroring viewer dials), or `null`
+     *  if there is no direct connection. IPv6 link-local addresses keep their scope. */
+    fun peerAddress(deviceId: String): java.net.InetAddress? =
+        linkByDevice[deviceId]?.let { links[it] }?.takeIf { !it.closed }?.socket?.inetAddress
+
     /** When each device (other than us) was last heard from, by any message — directly or relayed. */
     private val lastHeard = ConcurrentHashMap<String, Long>()
     private val _meshReachableDeviceIds = MutableStateFlow<Set<String>>(emptySet())

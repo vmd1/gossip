@@ -1,6 +1,6 @@
 import Foundation
 
-/// One line of the Device Mirroring window.
+/// One line of the Gossip Mirroring window.
 struct MirrorRow: Equatable, Identifiable {
     let id: String
     let name: String

@@ -20,7 +20,7 @@ Everything you need to go from nothing to a working Mac ↔ Android setup.
   - open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to the Gossip message
   - alternative: remove the quarantine flag in Terminal with `xattr -dr com.apple.quarantine /Applications/Gossip.app`
 - Gossip lives in the **menu bar** — there is no Dock icon or main window
-- the first time it runs from an Applications folder it also adds a small **Device Mirroring** app next to itself
+- the first time it runs from an Applications folder it also adds a small **Gossip Mirroring** app next to itself
   - it lets you open your device list and start mirroring from Spotlight or Launchpad
   - turn it off under Gossip's **Settings → Apps**
 
@@ -106,5 +106,5 @@ You can reopen setup later: on Android under **Settings → Devices & pairing**,
 - **update:** install the new release over the old one
   - the Mac app and the Android app both keep their data and pairings
   - Android only accepts an update signed with the same key as the installed app; if a build from another source refuses to install, uninstall first
-- **uninstall Mac:** quit Gossip from the menu bar, then delete `Gossip.app` (this also removes the Device Mirroring app); its data lives in `~/Library/Application Support/Connect`
+- **uninstall Mac:** quit Gossip from the menu bar, then delete `Gossip.app` (this also removes the Gossip Mirroring app); its data lives in `~/Library/Application Support/Connect`
 - **uninstall Android:** remove the app as usual; also remove Gossip from Shizuku's authorised apps if you want

@@ -1,5 +1,7 @@
 package dev.vmd1.gossip.service
 
+import kotlinx.coroutines.flow.first
+import androidx.core.graphics.drawable.toBitmap
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -57,6 +59,8 @@ class SyncForegroundService : Service() {
     private lateinit var bleProximityMonitor: BLEProximityMonitor
     private lateinit var lockOnLeaveManager: LockOnLeaveManager
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
+    private var messagesBridge: dev.vmd1.gossip.features.messages.MessagesBridge? = null
+    private var smsObserver: android.database.ContentObserver? = null
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
     private lateinit var ringManager: dev.vmd1.gossip.features.find.RingManager
@@ -79,6 +83,50 @@ class SyncForegroundService : Service() {
             send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
             sessionFactory = { sessionId, options, onEnded ->
                 dev.vmd1.gossip.features.screenmirror.ScreenBridge(applicationContext, sessionId, options, onEnded)
+            },
+            appLister = {
+                val pm = applicationContext.packageManager
+                // MATCH_DISABLED_*: disabled apps stay in the list; opening one enables it first (see prepareApp).
+                val flags = android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS or
+                    android.content.pm.PackageManager.MATCH_DISABLED_UNTIL_USED_COMPONENTS
+                pm.queryIntentActivities(
+                    android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), flags
+                ).map {
+                        val pkg = it.activityInfo.packageName
+                        val version = runCatching { pm.getPackageInfo(pkg, 0).lastUpdateTime }.getOrDefault(0L)
+                        dev.vmd1.gossip.features.screenmirror.ScreenMirrorState.AppInfo(
+                            pkg, it.loadLabel(pm).toString(), version, disabled = !it.activityInfo.applicationInfo.enabled
+                        )
+                    }
+                    .filter { it.pkg != packageName }
+                    .distinctBy { it.pkg }
+                    .sortedBy { it.label.lowercase() }
+            },
+            appChecker = { pkg ->
+                val pm = applicationContext.packageManager
+                val info = runCatching { pm.getApplicationInfo(pkg, android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS) }.getOrNull()
+                // A disabled app has no launcher intent until it is enabled, so only an enabled one is checked for it.
+                if (info == null || (info.enabled && pm.getLaunchIntentForPackage(pkg) == null)) "app_unavailable" else null
+            },
+            prepareApp = { pkg ->
+                val pm = applicationContext.packageManager
+                val enabled = runCatching { pm.getApplicationInfo(pkg, 0).enabled }.getOrDefault(false)
+                var reason: String? = null
+                if (!enabled) {
+                    // Enable it for the user (shell UID, through Shizuku), like `pm enable --user 0 <pkg>`.
+                    val ok = runCatching { dev.vmd1.gossip.features.screenmirror.ShizukuShell.exec("pm", "enable", "--user", "0", pkg).waitFor() == 0 }
+                        .getOrDefault(false)
+                    if (!ok) reason = "app_enable_failed"
+                }
+                // Wake the screen so the app's launch is visible and not held behind a dark display.
+                dev.vmd1.gossip.features.screenmirror.ScreenOff.wake()
+                reason
+            },
+            iconProvider = { pkg ->
+                runCatching {
+                    val bmp = applicationContext.packageManager.getApplicationIcon(pkg).toBitmap(48, 48)
+                    java.io.ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                }.getOrNull()
             },
             logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
@@ -133,6 +181,13 @@ class SyncForegroundService : Service() {
         // its reply/dismiss handlers now.
         dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.ensureHandlersRegistered()
         shizukuManager = dev.vmd1.gossip.features.hotspot.ShizukuManager(applicationContext).also { it.start() }
+        setUpMessages(messageRouter, identity.deviceId)
+        // Sessions leaked by an earlier run (a crash, an update) would keep virtual displays alive and steal input focus
+        // from the real screen; none of ours can be live yet, so clear them once Shizuku is up.
+        serviceScope.launch {
+            shizukuManager?.state?.first { it == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED }
+            dev.vmd1.gossip.features.screenmirror.ScrcpyServerSession.killAllStale()
+        }
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
             transportManager = transportManager,
@@ -583,6 +638,7 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        smsObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         mediaControlBridge.stop()
         dndSyncManager.stop()
         clipboardSyncManager.stop()
@@ -598,6 +654,29 @@ class SyncForegroundService : Service() {
         NotificationMirrorReceiver.instance = null
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    /** The phone side of the Messages app: off until the user turns it on in Settings, and serving SMS only. */
+    private fun setUpMessages(router: MessageRouter, selfId: String) {
+        val settings = dev.vmd1.gossip.features.messages.MessagesSettings.getInstance(applicationContext)
+        val bridge = dev.vmd1.gossip.features.messages.MessagesBridge(
+            selfId = selfId,
+            scope = serviceScope,
+            backend = dev.vmd1.gossip.features.messages.SmsBackend(applicationContext),
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
+            publishState = { state -> transportManager.setState(dev.vmd1.gossip.features.messages.MessagesBridge.SLOT, state) },
+            isEnabled = { settings.enabled.value },
+        )
+        messagesBridge = bridge
+        bridge.register(router)
+        bridge.start()
+        // A new or changed SMS publishes the new state right away (the 60 s resync covers anything missed).
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) = bridge.notifyChanged().let { }
+        }
+        runCatching { contentResolver.registerContentObserver(android.provider.Telephony.Sms.CONTENT_URI, true, observer) }
+        smsObserver = observer
+        serviceScope.launch { settings.enabled.collect { bridge.notifyChanged() } }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

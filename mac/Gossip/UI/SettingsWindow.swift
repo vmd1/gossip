@@ -14,7 +14,7 @@ final class SettingsWindow: NSWindow {
     private var dndSetupWindow: DNDSetupWindow?
     private var onboardingWindow: OnboardingWindow?
 
-    init(featureSettings: FeatureSettings, transportManager: TransportManager, pairingViewModel: PairingViewModel, notificationMirrorManager: NotificationMirrorManager) {
+    init(featureSettings: FeatureSettings, transportManager: TransportManager, pairingViewModel: PairingViewModel, notificationMirrorManager: NotificationMirrorManager, messagesManager: MessagesManager) {
         self.pairingViewModel = pairingViewModel
         self.notificationMirrorManager = notificationMirrorManager
         super.init(
@@ -29,6 +29,7 @@ final class SettingsWindow: NSWindow {
             rootView: SettingsView(
                 features: featureSettings,
                 transport: transportManager,
+                messagesManager: messagesManager,
                 onPairNewDevice: { [weak self] in self?.openPairing() },
                 onOpenDNDSetup: { [weak self] in self?.openDNDSetup() },
                 onRunSetupAgain: { [weak self] in self?.openOnboarding() }
@@ -74,6 +75,7 @@ final class SettingsWindow: NSWindow {
 private struct SettingsView: View {
     @ObservedObject var features: FeatureSettings
     @ObservedObject var transport: TransportManager
+    let messagesManager: MessagesManager
     let onPairNewDevice: () -> Void
     let onOpenDNDSetup: () -> Void
     let onRunSetupAgain: () -> Void
@@ -82,6 +84,7 @@ private struct SettingsView: View {
     @State private var commandMapping = UniversalControlSettings.commandMapping
     @State private var typingMode = UniversalControlSettings.typingMode
     @State private var launcherEnabled = LauncherPreference.autoInstall
+    @State private var messagesLauncherEnabled = LauncherPreference.messagesAutoInstall
     @State private var launcherMessage: String?
 
     var body: some View {
@@ -153,13 +156,32 @@ private struct SettingsView: View {
                             LauncherSetup.ensureInstalled()
                             if case .notApplicable(let reason) = LauncherInstaller().status() { launcherMessage = reason } else { launcherMessage = nil }
                         } else {
-                            launcherMessage = "To remove it, delete “Device Mirroring” from your Applications folder."
+                            launcherMessage = "To remove it, delete “Gossip Mirroring” from your Applications folder."
                         }
                     }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Device Mirroring app")
-                        Text("Keeps a “Device Mirroring” app next to Gossip so you can open the device list from Spotlight or Launchpad.")
+                        Text("Gossip Mirroring app")
+                        Text("Keeps a “Gossip Mirroring” app next to Gossip so you can open the device list from Spotlight or Launchpad.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: Binding(
+                    get: { messagesLauncherEnabled },
+                    set: { on in
+                        LauncherPreference.messagesAutoInstall = on
+                        messagesLauncherEnabled = on
+                        if on {
+                            LauncherSetup.ensureInstalled(installer: .messages())
+                            if case .notApplicable(let reason) = LauncherInstaller.messages().status() { launcherMessage = reason } else { launcherMessage = nil }
+                        } else {
+                            launcherMessage = "To remove it, delete “Gossip Messages” from your Applications folder."
+                        }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Messages app")
+                        Text("Keeps a “Gossip Messages” app next to Gossip so you can open your phone's texts from Spotlight or Launchpad.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

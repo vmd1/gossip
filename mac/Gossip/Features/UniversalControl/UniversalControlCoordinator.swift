@@ -50,8 +50,9 @@ final class UniversalControlCoordinator: ObservableObject {
         tap.handler = { [weak manager] event in manager?.handle(event) ?? .pass }
 
         let nc = NotificationCenter.default
-        observers.append(nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak manager] _ in
+        observers.append(nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak manager, weak self] _ in
             manager?.displaysChanged()
+            self?.publishDisplays()
         })
         // Put the pointer back before anything that would strand it.
         let returnHome: (Notification) -> Void = { [weak manager] _ in manager?.returnToMac() }
@@ -69,6 +70,7 @@ final class UniversalControlCoordinator: ObservableObject {
         transport.$connectedDeviceIds.sink { [weak manager] _ in DispatchQueue.main.async { manager?.reconcile() } }.store(in: &cancellables)
 
         manager.start()
+        publishDisplays()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
         refresh()
     }
@@ -100,6 +102,20 @@ final class UniversalControlCoordinator: ObservableObject {
             result[string] = CGDisplayBounds(id)
         }
         return result
+    }
+
+    /// Publishes this Mac's monitors as the `control.display` state slot (size of the main display plus the `displays`
+    /// array), so another computer can lay out each monitor separately. The core versions the slot and repairs drift, and
+    /// an unchanged value is a no-op, so calling this on every display change is safe.
+    func publishDisplays() {
+        guard let transport else { return }
+        let main = CGDisplayBounds(CGMainDisplayID())
+        let rects = Self.systemMacDisplays().map { id, r in
+            GossipCoreKit.DisplayRect(id: id, x: Int32(clamping: Int(r.minX)), y: Int32(clamping: Int(r.minY)),
+                                      width: UInt32(max(1, r.width)), height: UInt32(max(1, r.height)))
+        }.sorted { $0.id < $1.id }
+        let info = GossipCoreKit.DisplayInfo(width: UInt32(max(1, main.width)), height: UInt32(max(1, main.height)), rotation: 0)
+        transport.setState(slot: GossipCoreKit.displaySlot(), valueJSON: GossipCoreKit.displayPayloadWithDisplays(info: info, displays: rects))
     }
 
     // MARK: Windows

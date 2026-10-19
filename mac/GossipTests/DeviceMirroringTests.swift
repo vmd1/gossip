@@ -13,7 +13,7 @@ final class LauncherInstallerTests: XCTestCase {
         applications = root.appendingPathComponent("Applications", isDirectory: true)
         gossip = applications.appendingPathComponent("Gossip.app", isDirectory: true)
         try fm.createDirectory(at: applications, withIntermediateDirectories: true)
-        embedded = gossip.appendingPathComponent("Contents/SharedSupport/Device Mirroring.app", isDirectory: true)
+        embedded = gossip.appendingPathComponent("Contents/SharedSupport/Gossip Mirroring.app", isDirectory: true)
         try makeApp(at: embedded, executable: "v1")
     }
 
@@ -30,7 +30,7 @@ final class LauncherInstallerTests: XCTestCase {
         LauncherInstaller(embeddedLauncherURL: embedded, gossipURL: gossipURL ?? gossip, allowedDirectories: allowed ?? [applications])
     }
 
-    private var installed: URL { applications.appendingPathComponent("Device Mirroring.app") }
+    private var installed: URL { applications.appendingPathComponent("Gossip Mirroring.app") }
 
     func testInstallsNextToGossipThenIsUpToDate() {
         XCTAssertEqual(installer().status(), .missing)
@@ -74,7 +74,7 @@ final class LauncherInstallerTests: XCTestCase {
         try fm.createDirectory(at: downloads, withIntermediateDirectories: true)
         let elsewhere = downloads.appendingPathComponent("Gossip.app")
         if case .notApplicable = installer(gossipURL: elsewhere).install() {} else { XCTFail("expected notApplicable") }
-        XCTAssertFalse(fm.fileExists(atPath: downloads.appendingPathComponent("Device Mirroring.app").path))
+        XCTAssertFalse(fm.fileExists(atPath: downloads.appendingPathComponent("Gossip Mirroring.app").path))
     }
 
     func testNotApplicableWithoutAnEmbeddedLauncher() {
@@ -88,14 +88,14 @@ final class GossipLocatorTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("locator-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("Gossip.app"), withIntermediateDirectories: true)
-        let launcher = dir.appendingPathComponent("Device Mirroring.app")
+        let launcher = dir.appendingPathComponent("Gossip Mirroring.app")
         let stray = URL(fileURLWithPath: "/somewhere/else/Gossip.app")
         XCTAssertEqual(GossipLocator.locate(launcherURL: launcher, lookUpByBundleIdentifier: { _ in stray })?.lastPathComponent, "Gossip.app")
         XCTAssertEqual(GossipLocator.locate(launcherURL: launcher, lookUpByBundleIdentifier: { _ in stray })?.deletingLastPathComponent().path, dir.path)
     }
 
     func testFallsBackToTheBundleIdentifierLookup() {
-        let launcher = URL(fileURLWithPath: "/nonexistent-dir/Device Mirroring.app")
+        let launcher = URL(fileURLWithPath: "/nonexistent-dir/Gossip Mirroring.app")
         let found = URL(fileURLWithPath: "/Applications/Gossip.app")
         var asked: String?
         XCTAssertEqual(GossipLocator.locate(launcherURL: launcher, lookUpByBundleIdentifier: { asked = $0; return found }), found)

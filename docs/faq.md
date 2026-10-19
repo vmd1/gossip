@@ -69,7 +69,7 @@
   - macOS does not let apps read or change Focus directly, so Gossip uses the Shortcuts app (see [Getting started](getting-started.md#mac-do-not-disturb-sync))
 - **How do I mirror a device's screen?**
   - the device needs [Shizuku running](setup-shizuku.md) and must be reachable from the Mac
-  - open the device list in Gossip (or the Device Mirroring app) and click **Mirror** next to it
+  - open the device list in Gossip (or the Gossip Mirroring app) and click **Mirror** next to it
 - **Can I control my Mac from my phone's keyboard and mouse?**
   - no; Universal Control goes Mac → Android only
 - **Does it work outside my home network?**

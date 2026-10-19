@@ -7,6 +7,7 @@ import CoreGraphics
 final class SystemCursorController: ControlCursorController {
     private let lock = NSLock()
     private var frozen = false
+    private var hiddenDisplays: [CGDirectDisplayID] = []
 
     func freeze() {
         lock.lock(); defer { lock.unlock() }
@@ -14,7 +15,8 @@ final class SystemCursorController: ControlCursorController {
         frozen = true
         Self.allowBackgroundCursorHiding()
         CGAssociateMouseAndMouseCursorPosition(0)
-        CGDisplayHideCursor(CGMainDisplayID())
+        hiddenDisplays = Self.activeDisplays()
+        hiddenDisplays.forEach { CGDisplayHideCursor($0) }
     }
 
     func warp(to point: CGPoint) {
@@ -28,7 +30,19 @@ final class SystemCursorController: ControlCursorController {
         guard frozen else { return }
         frozen = false
         CGAssociateMouseAndMouseCursorPosition(1)
-        CGDisplayShowCursor(CGMainDisplayID())
+        // Balance exactly the displays that were hidden, even if some were unplugged meanwhile; also show any
+        // display plugged in since, which never had a hide to balance (the call is harmless then).
+        let current = Self.activeDisplays()
+        for id in Set(hiddenDisplays).union(current) { CGDisplayShowCursor(id) }
+        hiddenDisplays = []
+    }
+
+    private static func activeDisplays() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [CGMainDisplayID()] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [CGMainDisplayID()] }
+        return Array(ids.prefix(Int(count)))
     }
 
     /// `CGDisplayHideCursor` only works for the frontmost app unless the connection opts in. Gossip is a menu-bar

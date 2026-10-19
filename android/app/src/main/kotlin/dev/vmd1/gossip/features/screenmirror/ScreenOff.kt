@@ -14,6 +14,14 @@ internal object ScreenOff {
     private const val TAG = "ScreenMirror"
     internal val COMMAND = arrayOf("input", "keyevent", "KEYCODE_SLEEP")
 
+    internal val WAKE_COMMAND = arrayOf("input", "keyevent", "KEYCODE_WAKEUP")
+
+    /** Wakes the screen (`KEYCODE_WAKEUP` only ever turns it on, so it is safe if it is already lit). Blocking; best effort. */
+    fun wake() {
+        runCatching { ShizukuShell.exec(*WAKE_COMMAND).waitFor() }
+            .onFailure { Log.w(TAG, "couldn't wake the screen: ${it.message}") }
+    }
+
     /** Fire-and-forget on its own thread; a no-op if Shizuku isn't running. */
     fun sleep() {
         Thread({

@@ -15,6 +15,8 @@ struct MenuBarView: View {
     @ObservedObject var ringManager: RingManager
     @ObservedObject var batterySyncManager: BatterySyncManager
     @ObservedObject var featureSettings: FeatureSettings
+    let clipboardSync: ClipboardSyncManager
+    let messagesManager: MessagesManager
 
     @State private var settingsWindow: SettingsWindow?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
@@ -89,6 +91,18 @@ struct MenuBarView: View {
                     NSApplication.shared.terminate(nil)
                 }
                 Spacer()
+                if featureSettings.isEnabled(.messages) {
+                    Button { MessagesWindow.show(manager: messagesManager) } label: { Image(systemName: "message") }
+                        .buttonStyle(.borderless)
+                        .help("Messages…")
+                }
+                Button {
+                    ClipboardHistoryWindow.show { [clipboardSync] text in clipboardSync.copyFromHistory(text) }
+                } label: {
+                    Image(systemName: "list.clipboard")
+                }
+                .buttonStyle(.borderless)
+                .help("Clipboard History…")
                 Button {
                     if let existing = settingsWindow, existing.isVisible {
                         existing.makeKeyAndOrderFront(nil)
@@ -97,7 +111,8 @@ struct MenuBarView: View {
                             featureSettings: featureSettings,
                             transportManager: transportManager,
                             pairingViewModel: pairingViewModel,
-                            notificationMirrorManager: notificationMirrorManager
+                            notificationMirrorManager: notificationMirrorManager,
+                            messagesManager: messagesManager
                         )
                         settingsWindow = window
                         window.makeKeyAndOrderFront(nil)
@@ -187,6 +202,14 @@ struct MenuBarView: View {
             }
             if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
                 mirrorButton(for: device)
+                if device.deviceType == .androidPhone || device.deviceType == .androidTablet {
+                    Button {
+                        AppWindowPicker.show(device: device, controller: screenMirrorController, transport: transportManager)
+                    } label: { Image(systemName: "macwindow.badge.plus") }
+                        .buttonStyle(.borderless)
+                        .disabled(transportManager.isRelayed(device.deviceId))
+                        .help("Open an app from \(device.deviceName) in its own window")
+                }
             }
             if featureSettings.isEnabled(.hotspot), device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
                 hotspotButton(for: device, state: state)

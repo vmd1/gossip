@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- BLE proximity primitive (see docs/ble-proximity-protocol.md). Pre-Android-12 needs
          the old BLUETOOTH/BLUETOOTH_ADMIN pair plus location (BLE scan results were treated
@@ -90,6 +93,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".features.screenmirror.ScreenViewerActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <activity
+            android:name=".features.peripheral.TrackpadActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustNothing"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
         <activity
             android:name=".onboarding.OnboardingActivity"

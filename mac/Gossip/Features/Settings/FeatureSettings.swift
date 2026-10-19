@@ -6,7 +6,11 @@ import Combine
 /// for it are never sent and incoming ones are dropped (see `isMessageAllowed`), plus local
 /// triggers that don't go through messages (e.g. Lock-on-Leave's BLE trigger) are skipped.
 enum Feature: String, CaseIterable, Identifiable {
-    case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot, findDevice, battery, universalControl
+    case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot, findDevice, battery, universalControl, phoneInput, messages
+
+    /// Features that start switched off. None: a feature that needs no setup is on by default (anything that needs a
+    /// permission shows what is missing instead of staying off).
+    static let offByDefault: Set<Feature> = []
 
     var id: String { rawValue }
 
@@ -22,6 +26,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .findDevice: return "Find my device"
         case .battery: return "Battery sync"
         case .universalControl: return "Universal Control"
+        case .phoneInput: return "Phone as trackpad & keyboard"
+        case .messages: return "Messages"
         }
     }
 
@@ -37,6 +43,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .findDevice: return "Let paired devices make this Mac ring so you can find it, and ring theirs."
         case .battery: return "Share this Mac's battery level and get low-battery alerts for paired devices."
         case .universalControl: return "Push the pointer off a screen edge to use this Mac's mouse and keyboard on your tablets and phones."
+        case .phoneInput: return "Let a paired phone move the pointer, click, scroll and type on this Mac. Needs Accessibility."
+        case .messages: return "Read and send your phone's text messages (SMS) from this Mac. Also needs the SMS permission on the phone."
         }
     }
 
@@ -55,6 +63,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .findDevice: return ["device."]
         case .battery: return ["battery."]
         case .universalControl: return ["control."]
+        case .phoneInput: return ["peripheral."]
+        case .messages: return ["messages."]
         }
     }
 }
@@ -74,7 +84,10 @@ final class FeatureSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        disabled = Set(Feature.allCases.filter { (defaults.object(forKey: Self.key($0)) as? Bool) == false })
+        disabled = Set(Feature.allCases.filter {
+            let stored = defaults.object(forKey: Self.key($0)) as? Bool
+            return stored == false || (stored == nil && Feature.offByDefault.contains($0))
+        })
     }
 
     private static func key(_ feature: Feature) -> String { "feature.\(feature.rawValue).enabled" }

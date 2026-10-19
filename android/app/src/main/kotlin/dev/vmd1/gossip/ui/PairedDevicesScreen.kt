@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.TabletMac
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material.icons.filled.WifiTetheringOff
@@ -125,7 +127,9 @@ fun PairedDevicesScreen(
     relayedDeviceIds: Set<String> = emptySet(),
     batteryStates: Map<String, BatteryState> = emptyMap(),
     ringingPeers: Set<String> = emptySet(),
-    onToggleRing: (deviceId: String) -> Unit = {}
+    onToggleRing: (deviceId: String) -> Unit = {},
+    onMirror: (deviceId: String, deviceName: String) -> Unit = { _, _ -> },
+    onTrackpad: (deviceId: String, deviceName: String) -> Unit = { _, _ -> }
 ) {
     Column {
         Text("Paired devices", style = MaterialTheme.typography.titleMedium)
@@ -179,6 +183,28 @@ fun PairedDevicesScreen(
                                 contentDescription = if (ringing) "Stop ringing ${device.deviceName}" else "Ring ${device.deviceName}",
                                 tint = if (ringing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                        // Use this device as the Mac's trackpad and keyboard.
+                        if (device.deviceType == DeviceType.MAC &&
+                            (device.deviceId in directDeviceIds || device.deviceId in meshDeviceIds || device.deviceId in relayedDeviceIds)
+                        ) {
+                            IconButton(onClick = { onTrackpad(device.deviceId, device.deviceName) }) {
+                                Icon(
+                                    Icons.Default.TouchApp,
+                                    contentDescription = "Use this device as ${device.deviceName}'s trackpad and keyboard",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        // Android → Android mirroring: open another Android device's screen here (same network only).
+                        if (device.deviceType != DeviceType.MAC && device.deviceId in directDeviceIds) {
+                            IconButton(onClick = { onMirror(device.deviceId, device.deviceName) }) {
+                                Icon(
+                                    Icons.Default.Cast,
+                                    contentDescription = "Mirror ${device.deviceName}",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                         if (device.deviceType == DeviceType.ANDROID_PHONE) {
                             // Prefer the BLE-observed on/off bit when nearby — it stays
