@@ -7,6 +7,7 @@ name: Android CI
 # a second, duplicate run via `push`, and merges to main were already tested on the PR.
 on:
   pull_request:
+    branches: [dev] # a dev to main release PR repeats what already passed on dev
     paths:
       - "android/**"
       - "desktop/**"
