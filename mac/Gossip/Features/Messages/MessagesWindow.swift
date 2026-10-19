@@ -85,6 +85,35 @@ private func runStamp(_ date: Date) -> String {
     return date.formatted(date: .abbreviated, time: .shortened)
 }
 
+/// A capsule with Liquid Glass on macOS 26 and a material capsule before that.
+private struct GlassCapsule<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        let label = content.padding(.horizontal, 14).padding(.vertical, 6)
+        if #available(macOS 26.0, *) {
+            label.glassEffect(.regular, in: .capsule)
+        } else {
+            label.background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().strokeBorder(Color.primary.opacity(0.12)))
+        }
+    }
+}
+
+/// Fades the top edge of a scroll view into a blur so content passing under the header softens instead of being cut off.
+private struct SoftTopEdge: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.scrollEdgeEffectStyle(.soft, for: .top).ignoresSafeArea(.container, edges: .top)
+        } else {
+            content.overlay(alignment: .top) {
+                Rectangle().fill(.ultraThinMaterial)
+                    .mask(LinearGradient(colors: [.black, .black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
+                    .frame(height: 96).allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 // MARK: - Views
 
 struct MessagesView: View {
@@ -208,34 +237,36 @@ struct MessagesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) { conversation }
-                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 84) // room for the floating header
                 }
                 .onChange(of: manager.messages) { _, new in
                     if let last = new.last?.id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) } }
                 }
-                // The header is a blurred bar the messages scroll underneath, like Apple's Messages.
-                .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
+                // Messages scroll under the header and fade out into a soft blur at the top, like Apple's Messages.
+                .modifier(SoftTopEdge())
             }
             composer
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .overlay(alignment: .top) { conversationHeader.ignoresSafeArea(.container, edges: .top) }
     }
 
+    /// The avatar over a glass name capsule, centred at the top of the conversation where the title bar is, like Apple's
+    /// Messages. Floats above the messages, which blur out beneath it.
     private var conversationHeader: some View {
-        VStack(spacing: 3) {
+        VStack(spacing: -10) {
             if let t = manager.openThread {
-                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 40)
-                Text(t.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 46)
+                    .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1) }
             } else {
-                Text("New Message").font(.system(size: 14, weight: .semibold))
+                GlassCapsule { Text("New Message").font(.system(size: 13, weight: .semibold)) }
+                    .padding(.top, 14)
             }
         }
+        .padding(.top, 6)
         .frame(maxWidth: .infinity)
-        // Clear the traffic lights when the header is the topmost thing; below the To: row or an error banner it isn't.
-        .padding(.top, manager.error != nil ? 8 : (composing ? 8 : 34))
-        .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) { Divider().opacity(0.5) }
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
