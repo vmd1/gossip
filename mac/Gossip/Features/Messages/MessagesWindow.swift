@@ -92,6 +92,8 @@ struct MessagesView: View {
     @State private var query = ""
     @State private var draft = ""
     @State private var composeTo = ""
+    /// A contact picked from the suggestions (the typed text is then just their name).
+    @State private var pickedNumber: String?
 
     var body: some View {
         NavigationSplitView {
@@ -151,7 +153,33 @@ struct MessagesView: View {
     private var composing: Bool { manager.openThreadId == nil }
 
     private var recipient: String {
-        composing ? composeTo.trimmingCharacters(in: .whitespaces) : (manager.openThread?.address ?? "")
+        composing ? (pickedNumber ?? composeTo.trimmingCharacters(in: .whitespaces)) : (manager.openThread?.address ?? "")
+    }
+
+    /// Contacts matching what was typed in "To:"; picking one fills in their number and the phone it belongs to.
+    @ViewBuilder
+    private var suggestionList: some View {
+        let matches = pickedNumber == nil ? manager.suggestions(for: composeTo) : []
+        if !matches.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(Array(matches.enumerated()), id: \.offset) { _, m in
+                    Button {
+                        composeTo = m.contact.name
+                        pickedNumber = m.number
+                        manager.composePhoneId = m.phoneId
+                    } label: {
+                        HStack(spacing: 10) {
+                            Avatar(title: m.contact.name, isNumber: false, size: 28)
+                            Text(m.contact.name).font(.system(size: 13, weight: .medium))
+                            Spacer()
+                            Text(m.number).font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 5).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+                Divider()
+            }
+        }
     }
 
     private var phoneId: String? { composing ? manager.composePhoneId : manager.openThread?.phoneId }
@@ -161,7 +189,8 @@ struct MessagesView: View {
             if composing {
                 HStack(spacing: 8) {
                     Text("To:").foregroundStyle(.secondary)
-                    TextField("Phone number", text: $composeTo).textFieldStyle(.plain)
+                    TextField("Name or phone number", text: Binding(get: { composeTo }, set: { composeTo = $0; pickedNumber = nil }))
+                        .textFieldStyle(.plain)
                     if manager.phones.count > 1 {
                         Picker("", selection: Binding(get: { manager.composePhoneId ?? "" }, set: { manager.composePhoneId = $0 })) {
                             ForEach(manager.phones) { Text("via \($0.deviceName)").tag($0.deviceId) }
@@ -170,6 +199,7 @@ struct MessagesView: View {
                 }
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 Divider()
+                suggestionList
             }
             if let error = manager.error {
                 Text(error).font(.callout).foregroundStyle(.white).padding(8).frame(maxWidth: .infinity)

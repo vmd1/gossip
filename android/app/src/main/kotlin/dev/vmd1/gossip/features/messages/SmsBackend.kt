@@ -105,6 +105,31 @@ class SmsBackend(private val context: Context, private val sentLog: SentLog = Se
         }
     }
 
+    override fun contacts(): List<Contact>? {
+        if (!granted(Manifest.permission.READ_CONTACTS)) return null
+        val byId = LinkedHashMap<String, Pair<String, MutableList<String>>>()
+        runCatching {
+            context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER
+                ),
+                null, null, "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} COLLATE NOCASE ASC"
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val number = c.getString(2)?.trim().orEmpty()
+                    val name = c.getString(1)?.trim().orEmpty()
+                    if (number.isEmpty() || name.isEmpty()) continue
+                    val entry = byId.getOrPut(c.getString(0)) { name to mutableListOf() }
+                    if (number !in entry.second) entry.second += number
+                }
+            }
+        }.onFailure { Log.w(TAG, "contacts query failed: ${it.message}") }
+        return byId.map { (id, v) -> Contact(id, v.first, v.second.take(6)) }
+    }
+
     override fun summary(): MessagesBackend.Summary {
         if (!hasPermission()) return MessagesBackend.Summary(0, 0, 0)
         var unread = 0

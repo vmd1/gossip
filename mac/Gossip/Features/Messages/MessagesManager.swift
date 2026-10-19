@@ -87,6 +87,10 @@ final class MessagesManager: ObservableObject {
     private var retryTimer: Timer?
     /// Set after sending to a new number from the composer, so the conversation opens once the phone lists it.
     private var openAddressWhenListed: String?
+    /// Every paired phone's contacts (from the phone, cached on this Mac), by phone id.
+    @Published private(set) var contactsByPhone: [String: [PhoneContact]] = [:]
+    private let contactsCache = ContactsCache()
+    private var assemblers: [String: ContactsAssembler] = [:]
     /// `true` while the Messages window is open: connection changes and a periodic tick then refresh the list.
     private var isOpen = false
     private var cancellables = Set<AnyCancellable>()
@@ -97,6 +101,10 @@ final class MessagesManager: ObservableObject {
     init(transport: TransportManager, devices: TrustedDevicesStore) {
         self.transport = transport
         self.devices = devices
+        // Contacts from the last sync are available immediately.
+        for phone in devices.devices where phone.deviceType == .androidPhone {
+            if let stored = contactsCache.load(phone.deviceId) { contactsByPhone[phone.deviceId] = stored.contacts }
+        }
         transport.router.register(prefix: "messages.") { [weak self] envelope in
             DispatchQueue.main.async { self?.handle(envelope) }
         }
@@ -139,6 +147,26 @@ final class MessagesManager: ObservableObject {
         refreshThreads()
     }
 
+    /// Asks a phone for its contacts; it answers "unchanged" if the stored list is still current. A pure query.
+    private func requestContacts(from phoneId: String) {
+        var payload: [String: JSONValue] = ["requestId": .string(UUID().uuidString)]
+        if let digest = contactsCache.load(phoneId)?.digest { payload["haveDigest"] = .string(digest) }
+        send("messages.contacts_request", to: phoneId, payload)
+    }
+
+    /// Contacts matching what the user is typing in the recipient field, across phones.
+    func suggestions(for query: String) -> [(contact: PhoneContact, number: String, phoneId: String)] {
+        contactsByPhone.flatMap { phoneId, list in
+            ContactMatching.suggestions(for: query, in: list).map { (contact: $0.contact, number: $0.number, phoneId: phoneId) }
+        }.prefix(6).map { $0 }
+    }
+
+    /// The contact name for a number, if the phone's contacts know it (used when the phone sent no name).
+    func contactName(forNumber number: String, phoneId: String) -> String? {
+        let n = ContactMatching.normalize(number)
+        return contactsByPhone[phoneId]?.first { $0.numbers.contains { ContactMatching.normalize($0) == n } }?.name
+    }
+
     /// The Messages window closed: stop refreshing in the background.
     func close() {
         isOpen = false
@@ -160,6 +188,7 @@ final class MessagesManager: ObservableObject {
             let id = UUID().uuidString
             threadsRequests[phone.deviceId] = id
             send("messages.threads_request", to: phone.deviceId, ["requestId": .string(id), "limit": .number(100)])
+            requestContacts(from: phone.deviceId)
         }
         if let open = openThread { loadHistory(open) }
     }
@@ -227,7 +256,11 @@ final class MessagesManager: ObservableObject {
     }
 
     private func rebuild() {
-        threads = byPhone.values.flatMap { $0 }.sorted { $0.date > $1.date }
+        threads = byPhone.values.flatMap { $0 }.map { t -> MessageThread in
+            guard t.name == nil, let name = contactName(forNumber: t.address, phoneId: t.phoneId) else { return t }
+            return MessageThread(id: t.id, phoneId: t.phoneId, phoneName: t.phoneName, remoteId: t.remoteId, address: t.address,
+                                 name: name, snippet: t.snippet, date: t.date, outgoing: t.outgoing, unread: t.unread)
+        }.sorted { $0.date > $1.date }
         if openThreadId == nil, let address = openAddressWhenListed {
             let digits = { (s: String) in String(s.filter(\.isNumber).suffix(10)) }
             if let t = threads.first(where: { digits($0.address) == digits(address) && !digits(address).isEmpty }) {
@@ -259,6 +292,21 @@ final class MessagesManager: ObservableObject {
             // Keep messages still waiting for the phone's confirmation at the end.
             let waiting = messages.filter { $0.sending || $0.failed }
             messages = MessagesWire.messages(envelope.payload) + waiting
+        case "messages.contacts":
+            guard let digest = envelope.payload["digest"]?.stringValue else { return }
+            if envelope.payload["unchanged"]?.boolValue == true { return } // our copy is current
+            let page = Int(envelope.payload["page"]?.numberValue ?? -1), pages = Int(envelope.payload["pages"]?.numberValue ?? 0)
+            let list: [PhoneContact] = (envelope.payload["contacts"]?.arrayValue ?? []).compactMap { c in
+                guard let id = c["id"]?.stringValue, let name = c["name"]?.stringValue else { return nil }
+                return PhoneContact(id: id, name: name, numbers: (c["numbers"]?.arrayValue ?? []).compactMap(\.stringValue))
+            }
+            var assembler = assemblers[phoneId] ?? ContactsAssembler()
+            let complete = assembler.add(digest: digest, page: page, pages: pages, contacts: list)
+            assemblers[phoneId] = assembler
+            if let complete {
+                contactsByPhone[phoneId] = complete
+                contactsCache.save(.init(digest: digest, contacts: complete), for: phoneId)
+            }
         case "messages.send_result":
             guard let attempt = envelope.payload["attemptId"]?.stringValue, let p = pending[attempt] else { return } // duplicate result: nothing to do
             pending[attempt] = nil

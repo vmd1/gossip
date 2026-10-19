@@ -11,6 +11,9 @@ data class MessageThread(
     val unread: Int,
 )
 
+/** A person in the phone's contacts, with every number they have. */
+data class Contact(val id: String, val name: String, val numbers: List<String>)
+
 data class ChatMessage(val id: String, val date: Long, val outgoing: Boolean, val body: String)
 
 /** What the Mac-facing [MessagesBridge] needs from a message store. Kept behind one interface so the SMS store can be
@@ -26,6 +29,9 @@ interface MessagesBackend {
 
     /** Sends [body] to [address]; returns `null` on success or why it failed. */
     fun send(address: String, body: String): Failure?
+
+    /** The contacts that have a phone number, or `null` when the contacts permission isn't granted. */
+    fun contacts(): List<Contact>?
 
     /** Newest message time, total unread, and the number of threads, for the `messages.state` slot. */
     fun summary(): Summary

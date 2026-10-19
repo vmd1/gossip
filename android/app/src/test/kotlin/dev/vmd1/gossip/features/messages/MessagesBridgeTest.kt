@@ -25,6 +25,8 @@ class MessagesBridgeTest {
         override fun history(threadId: String, limit: Int, before: Long?) =
             if (threadId == "1") listOf(ChatMessage("m2", 200L, true, "yo"), ChatMessage("m1", 100L, false, "hi")) else emptyList()
         override fun send(address: String, body: String): MessagesBackend.Failure? { sends += address to body; return failWith }
+        var contactList: List<Contact>? = (1..300).map { Contact("c$it", "Person $it", listOf("+1555000$it")) }
+        override fun contacts() = contactList
         override fun summary() = MessagesBackend.Summary(200L, 2, 1)
     }
 
@@ -120,5 +122,31 @@ class MessagesBridgeTest {
         b.publish()
         assertNull(states.last())
         assertFalse(states.size == 1)
+    }
+
+    @Test fun `contacts are sent in pages with a digest`() {
+        bridge().handle(env(MessagesBridge.CONTACTS_REQUEST, "requestId" to "c1"))
+        assertEquals(2, sent.size)
+        assertEquals(sent[0].payload["digest"], sent[1].payload["digest"])
+        assertEquals("0", sent[0].payload["page"]!!.jsonPrimitive.content)
+        assertEquals("2", sent[0].payload["pages"]!!.jsonPrimitive.content)
+        assertEquals(250 + 50, sent.sumOf { (it.payload["contacts"] as JsonArray).size })
+    }
+
+    @Test fun `an unchanged digest sends no contacts and a repeat is harmless`() {
+        val b = bridge()
+        b.handle(env(MessagesBridge.CONTACTS_REQUEST, "requestId" to "c1"))
+        val digest = sent[0].payload["digest"]!!.jsonPrimitive.content
+        sent.clear()
+        val again = env(MessagesBridge.CONTACTS_REQUEST, "requestId" to "c2", "haveDigest" to digest)
+        b.handle(again); b.handle(again)
+        assertEquals(2, sent.size)
+        assertTrue(sent.all { it.payload["unchanged"]!!.jsonPrimitive.content == "true" && it.payload["contacts"] == null })
+    }
+
+    @Test fun `contacts without the permission are reported`() {
+        backend.contactList = null
+        bridge().handle(env(MessagesBridge.CONTACTS_REQUEST, "requestId" to "c"))
+        assertEquals("no_contacts_permission", sent[0].payload["reason"]!!.jsonPrimitive.content)
     }
 }
