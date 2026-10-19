@@ -15,10 +15,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -471,11 +473,6 @@ fun ConnectHomeScreen(
                 }
                 SettingsMenuRow("Features", "Turn features on or off on this device") { settingsPage = SettingsPage.FEATURES }
                 SettingsMenuRow("Relay", "Stay connected when your devices are not on the same network") { settingsPage = SettingsPage.RELAY }
-                if (isPhone) {
-                    SettingsMenuRow("Instant Hotspot", "Let your other devices use this phone's hotspot") {
-                        settingsPage = SettingsPage.HOTSPOT
-                    }
-                }
                 SettingsMenuRow("Permissions", "Notifications, Do Not Disturb, Bluetooth and more") {
                     settingsPage = SettingsPage.PERMISSIONS
                 }
@@ -527,8 +524,22 @@ fun ConnectHomeScreen(
                 NotificationAppsContent()
             }
 
+            SettingsPage.MESSAGES -> SettingsPageScaffold("Messages", onBack = { settingsPage = page.parent }) {
+                MessagesSettingsContent()
+            }
+
+            SettingsPage.CLIPBOARD_HISTORY, SettingsPage.CLIPBOARD_HOME -> {
+                val clipContext = androidx.compose.ui.platform.LocalContext.current
+                SettingsPageScaffold("Clipboard history", onBack = { settingsPage = page.parent }, scroll = false) {
+                    ClipboardHistoryContent { text ->
+                        val cm = clipContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Gossip", text))
+                    }
+                }
+            }
+
             SettingsPage.FEATURES -> SettingsPageScaffold("Features", onBack = { settingsPage = page.parent }) {
-                FeatureTogglesContent(featureSettings)
+                FeatureTogglesContent(featureSettings, isPhone = isPhone, onConfigure = { settingsPage = it })
             }
 
             SettingsPage.RELAY -> SettingsPageScaffold("Relay", onBack = { settingsPage = page.parent }) {
@@ -637,11 +648,19 @@ fun ConnectHomeScreen(
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
             ) {
                 Text("Gossip", style = MaterialTheme.typography.headlineMedium)
-                androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.ROOT }) {
-                    androidx.compose.material3.Icon(
-                        Icons.Default.Settings,
-                        contentDescription = "Settings"
-                    )
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.CLIPBOARD_HOME }) {
+                        androidx.compose.material3.Icon(
+                            Icons.Default.ContentPaste,
+                            contentDescription = "Clipboard history"
+                        )
+                    }
+                    androidx.compose.material3.IconButton(onClick = { settingsPage = SettingsPage.ROOT }) {
+                        androidx.compose.material3.Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Settings"
+                        )
+                    }
                 }
             }
             ConnectionStatusCard(connectionState)
@@ -671,6 +690,8 @@ fun ConnectHomeScreen(
                 batteryStates = batteryStates,
                 ringingPeers = ringingPeers,
                 onToggleRing = onToggleRing,
+                onTrackpad = { id, name -> dev.vmd1.gossip.features.peripheral.TrackpadActivity.start(toastContext, id, name) },
+                onMirror = { id, name -> dev.vmd1.gossip.features.screenmirror.ScreenViewerActivity.start(toastContext, id, name) },
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
                     // `trust.revoke` so the rest of the mesh drops trust too) — falls

@@ -8,9 +8,13 @@ final class FeatureSettingsTests: XCTestCase {
         defaults = UserDefaults(suiteName: "FeatureSettingsTests-\(UUID().uuidString)")
     }
 
-    func testEveryFeatureIsOnByDefault() {
+    func testEveryFeatureIsOnByDefaultExceptTheOptInOnes() {
         let settings = FeatureSettings(defaults: defaults)
-        for feature in Feature.allCases { XCTAssertTrue(settings.isEnabled(feature), "\(feature)") }
+        for feature in Feature.allCases {
+            XCTAssertEqual(settings.isEnabled(feature), !Feature.offByDefault.contains(feature), "\(feature)")
+        }
+        settings.setEnabled(.phoneInput, true)
+        XCTAssertTrue(FeatureSettings(defaults: defaults).isEnabled(.phoneInput))
     }
 
     func testToggleIsIndependentAndPersists() {

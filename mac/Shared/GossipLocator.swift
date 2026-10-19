@@ -1,6 +1,6 @@
 import Foundation
 
-/// Finds the Gossip app for the "Device Mirroring" launcher. Compiled into both the Gossip app (so it
+/// Finds the Gossip app for the "Gossip Mirroring" launcher. Compiled into both the Gossip app (so it
 /// can be unit-tested) and the launcher.
 ///
 /// Prefers a `Gossip.app` sitting in the **same folder** as the launcher: the launcher is copied

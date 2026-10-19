@@ -8,6 +8,22 @@ enum LauncherPreference {
         get { (UserDefaults.standard.object(forKey: key) as? Bool) ?? true }
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
+
+    private static let messagesKey = "messagesLauncher.autoInstall"
+    /// Whether the "Gossip Messages" launcher app is kept installed (on by default).
+    static var messagesAutoInstall: Bool {
+        get { (UserDefaults.standard.object(forKey: messagesKey) as? Bool) ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: messagesKey) }
+    }
+}
+
+extension LauncherInstaller {
+    /// The installer for the Messages launcher app.
+    static func messages() -> LauncherInstaller {
+        LauncherInstaller(embeddedLauncherURL: Bundle.main.sharedSupportURL?.appendingPathComponent(LauncherInstaller.messagesLauncherName),
+                          launcherName: LauncherInstaller.messagesLauncherName,
+                          launcherBundleIdentifier: LauncherInstaller.messagesLauncherBundleIdentifier)
+    }
 }
 
 /// Keeps the launcher installed. Gossip is no longer sandboxed, so it copies the embedded launcher out
@@ -15,12 +31,25 @@ enum LauncherPreference {
 enum LauncherSetup {
     /// Installs or repairs the launcher if it is missing, outdated or quarantined. Fire-and-forget.
     static func ensureInstalled(installer: LauncherInstaller = LauncherInstaller()) {
+        removeRenamedLauncher(installer)
         switch installer.status() {
         case .missing, .outdated, .quarantined: break
         case .current, .notApplicable: return
         }
         DispatchQueue.global(qos: .utility).async {
-            NSLog("Gossip: Device Mirroring launcher install -> \(installer.install())")
+            NSLog("Gossip: \(installer.title) launcher install -> \(installer.install())")
         }
+    }
+}
+
+extension LauncherSetup {
+    /// The mirroring launcher used to be called "Device Mirroring". Remove that old copy (only if it really is our launcher)
+    /// so Spotlight doesn't list two.
+    static func removeRenamedLauncher(_ installer: LauncherInstaller) {
+        guard installer.launcherName == LauncherInstaller.launcherName,
+              let dir = installer.destinationDirectory else { return }
+        let old = dir.appendingPathComponent("Device Mirroring.app")
+        guard LauncherInstaller.bundleIdentifier(of: old) == installer.launcherBundleIdentifier else { return }
+        try? FileManager.default.removeItem(at: old)
     }
 }

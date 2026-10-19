@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// Keeps the "Device Mirroring" launcher app (embedded inside `Gossip.app`) installed next to Gossip so it
+/// Keeps the "Gossip Mirroring" launcher app (embedded inside `Gossip.app`) installed next to Gossip so it
 /// shows up in Spotlight and Launchpad as its own app. An app nested in another app's bundle isn't indexed
 /// individually, so it is copied out — into `/Applications` or `~/Applications`, whichever Gossip lives in.
 ///
@@ -12,8 +12,18 @@ import CryptoKit
 /// Never touches an app it didn't put there: it only replaces a bundle whose identifier is the launcher's. The
 /// replacement is atomic, and "up to date" means the whole bundle matches the embedded one, not just its executable.
 struct LauncherInstaller {
-    static let launcherName = "Device Mirroring.app"
+    static let launcherName = "Gossip Mirroring.app"
     static let launcherBundleIdentifier = "dev.vmd1.gossip.DeviceMirroring"
+
+    /// The Messages launcher, installed the same way: a tiny app that opens Gossip's Messages window.
+    static let messagesLauncherName = "Gossip Messages.app"
+    static let messagesLauncherBundleIdentifier = "dev.vmd1.gossip.GossipMessages"
+
+    /// Which launcher this installer manages (Gossip Mirroring unless told otherwise).
+    let launcherName: String
+    let launcherBundleIdentifier: String
+    /// The launcher's name as shown to the user ("Gossip Mirroring").
+    var title: String { (launcherName as NSString).deletingPathExtension }
 
     enum Outcome: Equatable {
         case installed
@@ -47,8 +57,12 @@ struct LauncherInstaller {
         embeddedLauncherURL: URL? = Bundle.main.sharedSupportURL?.appendingPathComponent(LauncherInstaller.launcherName),
         gossipURL: URL = Bundle.main.bundleURL,
         allowedDirectories: [URL] = LauncherInstaller.defaultAllowedDirectories(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        launcherName: String = LauncherInstaller.launcherName,
+        launcherBundleIdentifier: String = LauncherInstaller.launcherBundleIdentifier
     ) {
+        self.launcherName = launcherName
+        self.launcherBundleIdentifier = launcherBundleIdentifier
         self.embeddedLauncherURL = embeddedLauncherURL
         self.gossipURL = gossipURL
         self.allowedDirectories = allowedDirectories
@@ -71,25 +85,25 @@ struct LauncherInstaller {
     }
 
     var installedLauncherURL: URL? {
-        destinationDirectory?.appendingPathComponent(Self.launcherName)
+        destinationDirectory?.appendingPathComponent(launcherName)
     }
 
     /// Whether the launcher is currently installed (and is ours).
     var isInstalled: Bool {
         guard let url = installedLauncherURL else { return false }
-        return Self.bundleIdentifier(of: url) == Self.launcherBundleIdentifier
+        return Self.bundleIdentifier(of: url) == launcherBundleIdentifier
     }
 
     func status() -> Status {
         guard let embedded = embeddedLauncherURL, fileManager.fileExists(atPath: embedded.path) else {
-            return .notApplicable("This build of Gossip doesn't include the Device Mirroring app.")
+            return .notApplicable("This build of Gossip doesn't include the \(title) app.")
         }
         guard let destination = installedLauncherURL else {
-            return .notApplicable("Move Gossip into your Applications folder to add Device Mirroring.")
+            return .notApplicable("Move Gossip into your Applications folder to add \(title).")
         }
         guard fileManager.fileExists(atPath: destination.path) else { return .missing }
-        guard Self.bundleIdentifier(of: destination) == Self.launcherBundleIdentifier else {
-            return .notApplicable("Another app named “Device Mirroring” is already in \(destination.deletingLastPathComponent().path).")
+        guard Self.bundleIdentifier(of: destination) == launcherBundleIdentifier else {
+            return .notApplicable("Another app named “\(title)” is already in \(destination.deletingLastPathComponent().path).")
         }
         if Self.fingerprint(of: destination) != Self.fingerprint(of: embedded) { return .outdated }
         return Self.hasQuarantine(destination, fileManager: fileManager) ? .quarantined : .current

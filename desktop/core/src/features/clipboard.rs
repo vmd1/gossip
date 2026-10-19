@@ -7,6 +7,12 @@
 //! copy to the next poll. The guard remembers the last value this device wrote (received from a peer) and the last
 //! value it sent, and refuses to send a value that matches either, so neither an echo nor the periodic resync can
 //! ping-pong.
+//!
+//! Those two markers describe the clipboard *now*, so each is dropped as soon as the clipboard moves on: a remote write
+//! forgets what we last sent (the clipboard no longer holds it), and a different local copy forgets the remote value. Without
+//! that, copying A, receiving B and copying A again was silently swallowed. Because a slot that is set to the value it
+//! already holds does nothing, every published text carries a per-run counter `n`, so copying the same text again is still a
+//! new slot value that reaches the peers.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use serde_json::{Map, Value};
@@ -68,6 +74,8 @@ pub struct ClipboardGuard {
     last_sent_text: Option<String>,
     last_remote_image: Option<[u8; 32]>,
     last_sent_image: Option<[u8; 32]>,
+    /// Counts published texts so identical text copied twice is still a different slot value.
+    text_seq: u64,
 }
 
 impl ClipboardGuard {
@@ -101,6 +109,9 @@ impl ClipboardGuard {
         sensitive: bool,
     ) -> Option<Map<String, Value>> {
         if sensitive || !text_allowed(text) {
+            // The clipboard now holds something that never syncs, so neither marker describes it any more.
+            self.last_remote_text = None;
+            self.last_sent_text = None;
             return None;
         }
         if self.last_remote_text.as_deref() == Some(text)
@@ -108,19 +119,27 @@ impl ClipboardGuard {
         {
             return None;
         }
+        // A different local copy: the remote value is no longer on the clipboard.
+        self.last_remote_text = None;
         self.last_sent_text = Some(text.to_owned());
-        Some(Self::text_payload(me, text))
+        self.text_seq += 1;
+        let mut payload = Self::text_payload(me, text);
+        payload.insert("n".to_owned(), self.text_seq.into());
+        Some(payload)
     }
 
     /// Same for an image already normalised to PNG. The shell then sends the envelope with `png` as its raw frame.
     pub fn outgoing_image(&mut self, me: &str, png: &[u8], sensitive: bool) -> Option<Outgoing> {
         if sensitive || !image_bytes_allowed(png.len()) {
+            self.last_remote_image = None;
+            self.last_sent_image = None;
             return None;
         }
         let d = digest(png);
         if self.last_remote_image == Some(d) || self.last_sent_image == Some(d) {
             return None;
         }
+        self.last_remote_image = None;
         self.last_sent_image = Some(d);
         Some(Outgoing::broadcast(
             "clipboard.update",
@@ -128,13 +147,19 @@ impl ClipboardGuard {
         ))
     }
 
-    /// An incoming text update; returns the text to write to the local clipboard, or `None` if it is refused.
+    /// An incoming text update; returns the text to write to the local clipboard, or `None` if it is refused or the
+    /// clipboard already holds it (a repeated delivery must not rewrite the clipboard, which would also overwrite
+    /// nothing useful and bump its change counter).
     pub fn incoming_text(&mut self, payload: &Map<String, Value>) -> Option<String> {
         let text = payload.get("text")?.as_str()?;
         if !text_allowed(text) {
             return None;
         }
+        if self.last_remote_text.as_deref() == Some(text) {
+            return None;
+        }
         self.last_remote_text = Some(text.to_owned());
+        self.last_sent_text = None; // the clipboard no longer holds what we last sent
         Some(text.to_owned())
     }
 
@@ -146,7 +171,12 @@ impl ClipboardGuard {
         {
             return false;
         }
-        self.last_remote_image = Some(digest(png));
+        let d = digest(png);
+        if self.last_remote_image == Some(d) {
+            return false;
+        }
+        self.last_remote_image = Some(d);
+        self.last_sent_image = None;
         true
     }
 

@@ -331,17 +331,78 @@ fn clipboard_loop_guard_blocks_echo_and_repeats() {
         g.incoming_text(&ClipboardGuard::text_payload("peer", "from-peer")),
         Some("from-peer".to_owned())
     );
-    let value = g.outgoing_text("me", "slot value", false).unwrap();
-    assert_eq!(value["text"], "slot value");
-    assert_eq!(value["sourceDeviceId"], "me");
     assert!(
         g.outgoing_text("me", "from-peer", false).is_none(),
         "our own write echoed back by the next poll"
     );
-    assert!(g.outgoing_text("me", "new local", false).is_some());
+    assert!(
+        g.incoming_text(&ClipboardGuard::text_payload("peer", "from-peer"))
+            .is_none(),
+        "a repeated delivery does not rewrite the clipboard"
+    );
+    let value = g.outgoing_text("me", "slot value", false).unwrap();
+    assert_eq!(value["text"], "slot value");
+    assert_eq!(value["sourceDeviceId"], "me");
     assert!(
         g.outgoing_text("me", "hello", false).is_some(),
         "an old value copied again after something else is a real copy"
+    );
+}
+
+#[test]
+fn clipboard_recopy_after_a_remote_write_is_published_again() {
+    // Copy A, receive B from a peer, copy A again: the peers still hold A's old slot value (or B), so A must go out again.
+    let mut g = ClipboardGuard::new();
+    let first = g.outgoing_text("me", "A", false).unwrap();
+    assert!(g
+        .incoming_text(&ClipboardGuard::text_payload("peer", "B"))
+        .is_some());
+    let again = g
+        .outgoing_text("me", "A", false)
+        .expect("A is a real copy again");
+    assert_ne!(
+        first, again,
+        "the same text must still be a new slot value, or the slot would ignore it"
+    );
+    // And the remote value copied again later is a real copy too.
+    assert!(g.outgoing_text("me", "B", false).is_some());
+}
+
+#[test]
+fn clipboard_sensitive_copy_resets_the_markers() {
+    let mut g = ClipboardGuard::new();
+    assert!(g.outgoing_text("me", "A", false).is_some());
+    assert!(g.outgoing_text("me", "secret", true).is_none());
+    assert!(
+        g.outgoing_text("me", "A", false).is_some(),
+        "after a secret was on the clipboard, A is a real copy again"
+    );
+    assert!(g
+        .incoming_text(&ClipboardGuard::text_payload("peer", "B"))
+        .is_some());
+    assert!(g.outgoing_text("me", "secret", true).is_none());
+    assert!(
+        g.incoming_text(&ClipboardGuard::text_payload("peer", "B"))
+            .is_some(),
+        "the clipboard no longer holds B, so B from the peer is written again"
+    );
+}
+
+#[test]
+fn clipboard_image_markers_follow_the_clipboard_too() {
+    let mut g = ClipboardGuard::new();
+    let img = png(1000, 1000);
+    let other = png(10, 10);
+    assert!(g.outgoing_image("me", &img, false).is_some());
+    assert!(g.outgoing_image("me", &img, false).is_none());
+    assert!(g.incoming_image(&ClipboardGuard::image_payload("peer", other.len()), &other));
+    assert!(
+        !g.incoming_image(&ClipboardGuard::image_payload("peer", other.len()), &other),
+        "repeat delivery"
+    );
+    assert!(
+        g.outgoing_image("me", &img, false).is_some(),
+        "re-copying the first image is a real copy"
     );
 }
 

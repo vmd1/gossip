@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// The "Device Mirroring" window: every paired phone and tablet with its connection state and a Mirror /
-/// Stop button. Opened from the Device Mirroring launcher app (`connect://mirror`) and works on the same
+/// The "Gossip Mirroring" window: every paired phone and tablet with its connection state and a Mirror /
+/// Stop button. Opened from the Gossip Mirroring launcher app (`connect://mirror`) and works on the same
 /// `ScreenMirrorController` as the menu-bar panel's mirror icon.
 struct DeviceMirroringView: View {
     @ObservedObject var trustedDevicesStore: TrustedDevicesStore
@@ -23,7 +23,7 @@ struct DeviceMirroringView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Device Mirroring").font(.title2.weight(.semibold))
+            Text("Gossip Mirroring").font(.title2.weight(.semibold))
             Text("Choose a device to mirror its screen to this Mac.").foregroundStyle(.secondary).font(.callout)
 
             if !featureSettings.isEnabled(.screenMirroring) {
@@ -102,14 +102,14 @@ final class DeviceMirroringWindow: NSWindow {
     init(rootView: DeviceMirroringView) {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 420, height: 380),
                    styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        title = "Device Mirroring"
+        title = "Gossip Mirroring"
         isReleasedWhenClosed = false
         contentView = NSHostingView(rootView: rootView)
         center()
     }
 }
 
-/// Holds the single Device Mirroring window so repeated opens bring the same one forward.
+/// Holds the single Gossip Mirroring window so repeated opens bring the same one forward.
 final class DeviceMirroringWindowBox {
     private var window: DeviceMirroringWindow?
 

@@ -737,6 +737,57 @@ pub fn display_parse(value_json: String) -> Option<DisplayInfo> {
     })
 }
 
+/// One monitor of a multi-display computer, in the computer's global point space.
+#[derive(uniffi::Record)]
+pub struct DisplayRect {
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The `control.display` slot value for a display size plus the computer's individual monitors (`displays` array).
+/// The size stays the primary display's, so a device that doesn't know the array still reads the slot.
+#[uniffi::export]
+pub fn display_payload_with_displays(info: DisplayInfo, displays: Vec<DisplayRect>) -> String {
+    let rects: Vec<display::DisplayRect> = displays
+        .into_iter()
+        .map(|d| display::DisplayRect {
+            id: d.id,
+            x: d.x,
+            y: d.y,
+            width: d.width,
+            height: d.height,
+        })
+        .collect();
+    object_json(
+        display::DisplayInfo {
+            width: info.width,
+            height: info.height,
+            rotation: info.rotation,
+        }
+        .payload_with_displays(&rects),
+    )
+}
+
+/// The monitors in a `control.display` slot value: empty for a single-display device, `None` if the list is malformed.
+#[uniffi::export]
+pub fn display_parse_displays(value_json: String) -> Option<Vec<DisplayRect>> {
+    let value = payload(&value_json).ok()?;
+    display::DisplayInfo::parse_displays(&value).map(|list| {
+        list.into_iter()
+            .map(|d| DisplayRect {
+                id: d.id,
+                x: d.x,
+                y: d.y,
+                width: d.width,
+                height: d.height,
+            })
+            .collect()
+    })
+}
+
 // ---- BLE beacon key ---------------------------------------------------------------------------------------------
 
 /// The direct-only slot a device publishes its BLE beacon key in.

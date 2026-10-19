@@ -75,6 +75,7 @@ class ClipboardSyncManager(
         context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
 
     private val guardLogic = CoreClipboardGuard()
+    private val history = ClipboardHistoryStore.getInstance(context)
 
     /** The last local text observed by *either* [onLocalClipChanged] (the focus-gated listener) or [runBackgroundPollLoop]
      *  (the Shizuku-driven poll) — shared so the same genuinely-new text isn't published twice if both paths happen to
@@ -138,8 +139,10 @@ class ClipboardSyncManager(
     }
 
     private fun onLocalClipChanged() {
-        if (!isEnabled()) return
         val text = currentClipText()
+        // The history is its own feature: it records local copies whether or not clipboard sync is on.
+        if (text != null) history.record(text, remote = false)
+        if (!isEnabled()) return
         if (text != null) {
             handleObservedText(text)
             return
@@ -155,9 +158,10 @@ class ClipboardSyncManager(
     private suspend fun runBackgroundPollLoop() {
         while (true) {
             delay(SHIZUKU_POLL_INTERVAL_MS)
-            if (!isEnabled()) continue
             if (!ShizukuClipboardReader.isReady(shizukuManager)) continue
             val text = ShizukuClipboardReader.readText() ?: continue
+            if (text != lastObservedText) history.record(text, remote = false)
+            if (!isEnabled()) continue
             handleObservedText(text)
         }
     }
@@ -194,7 +198,16 @@ class ClipboardSyncManager(
     /** A peer's `clipboard.text` slot changed. */
     private fun onRemoteText(valueJson: String) {
         val text = runCatching { guardLogic.incomingText(valueJson) }.getOrNull() ?: return
+        history.record(text, remote = true) // before the write: the write fires our own clip listener, which would record it as local
         clipboardManager.setPrimaryClip(ClipData.newPlainText("Gossip", text))
+    }
+
+    /** Puts a history entry back on the clipboard and publishes it (the guard drops it if it is already the current value). */
+    fun copyFromHistory(text: String) {
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("Gossip", text))
+        lastObservedText = text
+        history.record(text, remote = false)
+        if (isEnabled()) publishText(text)
     }
 
     private fun onRemoteImageUpdate(envelope: Envelope, data: ByteArray) {
