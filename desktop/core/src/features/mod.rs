@@ -18,10 +18,12 @@ pub enum Feature {
     FindDevice,
     Battery,
     UniversalControl,
+    /// A paired phone acting as this computer's trackpad and keyboard (`peripheral.`).
+    PhoneInput,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 10] = [
+    pub const ALL: [Feature; 11] = [
         Feature::Clipboard,
         Feature::Dnd,
         Feature::Notifications,
@@ -32,6 +34,7 @@ impl Feature {
         Feature::FindDevice,
         Feature::Battery,
         Feature::UniversalControl,
+        Feature::PhoneInput,
     ];
 
     /// The stable key used to persist the toggle (`feature.<key>.enabled`).
@@ -47,6 +50,7 @@ impl Feature {
             Feature::FindDevice => "findDevice",
             Feature::Battery => "battery",
             Feature::UniversalControl => "universalControl",
+            Feature::PhoneInput => "phoneInput",
         }
     }
 
@@ -68,6 +72,7 @@ impl Feature {
             Feature::FindDevice => &["device."],
             Feature::Battery => &["battery."],
             Feature::UniversalControl => &["control."],
+            Feature::PhoneInput => &["peripheral."],
         }
     }
 

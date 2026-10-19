@@ -98,6 +98,12 @@
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
         <activity
+            android:name=".features.peripheral.TrackpadActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustNothing"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <activity
             android:name=".onboarding.OnboardingActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />

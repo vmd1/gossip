@@ -684,6 +684,7 @@ fun ConnectHomeScreen(
                 batteryStates = batteryStates,
                 ringingPeers = ringingPeers,
                 onToggleRing = onToggleRing,
+                onTrackpad = { id, name -> dev.vmd1.gossip.features.peripheral.TrackpadActivity.start(toastContext, id, name) },
                 onMirror = { id, name -> dev.vmd1.gossip.features.screenmirror.ScreenViewerActivity.start(toastContext, id, name) },
                 onForget = { deviceId ->
                     // Prefer the roster-gossip path (revokes locally *and* broadcasts
