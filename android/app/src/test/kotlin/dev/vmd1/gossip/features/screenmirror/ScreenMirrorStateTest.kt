@@ -251,6 +251,16 @@ class ScreenMirrorStateTest {
         assertTrue(sessions.all { it.closed == 0 })
     }
 
+    @Test fun onlyAWholeScreenMirrorCountsAsSomeoneViewingThePhone() {
+        val s = state()
+        s.onScreenStart(appStart("a1", "com.example.one"))
+        awaitSent(1)
+        assertFalse(s.isMirroring.value) // an app window is on a separate virtual display, not this screen
+        s.onScreenStart(env(MessageType.SCREEN_START, "full"))
+        awaitSent(2)
+        assertTrue(s.isMirroring.value)
+    }
+
     @Test fun aNewWholeScreenMirrorReplacesOnlyTheOldWholeScreenMirror() {
         val s = state()
         s.onScreenStart(env(MessageType.SCREEN_START, "f1"))
