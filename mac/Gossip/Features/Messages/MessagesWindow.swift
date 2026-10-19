@@ -142,6 +142,7 @@ struct MessagesView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar(.hidden, for: .windowToolbar)
+        .toolbar(removing: .sidebarToggle)
         .frame(minWidth: 680, minHeight: 440)
         .onAppear { manager.open() }
     }
@@ -404,6 +405,12 @@ enum MessagesWindow {
     fileprivate static weak var manager: MessagesManager?
 
     private final class CloseObserver: NSObject, NSWindowDelegate {
+        // A window with a toolbar keeps its title bar as an opaque strip in full screen, over the conversation header; this
+        // window has no use for one (the sidebar toggle is the only thing SwiftUI puts there), so drop it.
+        func windowWillEnterFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
+        func windowDidEnterFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
+        func windowDidExitFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
+
         func windowWillClose(_ notification: Notification) {
             // Back to a menu-bar app: no Dock icon, and the default icon again.
             NSApp.applicationIconImage = nil
@@ -429,6 +436,7 @@ enum MessagesWindow {
             w.isReleasedWhenClosed = false
             w.delegate = closeObserver
             w.contentView = NSHostingView(rootView: MessagesView(manager: manager))
+            w.toolbar = nil // SwiftUI's split view adds one with just the sidebar toggle
             w.setFrameAutosaveName("GossipMessages")
             w.center()
             window = w
