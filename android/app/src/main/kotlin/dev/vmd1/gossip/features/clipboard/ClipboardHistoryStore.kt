@@ -21,13 +21,13 @@ data class ClipboardHistoryEntry(
 
 /**
  * Searchable, pinnable history of clipboard text, kept on this device only (app-private prefs): never sent to a peer
- * or the relay. Off by default; turning it off wipes it. Mirrors the Mac's `ClipboardHistoryStore`. Text only.
+ * or the relay. On by default; turning it off wipes it. Mirrors the Mac's `ClipboardHistoryStore`. Text only.
  */
 class ClipboardHistoryStore(private val prefs: SharedPreferences) {
     private val _entries = MutableStateFlow(load())
     val entries: StateFlow<List<ClipboardHistoryEntry>> = _entries
 
-    private val _enabled = MutableStateFlow(prefs.getBoolean(KEY_ENABLED, false))
+    private val _enabled = MutableStateFlow(prefs.getBoolean(KEY_ENABLED, true))
     val enabled: StateFlow<Boolean> = _enabled
 
     fun setEnabled(value: Boolean) {

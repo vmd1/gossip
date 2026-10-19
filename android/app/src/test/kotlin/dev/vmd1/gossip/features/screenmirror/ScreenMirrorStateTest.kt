@@ -42,6 +42,7 @@ class ScreenMirrorStateTest {
         send = { sent.add(it) },
         sessionFactory = { id, options, _ -> capturedOptions.add(options); FakeSession(id, failStart).also { sessions.add(it) } },
         appLister = { listOf("com.example.notes" to "Notes", "org.demo.maps" to "Maps") },
+        appChecker = { pkg -> if (pkg == "com.example.off") "app_disabled" else null },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
     )
@@ -232,5 +233,45 @@ class ScreenMirrorStateTest {
         awaitSent(1)
         assertEquals(0, (sent[0].payload["apps"] as kotlinx.serialization.json.JsonArray).size)
         assertEquals("feature_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
+    }
+
+    private fun appStart(id: String, pkg: String) = Envelope(type = MessageType.SCREEN_START, senderId = "mac", recipientId = "phone",
+        payload = buildJsonObject { put("sessionId", JsonPrimitive(id)); put("app", JsonPrimitive(pkg)) })
+
+    @Test fun appWindowsRunSideBySideAndDontEndTheWholeScreenMirror() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "full"))
+        s.onScreenStart(appStart("a1", "com.example.one"))
+        s.onScreenStart(appStart("a2", "com.example.two"))
+        awaitSent(3)
+        assertEquals(3, sessions.size)
+        assertTrue(sessions.all { it.closed == 0 })
+    }
+
+    @Test fun aNewWholeScreenMirrorReplacesOnlyTheOldWholeScreenMirror() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "f1"))
+        s.onScreenStart(appStart("a1", "com.example.one"))
+        s.onScreenStart(env(MessageType.SCREEN_START, "f2"))
+        awaitSent(3)
+        Thread.sleep(100)
+        assertEquals(1, sessions[0].closed); assertEquals(0, sessions[1].closed); assertEquals(0, sessions[2].closed)
+    }
+
+    @Test fun theOldestAppWindowMakesRoomPastTheLimit() {
+        val s = state()
+        repeat(ScreenMirrorState.MAX_APP_WINDOWS + 1) { s.onScreenStart(appStart("a$it", "com.example.app$it")) }
+        awaitSent(ScreenMirrorState.MAX_APP_WINDOWS + 1)
+        Thread.sleep(100)
+        assertEquals(1, sessions[0].closed)
+        assertEquals(0, sessions[1].closed)
+    }
+
+    @Test fun aDisabledAppIsRefusedWithAReasonAndStartsNothing() {
+        val s = state()
+        s.onScreenStart(appStart("x", "com.example.off"))
+        awaitSent(1)
+        assertEquals("app_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals(0, sessions.size)
     }
 }

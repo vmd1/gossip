@@ -72,6 +72,12 @@ struct ConnectApp: App {
         beaconKeyManager = BeaconKeyManager(transportManager: transport)
         phoneInputManager = PhoneInputManager()
         phoneInputManager.register(on: transport.router)
+        phoneInputManager.publishStatus(on: transport)
+        // Permission and the switch can change at any time; the core ignores an unchanged value, so a timer is enough.
+        let phoneInput = phoneInputManager
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak transport] _ in
+            if let transport { phoneInput.publishStatus(on: transport) }
+        }
         messagesManager = MessagesManager(transport: transport, devices: TrustedDevicesStore.shared)
         let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
         _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
@@ -100,6 +106,10 @@ struct ConnectApp: App {
         // Keep the "Device Mirroring" launcher app (embedded in this app) installed next to Gossip.
         if LauncherPreference.autoInstall {
             LauncherSetup.ensureInstalled()
+        }
+        // ...and the "Gossip Messages" launcher, the same way.
+        if LauncherPreference.messagesAutoInstall {
+            LauncherSetup.ensureInstalled(installer: .messages())
         }
 
         // First-run onboarding (see `HANDOFF_ONBOARDING_AND_POLISH.md` Phase 2). Same
@@ -142,9 +152,12 @@ struct ConnectApp: App {
         // silently dropped by `AppDelegate.application(_:open:)`'s `onOpenURLs?(urls)`
         // no-op on `nil` until the user opened the menu bar tray at least once after
         // launch.
-        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport, battery, deviceMirroringWindowBox] urls in
+        appDelegate.onOpenURLs = { [dndSyncManager, bleMonitor, debugHotspotClientBox, screenMirror, transport, battery, deviceMirroringWindowBox, messagesManager] urls in
             for url in urls {
-                if url.host == "mirror" {
+                if url.host == "messages" {
+                    // Sent by the "Gossip Messages" launcher app: show the Messages window.
+                    MessagesWindow.show(manager: messagesManager)
+                } else if url.host == "mirror" {
                     // Sent by the "Device Mirroring" launcher app: show the device-list window.
                     deviceMirroringWindowBox.show {
                         DeviceMirroringView(

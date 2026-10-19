@@ -9,6 +9,11 @@ final class ClipboardHistoryStoreTests: XCTestCase {
         return store
     }
 
+    func testOnByDefault() {
+        let store = ClipboardHistoryStore(url: nil, defaults: UserDefaults(suiteName: "history-\(UUID().uuidString)")!)
+        XCTAssertTrue(store.isEnabled)
+    }
+
     func testDisabledStoreRecordsNothing() {
         let store = makeStore(enabled: false)
         store.record("hello", remote: false)

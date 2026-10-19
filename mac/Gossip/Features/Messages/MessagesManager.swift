@@ -2,7 +2,11 @@ import Foundation
 import Combine
 
 struct MessageThread: Identifiable, Equatable {
+    /// `<phoneId>|<phone's thread id>`: unique across phones.
     let id: String
+    let phoneId: String
+    let phoneName: String
+    let remoteId: String
     let address: String
     let name: String?
     let snippet: String
@@ -10,6 +14,8 @@ struct MessageThread: Identifiable, Equatable {
     let outgoing: Bool
     let unread: Int
     var title: String { name ?? address }
+
+    static func makeId(phoneId: String, remoteId: String) -> String { "\(phoneId)|\(remoteId)" }
 }
 
 struct ChatMessage: Identifiable, Equatable {
@@ -23,11 +29,12 @@ struct ChatMessage: Identifiable, Equatable {
 
 /// Pure decoding of the phone's `messages.*` payloads, separate from the manager so it can be tested.
 enum MessagesWire {
-    static func threads(_ payload: JSONValue) -> [MessageThread] {
+    static func threads(_ payload: JSONValue, phoneId: String = "", phoneName: String = "") -> [MessageThread] {
         (payload["threads"]?.arrayValue ?? []).compactMap { t in
             guard let id = t["id"]?.stringValue, let date = t["date"]?.numberValue else { return nil }
             return MessageThread(
-                id: id, address: t["address"]?.stringValue ?? "", name: t["name"]?.stringValue,
+                id: MessageThread.makeId(phoneId: phoneId, remoteId: id), phoneId: phoneId, phoneName: phoneName, remoteId: id,
+                address: t["address"]?.stringValue ?? "", name: t["name"]?.stringValue,
                 snippet: t["snippet"]?.stringValue ?? "", date: Date(timeIntervalSince1970: date / 1000),
                 outgoing: t["outgoing"]?.boolValue ?? false, unread: Int(t["unread"]?.numberValue ?? 0)
             )
@@ -45,8 +52,8 @@ enum MessagesWire {
 
     static func reasonText(_ reason: String?) -> String? {
         switch reason {
-        case "disabled": return "Messages is turned off on the phone (Gossip → Settings → Messages)."
-        case "no_permission": return "Gossip on the phone doesn't have permission to read texts yet."
+        case "disabled": return "Messages is turned off on the phone (Gossip → Settings → Features)."
+        case "no_permission": return "Gossip on the phone doesn't have permission to read texts yet (Gossip → Settings → Features → Messages ⋮)."
         case "invalid": return "That message couldn't be sent (check the number)."
         case "failed": return "The phone couldn't send that message."
         case nil: return nil
@@ -55,25 +62,31 @@ enum MessagesWire {
     }
 }
 
-/// The Mac side of the Messages app: asks a paired phone (over the encrypted mesh) for its SMS conversations and sends
-/// through it. The phone holds the messages and does all the work (`messages.*`, see `schema/message-types.md`).
+/// The Mac side of the Messages app: asks every connected paired phone (over the encrypted mesh) for its SMS conversations,
+/// merges them into one list like a single Messages account, and sends through the phone a conversation belongs to. The
+/// phones hold the messages and do all the work (`messages.*`, see `schema/message-types.md`).
 ///
 /// Requests are queries and safe to repeat. A send carries a per-attempt `attemptId` and is re-sent with the **same** id
 /// until the phone answers, because the phone texts at most once per id.
 final class MessagesManager: ObservableObject {
+    /// Merged across phones, newest first.
     @Published private(set) var threads: [MessageThread] = []
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var openThreadId: String?
     @Published private(set) var error: String?
-    @Published private(set) var phoneId: String?
     @Published private(set) var loading = false
+    /// The phone a new conversation (composer) is sent through.
+    @Published var composePhoneId: String?
 
     private let transport: TransportManager
     private let devices: TrustedDevicesStore
-    private var threadsRequest: String?
-    private var historyRequest: String?
+    private var byPhone: [String: [MessageThread]] = [:]
+    private var threadsRequests: [String: String] = [:]   // phoneId -> latest requestId
+    private var historyRequest: (phoneId: String, requestId: String)?
     private var pending: [String: PendingSend] = [:]
     private var retryTimer: Timer?
+    /// Set after sending to a new number from the composer, so the conversation opens once the phone lists it.
+    private var openAddressWhenListed: String?
 
     private struct PendingSend { let address: String; let body: String; let to: String; var tries: Int; var lastSent: Date; let messageId: String }
 
@@ -89,53 +102,64 @@ final class MessagesManager: ObservableObject {
         }
     }
 
-    /// The phones this Mac could use, connected ones first.
+    /// Paired phones, connected ones first.
     var phones: [TrustedDevice] {
         devices.devices.filter { $0.deviceType == .androidPhone }
-            .sorted { (transport.connectedDeviceIds.contains($0.deviceId) ? 0 : 1) < (transport.connectedDeviceIds.contains($1.deviceId) ? 0 : 1) }
+            .sorted { (isReachable($0.deviceId) ? 0 : 1) < (isReachable($1.deviceId) ? 0 : 1) }
     }
 
-    func selectPhone(_ id: String?) {
-        phoneId = id
-        threads = []; messages = []; openThreadId = nil; error = nil
-        refreshThreads()
+    var reachablePhones: [TrustedDevice] { phones.filter { isReachable($0.deviceId) } }
+
+    private func isReachable(_ id: String) -> Bool {
+        transport.connectedDeviceIds.contains(id) || transport.meshReachableDeviceIds.contains(id) || transport.relayedDeviceIds.contains(id)
     }
 
-    /// Picks a phone if none is chosen yet, then loads the conversation list.
+    var openThread: MessageThread? { threads.first { $0.id == openThreadId } }
+
+    /// Loads the conversation list from every connected phone.
     func open() {
-        if phoneId == nil || !phones.contains(where: { $0.deviceId == phoneId }) { phoneId = phones.first?.deviceId }
+        if composePhoneId == nil || !phones.contains(where: { $0.deviceId == composePhoneId }) { composePhoneId = reachablePhones.first?.deviceId ?? phones.first?.deviceId }
         refreshThreads()
     }
 
     func refreshThreads() {
         guard FeatureSettings.shared.isEnabled(.messages) else { error = "Messages is turned off in Gossip's Settings on this Mac."; return }
-        guard let phoneId else { error = "No paired phone."; return }
+        guard !phones.isEmpty else { error = "No paired phone."; return }
+        let targets = reachablePhones
+        guard !targets.isEmpty else { error = "Your phone isn't connected."; loading = false; return }
         error = nil; loading = true
-        let id = UUID().uuidString
-        threadsRequest = id
-        send("messages.threads_request", to: phoneId, ["requestId": .string(id), "limit": .number(100)])
-        if let open = openThreadId { loadHistory(open) }
+        for phone in targets {
+            let id = UUID().uuidString
+            threadsRequests[phone.deviceId] = id
+            send("messages.threads_request", to: phone.deviceId, ["requestId": .string(id), "limit": .number(100)])
+        }
+        if let open = openThread { loadHistory(open) }
     }
 
-    func openThread(_ id: String) {
+    func openThread(_ id: String?) {
         openThreadId = id
         messages = []
-        if !id.isEmpty { loadHistory(id) } // "" is the new-message composer: nothing to load
+        if let t = openThread { loadHistory(t) }
     }
 
-    private func loadHistory(_ threadId: String) {
-        guard let phoneId else { return }
+    func startComposing() {
+        openThreadId = nil
+        messages = []
+    }
+
+    private func loadHistory(_ thread: MessageThread) {
         let id = UUID().uuidString
-        historyRequest = id
-        send("messages.history_request", to: phoneId, ["requestId": .string(id), "threadId": .string(threadId), "limit": .number(100)])
+        historyRequest = (thread.phoneId, id)
+        send("messages.history_request", to: thread.phoneId, ["requestId": .string(id), "threadId": .string(thread.remoteId), "limit": .number(100)])
     }
 
-    /// Sends `body` to `address`. Shows it in the conversation right away, marked sending until the phone confirms.
-    func send(body: String, to address: String) {
-        guard let phoneId, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// Sends `body` to `address` through `phoneId`. Shows it in the conversation right away, marked sending until the phone confirms.
+    func send(body: String, to address: String, via phoneId: String) {
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let attempt = UUID().uuidString
         let messageId = "local-\(attempt)"
         messages.append(ChatMessage(id: messageId, date: Date(), outgoing: true, body: body, sending: true))
+        if openThreadId == nil { openAddressWhenListed = address }
         pending[attempt] = PendingSend(address: address, body: body, to: phoneId, tries: 1, lastSent: Date(), messageId: messageId)
         transmit(attempt)
         retryTimer = retryTimer ?? Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.retryPending() }
@@ -165,7 +189,7 @@ final class MessagesManager: ObservableObject {
     }
 
     private func stateChanged(from deviceId: String) {
-        guard deviceId == phoneId, openThreadId != nil || !threads.isEmpty else { return }
+        guard byPhone[deviceId] != nil || openThreadId != nil else { return }
         refreshThreads()
     }
 
@@ -174,18 +198,35 @@ final class MessagesManager: ObservableObject {
         try? transport.send(envelope: envelope)
     }
 
+    private func rebuild() {
+        threads = byPhone.values.flatMap { $0 }.sorted { $0.date > $1.date }
+        if openThreadId == nil, let address = openAddressWhenListed {
+            let digits = { (s: String) in String(s.filter(\.isNumber).suffix(10)) }
+            if let t = threads.first(where: { digits($0.address) == digits(address) && !digits(address).isEmpty }) {
+                openAddressWhenListed = nil
+                let waiting = messages
+                openThread(t.id)
+                messages = waiting // keep the just-sent message on screen until the history arrives
+            }
+        }
+    }
+
     func handle(_ envelope: Envelope) {
-        guard envelope.senderId == phoneId else { return }
+        let phoneId = envelope.senderId
+        guard let phone = phones.first(where: { $0.deviceId == phoneId }) else { return }
         let reason = MessagesWire.reasonText(envelope.payload["reason"]?.stringValue)
         switch envelope.type {
         case "messages.threads":
-            guard envelope.payload["requestId"]?.stringValue == threadsRequest else { return }
+            guard envelope.payload["requestId"]?.stringValue == threadsRequests[phoneId] else { return }
             loading = false
-            error = reason
-            if reason == nil { threads = MessagesWire.threads(envelope.payload) }
+            if let reason { error = reason; byPhone[phoneId] = nil } else {
+                error = nil
+                byPhone[phoneId] = MessagesWire.threads(envelope.payload, phoneId: phoneId, phoneName: phone.deviceName)
+            }
+            rebuild()
         case "messages.history":
-            guard envelope.payload["requestId"]?.stringValue == historyRequest,
-                  envelope.payload["threadId"]?.stringValue == openThreadId else { return }
+            guard let h = historyRequest, h.phoneId == phoneId, envelope.payload["requestId"]?.stringValue == h.requestId,
+                  envelope.payload["threadId"]?.stringValue == openThread?.remoteId else { return }
             if let reason { error = reason; return }
             // Keep messages still waiting for the phone's confirmation at the end.
             let waiting = messages.filter { $0.sending || $0.failed }

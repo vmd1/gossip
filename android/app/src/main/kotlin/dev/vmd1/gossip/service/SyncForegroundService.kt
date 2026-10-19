@@ -1,5 +1,6 @@
 package dev.vmd1.gossip.service
 
+import androidx.core.graphics.drawable.toBitmap
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -86,10 +87,26 @@ class SyncForegroundService : Service() {
                 val pm = applicationContext.packageManager
                 pm.queryIntentActivities(
                     android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0
-                ).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                ).filter { it.activityInfo.applicationInfo.enabled }
+                    .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
                     .filter { it.first != packageName }
                     .distinctBy { it.first }
                     .sortedBy { it.second.lowercase() }
+            },
+            appChecker = { pkg ->
+                val pm = applicationContext.packageManager
+                val info = runCatching { pm.getApplicationInfo(pkg, 0) }.getOrNull()
+                when {
+                    info == null || pm.getLaunchIntentForPackage(pkg) == null -> "app_unavailable"
+                    !info.enabled -> "app_disabled"
+                    else -> null
+                }
+            },
+            iconProvider = { pkg ->
+                runCatching {
+                    val bmp = applicationContext.packageManager.getApplicationIcon(pkg).toBitmap(48, 48)
+                    java.io.ByteArrayOutputStream().also { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+                }.getOrNull()
             },
             logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }

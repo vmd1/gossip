@@ -469,21 +469,8 @@ fun ConnectHomeScreen(
                         settingsPage = SettingsPage.NOTIFICATIONS
                     }
                 }
-                if (isPhone) {
-                    SettingsMenuRow("Messages", "Let your Mac read and send this phone's text messages") {
-                        settingsPage = SettingsPage.MESSAGES
-                    }
-                }
-                SettingsMenuRow("Clipboard history", "Search and pin what you copied on this device") {
-                    settingsPage = SettingsPage.CLIPBOARD_HISTORY
-                }
                 SettingsMenuRow("Features", "Turn features on or off on this device") { settingsPage = SettingsPage.FEATURES }
                 SettingsMenuRow("Relay", "Stay connected when your devices are not on the same network") { settingsPage = SettingsPage.RELAY }
-                if (isPhone) {
-                    SettingsMenuRow("Instant Hotspot", "Let your other devices use this phone's hotspot") {
-                        settingsPage = SettingsPage.HOTSPOT
-                    }
-                }
                 SettingsMenuRow("Permissions", "Notifications, Do Not Disturb, Bluetooth and more") {
                     settingsPage = SettingsPage.PERMISSIONS
                 }
@@ -550,7 +537,7 @@ fun ConnectHomeScreen(
             }
 
             SettingsPage.FEATURES -> SettingsPageScaffold("Features", onBack = { settingsPage = page.parent }) {
-                FeatureTogglesContent(featureSettings)
+                FeatureTogglesContent(featureSettings, isPhone = isPhone, onConfigure = { settingsPage = it })
             }
 
             SettingsPage.RELAY -> SettingsPageScaffold("Relay", onBack = { settingsPage = page.parent }) {

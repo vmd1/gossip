@@ -5,9 +5,9 @@ import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** The per-device Messages switch. **Off by default**: message text is only ever served to a paired Mac once the user turns it on here. */
+/** The per-device Messages switch. On by default (the permissions it needs are asked for in its settings page); turning it off stops the phone serving message text to a paired Mac. */
 class MessagesSettings(private val prefs: SharedPreferences) {
-    private val _enabled = MutableStateFlow(prefs.getBoolean(KEY, false))
+    private val _enabled = MutableStateFlow(prefs.getBoolean(KEY, true))
     val enabled: StateFlow<Boolean> = _enabled
 
     fun setEnabled(value: Boolean) {

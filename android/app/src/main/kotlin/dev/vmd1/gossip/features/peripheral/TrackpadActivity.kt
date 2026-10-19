@@ -27,6 +27,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.hypot
 
@@ -50,13 +52,17 @@ class TrackpadActivity : Activity() {
     private var lastTapTime = 0L; private var dragging = false
 
     private lateinit var input: EditText
+    private lateinit var banner: TextView
     private var suppress = false
+    private var macId: String? = null
+    private var macName = "the Mac"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val macId = intent.getStringExtra(EXTRA_DEVICE_ID)
         val name = intent.getStringExtra(EXTRA_DEVICE_NAME) ?: "Mac"
+        this.macId = macId; macName = name
         val transport = TransportManagerHolder.instance
         if (macId == null || transport == null) {
             Toast.makeText(this, "Gossip isn't running.", Toast.LENGTH_LONG).show(); finish(); return
@@ -65,10 +71,15 @@ class TrackpadActivity : Activity() {
 
         val pad = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#222222"))
+            banner = TextView(context).apply {
+                setTextColor(Color.WHITE); setBackgroundColor(Color.parseColor("#C0392B")); textSize = 14f
+                setPadding(32, 24, 32, 24); visibility = View.GONE
+            }
             addView(TextView(context).apply {
                 text = "$name\nMove: one finger · Click: tap · Right-click: two-finger tap\nScroll: two fingers"
                 setTextColor(Color.GRAY); gravity = Gravity.CENTER; textSize = 14f
             }, FrameLayout.LayoutParams(-1, -1))
+            addView(banner, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
             setOnTouchListener { _, e -> onPadTouch(e) }
         }
 
@@ -118,6 +129,28 @@ class TrackpadActivity : Activity() {
             addView(keys, LinearLayout.LayoutParams(-1, -2))
         })
         handler.post(flusher)
+        watchStatus(transport, macId)
+    }
+
+    /** Shows why the trackpad won't work (feature off on the Mac, missing permission, Mac not connected) and keeps it current. */
+    private fun watchStatus(transport: dev.vmd1.gossip.transport.TransportManager, macId: String) {
+        fun refresh() {
+            val connected = macId in transport.connectedDeviceIds.value || macId in transport.relayedDeviceIds.value ||
+                macId in transport.meshReachableDeviceIds.value
+            val problem = TrackpadStatus.problem(macName, connected, transport.state(macId, TrackpadStatus.SLOT))
+            runOnUiThread {
+                banner.text = problem ?: ""
+                val wasHidden = banner.visibility != View.VISIBLE
+                banner.visibility = if (problem == null) View.GONE else View.VISIBLE
+                if (problem != null && wasHidden) Toast.makeText(this, problem, Toast.LENGTH_LONG).show()
+            }
+        }
+        refresh()
+        scope.launch {
+            kotlinx.coroutines.flow.merge(
+                transport.stateChanges.map { }, transport.connectedDeviceIds.map { }, transport.relayedDeviceIds.map { }
+            ).collect { refresh() }
+        }
     }
 
     private fun resetInput() {

@@ -106,6 +106,23 @@ final class PhoneInputManager {
         router.register(prefix: "peripheral.") { [weak self] envelope in self?.handle(envelope) }
     }
 
+    /// The state slot a phone reads to tell the user why its trackpad isn't working. It is deliberately **not** under the
+    /// `peripheral.` prefix: with the feature switched off the core drops every `peripheral.` message, and the phone
+    /// still has to be able to learn that. Values: `enabled` (the feature switch), `accessibility` (the permission).
+    static let statusSlot = "trackpad.status"
+
+    func statusJSON(enabled: Bool, accessibility: Bool) -> String {
+        #"{"enabled":\#(enabled),"accessibility":\#(accessibility)}"#
+    }
+
+    /// Publishes the status; an unchanged value is a no-op in the core, so this is safe on a timer.
+    func publishStatus(on transport: TransportManager) {
+        transport.setState(
+            slot: Self.statusSlot,
+            valueJSON: statusJSON(enabled: FeatureSettings.shared.isEnabled(.phoneInput), accessibility: AXIsProcessTrusted())
+        )
+    }
+
     func handle(_ envelope: Envelope) {
         guard envelope.type == "peripheral.input",
               let sessionId = envelope.payload["sessionId"]?.stringValue,

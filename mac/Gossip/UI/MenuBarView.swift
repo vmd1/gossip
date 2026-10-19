@@ -111,7 +111,8 @@ struct MenuBarView: View {
                             featureSettings: featureSettings,
                             transportManager: transportManager,
                             pairingViewModel: pairingViewModel,
-                            notificationMirrorManager: notificationMirrorManager
+                            notificationMirrorManager: notificationMirrorManager,
+                            messagesManager: messagesManager
                         )
                         settingsWindow = window
                         window.makeKeyAndOrderFront(nil)

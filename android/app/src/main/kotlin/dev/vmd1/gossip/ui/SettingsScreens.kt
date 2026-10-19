@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,9 +58,9 @@ enum class SettingsPage(val parent: SettingsPage?) {
     NOTIFICATION_APPS(NOTIFICATIONS),
     FEATURES(ROOT),
     RELAY(ROOT),
-    HOTSPOT(ROOT),
-    CLIPBOARD_HISTORY(ROOT),
-    MESSAGES(ROOT),
+    HOTSPOT(FEATURES),
+    CLIPBOARD_HISTORY(FEATURES),
+    MESSAGES(FEATURES),
     PERMISSIONS(ROOT)
 }
 
@@ -122,29 +123,58 @@ fun SettingsMenuRow(title: String, subtitle: String, onClick: () -> Unit) {
 /** Settings → Features: one on/off switch per feature for *this* device (all on by default). Turning
  *  one off makes this device stop sending and receiving it entirely — see [FeatureSettings]. */
 @Composable
-fun ColumnScope.FeatureTogglesContent(settings: FeatureSettings) {
+fun ColumnScope.FeatureTogglesContent(
+    settings: FeatureSettings,
+    isPhone: Boolean = true,
+    onConfigure: (SettingsPage) -> Unit = {}
+) {
+    val context = LocalContext.current
     val disabled by settings.disabled.collectAsState()
+    val messages = remember { dev.vmd1.gossip.features.messages.MessagesSettings.getInstance(context) }
+    val messagesOn by messages.enabled.collectAsState()
+    val history = remember { ClipboardHistoryStore.getInstance(context) }
+    val historyOn by history.enabled.collectAsState()
     Text(
         "Turning a feature off stops this device from sending or receiving it at all. " +
-            "Your other devices keep their own settings.",
+            "Your other devices keep their own settings. The ⋮ button opens a feature's own settings.",
         style = MaterialTheme.typography.bodySmall
     )
-    for (feature in Feature.values()) {
+    @Composable
+    fun FeatureRow(title: String, detail: String, checked: Boolean, onChecked: (Boolean) -> Unit, configure: SettingsPage?) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text(feature.title, style = MaterialTheme.typography.bodyLarge)
-                Text(feature.detail, style = MaterialTheme.typography.bodySmall)
+            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                Text(detail, style = MaterialTheme.typography.bodySmall)
             }
-            Switch(
-                checked = feature !in disabled,
-                onCheckedChange = { settings.setEnabled(feature, it) }
-            )
+            if (configure != null) {
+                IconButton(onClick = { onConfigure(configure) }) {
+                    Icon(androidx.compose.material.icons.Icons.Default.MoreVert, contentDescription = "$title settings")
+                }
+            }
+            Switch(checked = checked, onCheckedChange = onChecked)
         }
     }
+    for (feature in Feature.values()) {
+        if (feature == Feature.HOTSPOT && !isPhone) continue
+        FeatureRow(
+            feature.title, feature.detail, feature !in disabled, { settings.setEnabled(feature, it) },
+            if (feature == Feature.HOTSPOT) SettingsPage.HOTSPOT else null
+        )
+    }
+    if (isPhone) {
+        FeatureRow(
+            "Messages", "Let your paired Mac read and send this phone's text messages (SMS).",
+            messagesOn, { messages.setEnabled(it) }, SettingsPage.MESSAGES
+        )
+    }
+    FeatureRow(
+        "Clipboard history", "Keep a searchable, pinnable history of what you copied, on this device only.",
+        historyOn, { history.setEnabled(it) }, SettingsPage.CLIPBOARD_HISTORY
+    )
 }
 
 private data class AppEntry(val packageName: String, val label: String)
@@ -238,20 +268,10 @@ fun ColumnScope.ClipboardHistoryContent(onCopy: (String) -> Unit) {
     var query by remember { mutableStateOf("") }
     var confirmClear by remember { mutableStateOf(false) }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text("Keep clipboard history", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "Stored only on this device, never sent to other devices or the relay. Off by default; turning it off deletes it.",
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        Switch(checked = enabled, onCheckedChange = { store.setEnabled(it) })
-    }
+    Text(
+        "Stored only on this device, never sent to other devices or the relay. Turning it off on the Features page deletes it.",
+        style = MaterialTheme.typography.bodySmall
+    )
     if (!enabled) return
     OutlinedTextField(
         value = query, onValueChange = { query = it }, label = { Text("Search") },
@@ -286,7 +306,7 @@ fun ColumnScope.ClipboardHistoryContent(onCopy: (String) -> Unit) {
     }
 }
 
-/** Settings → Messages: lets a paired Mac read and send this phone's SMS. Off by default; asks for the SMS and contacts permissions. */
+/** Settings → Messages (opened from the ⋮ on the Features page): permissions and status. The on/off switch is on the Features page. */
 @Composable
 fun ColumnScope.MessagesSettingsContent() {
     val context = LocalContext.current
@@ -302,25 +322,17 @@ fun ColumnScope.MessagesSettingsContent() {
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { granted = smsGranted() }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text("Let my paired Mac use my text messages", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                "The Mac can list conversations, read them and send texts through this phone. SMS only (no MMS or RCS). " +
-                    "Message text travels only over your encrypted Gossip connection. Off by default.",
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        Switch(checked = enabled, onCheckedChange = { settings.setEnabled(it) })
-    }
-    if (enabled && !granted) {
-        Text("Gossip needs permission to read and send SMS (and read contacts to show names).", style = MaterialTheme.typography.bodySmall)
+    Text(
+        "Your paired Mac can list conversations, read them and send texts through this phone. SMS only (no MMS or RCS). " +
+            "Message text travels only over your encrypted Gossip connection.",
+        style = MaterialTheme.typography.bodySmall
+    )
+    if (!enabled) {
+        Text("Messages is switched off on the Features page.", style = MaterialTheme.typography.bodyMedium)
+    } else if (!granted) {
+        Text("Gossip needs permission to read and send SMS (and to read contacts so names show).", style = MaterialTheme.typography.bodyMedium)
         androidx.compose.material3.Button(onClick = { launcher.launch(permissions) }) { Text("Grant permissions") }
-    } else if (enabled) {
-        Text("Ready. Open Messages from the Gossip menu on your Mac.", style = MaterialTheme.typography.bodySmall)
+    } else {
+        Text("Ready. Open Messages from the Gossip menu on your Mac.", style = MaterialTheme.typography.bodyMedium)
     }
 }

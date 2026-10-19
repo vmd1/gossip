@@ -15,21 +15,29 @@ struct AppWindowPickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Open an app from \(device.deviceName)").font(.headline)
-            Text("The app runs on a virtual display, so the phone's own screen stays free. Needs Shizuku on the phone.")
+            Text("Each app runs on its own virtual display, so the phone's screen stays free. Open several at once and resize their windows freely. Needs Shizuku on the phone.")
                 .font(.caption).foregroundStyle(.secondary)
             TextField("Search apps", text: $query).textFieldStyle(.roundedBorder)
             if let error = controller.appsError[device.deviceId] {
                 Text(error).foregroundStyle(.red)
             } else if let apps {
                 let shown = query.isEmpty ? apps : apps.filter { $0.label.localizedCaseInsensitiveContains(query) }
+                let icons = controller.iconsByDevice[device.deviceId] ?? [:]
                 List(shown) { app in
                     Button {
                         controller.start(deviceId: device.deviceId, deviceName: device.deviceName, transport: transport, app: app)
-                        onOpened()
                     } label: {
-                        VStack(alignment: .leading) {
+                        HStack(spacing: 10) {
+                            Group {
+                                if let icon = icons[app.package] {
+                                    Image(nsImage: icon).resizable().interpolation(.high)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 7).fill(Color.secondary.opacity(0.2))
+                                }
+                            }
+                            .frame(width: 32, height: 32).clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                             Text(app.label)
-                            Text(app.package).font(.caption2).foregroundStyle(.secondary)
+                            Spacer()
                         }
                     }.buttonStyle(.plain)
                 }

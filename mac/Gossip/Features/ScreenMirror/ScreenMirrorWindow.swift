@@ -251,7 +251,13 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
         didSet { content.sendControl = sendControl }
     }
 
-    init(deviceName: String, videoSize: CGSize) {
+    /// App windows run on a virtual display the Mac can re-create at any size, so they resize freely
+    /// (`onResizeEnd` then asks for a display of the new size); a whole-screen mirror keeps the phone's aspect ratio.
+    let freeResize: Bool
+    var onResizeEnd: ((CGSize) -> Void)?
+
+    init(deviceName: String, videoSize: CGSize, freeResize: Bool = false) {
+        self.freeResize = freeResize
         let initial = Self.fittedSize(for: videoSize, on: nil)
         super.init(
             contentRect: NSRect(origin: .zero, size: initial),
@@ -269,7 +275,7 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
         content.videoSize = videoSize
         content.menuActions = { [weak self] in self?.sendControl?($0) }
         content.onHover = { [weak self] inside in self?.setTrafficLights(visible: inside) }
-        contentAspectRatio = videoSize
+        if !freeResize { contentAspectRatio = videoSize }
         setTrafficLights(visible: false)
         center()
         // Open on the display the user is on; `center()` uses the main display.
@@ -289,6 +295,7 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
     func updateVideoSize(_ size: CGSize) {
         guard size.width > 0, size.height > 0, size != content.videoSize else { return }
         content.videoSize = size
+        if freeResize { return } // the window sets the size, the display follows it
         contentAspectRatio = size
         setContentSize(Self.fittedSize(for: size, on: screen))
     }
@@ -306,6 +313,10 @@ final class ScreenMirrorWindow: NSWindow, NSWindowDelegate {
     static func screenUnderMouse() -> NSScreen? {
         let p = NSEvent.mouseLocation
         return NSScreen.screens.first { NSMouseInRect(p, $0.frame, false) }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        if freeResize { onResizeEnd?(contentLayoutRect.size) }
     }
 
     func windowWillClose(_ notification: Notification) {

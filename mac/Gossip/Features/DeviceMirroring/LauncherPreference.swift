@@ -8,6 +8,22 @@ enum LauncherPreference {
         get { (UserDefaults.standard.object(forKey: key) as? Bool) ?? true }
         set { UserDefaults.standard.set(newValue, forKey: key) }
     }
+
+    private static let messagesKey = "messagesLauncher.autoInstall"
+    /// Whether the "Gossip Messages" launcher app is kept installed (on by default).
+    static var messagesAutoInstall: Bool {
+        get { (UserDefaults.standard.object(forKey: messagesKey) as? Bool) ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: messagesKey) }
+    }
+}
+
+extension LauncherInstaller {
+    /// The installer for the Messages launcher app.
+    static func messages() -> LauncherInstaller {
+        LauncherInstaller(embeddedLauncherURL: Bundle.main.sharedSupportURL?.appendingPathComponent(LauncherInstaller.messagesLauncherName),
+                          launcherName: LauncherInstaller.messagesLauncherName,
+                          launcherBundleIdentifier: LauncherInstaller.messagesLauncherBundleIdentifier)
+    }
 }
 
 /// Keeps the launcher installed. Gossip is no longer sandboxed, so it copies the embedded launcher out
@@ -20,7 +36,7 @@ enum LauncherSetup {
         case .current, .notApplicable: return
         }
         DispatchQueue.global(qos: .utility).async {
-            NSLog("Gossip: Device Mirroring launcher install -> \(installer.install())")
+            NSLog("Gossip: \(installer.title) launcher install -> \(installer.install())")
         }
     }
 }

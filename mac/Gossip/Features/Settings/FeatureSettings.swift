@@ -8,8 +8,9 @@ import Combine
 enum Feature: String, CaseIterable, Identifiable {
     case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot, findDevice, battery, universalControl, phoneInput, messages
 
-    /// Features that start switched off: letting a paired phone type and click on this Mac is something to opt in to.
-    static let offByDefault: Set<Feature> = [.phoneInput, .messages]
+    /// Features that start switched off. None: a feature that needs no setup is on by default (anything that needs a
+    /// permission shows what is missing instead of staying off).
+    static let offByDefault: Set<Feature> = []
 
     var id: String { rawValue }
 
@@ -42,8 +43,8 @@ enum Feature: String, CaseIterable, Identifiable {
         case .findDevice: return "Let paired devices make this Mac ring so you can find it, and ring theirs."
         case .battery: return "Share this Mac's battery level and get low-battery alerts for paired devices."
         case .universalControl: return "Push the pointer off a screen edge to use this Mac's mouse and keyboard on your tablets and phones."
-        case .phoneInput: return "Let a paired phone move the pointer, click, scroll and type on this Mac. Off by default; needs Accessibility."
-        case .messages: return "Read and send your phone's text messages (SMS) from this Mac. Off by default; also needs turning on in Gossip on the phone."
+        case .phoneInput: return "Let a paired phone move the pointer, click, scroll and type on this Mac. Needs Accessibility."
+        case .messages: return "Read and send your phone's text messages (SMS) from this Mac. Also needs the SMS permission on the phone."
         }
     }
 

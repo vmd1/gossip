@@ -12,7 +12,7 @@ struct ClipboardHistoryEntry: Codable, Identifiable, Equatable {
 }
 
 /// Searchable, pinnable history of clipboard text, kept on this Mac only: never sent to a peer or the relay.
-/// Off by default (`isEnabled`); `clear()` wipes it. Sensitive and oversized copies are filtered by the caller
+/// On by default (`isEnabled`, which needs no setup); turning it off or `clear()` wipes it. Sensitive and oversized copies are filtered by the caller
 /// (`ClipboardSyncManager`) before they get here. Text only for now.
 final class ClipboardHistoryStore: ObservableObject {
     static let shared = ClipboardHistoryStore()
@@ -42,7 +42,7 @@ final class ClipboardHistoryStore: ObservableObject {
     }
 
     var isEnabled: Bool {
-        get { defaults.bool(forKey: Self.enabledKey) }
+        get { (defaults.object(forKey: Self.enabledKey) as? Bool) ?? true }
         set {
             defaults.set(newValue, forKey: Self.enabledKey)
             if !newValue { clear() }

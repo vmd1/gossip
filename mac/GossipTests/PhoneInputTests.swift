@@ -60,9 +60,9 @@ final class PhoneInputTests: XCTestCase {
         XCTAssertFalse(s.accept(sessionId: "s\(PhoneInputSequencer.maxSessions + 4)", seq: 1))
     }
 
-    func testPhoneInputIsOptInAndOwnsItsPrefix() {
+    func testPhoneInputIsOnByDefaultAndOwnsItsPrefix() {
         XCTAssertEqual(FeatureSettings.feature(forMessageType: "peripheral.input"), .phoneInput)
         let settings = FeatureSettings(defaults: UserDefaults(suiteName: "pi-\(UUID().uuidString)")!)
-        XCTAssertFalse(settings.isMessageAllowed(type: "peripheral.input"))
+        XCTAssertTrue(settings.isMessageAllowed(type: "peripheral.input"))
     }
 }
