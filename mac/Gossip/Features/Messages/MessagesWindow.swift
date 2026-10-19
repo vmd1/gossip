@@ -141,6 +141,8 @@ struct MessagesView: View {
             detail
         }
         .navigationSplitViewStyle(.balanced)
+        // In full screen the title bar becomes a real toolbar strip; without this its background covers the top of the header.
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .frame(minWidth: 680, minHeight: 440)
         .onAppear { manager.open() }
     }
