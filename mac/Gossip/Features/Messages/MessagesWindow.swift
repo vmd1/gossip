@@ -99,21 +99,17 @@ private struct GlassCapsule<Content: View>: View {
     }
 }
 
-/// A gradual blur over the top of the conversation: messages passing under the header soften more the closer they get to
-/// the edge, rather than being cut off. Two material layers with different fade lengths stack into a smooth ramp. Drawn
+/// A light blur over the top of the conversation: messages passing under the header soften as they reach it instead of being
+/// cut off. A single material layer faded by a gradient, kept short and light like Apple's Messages. Drawn
 /// on every macOS version (the system scroll-edge effect only applies under a real toolbar, which this header isn't).
 private struct SoftTopEdge: ViewModifier {
     func body(content: Content) -> some View {
         content.overlay(alignment: .top) {
-            ZStack(alignment: .top) {
-                Rectangle().fill(.regularMaterial)
-                    .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black.opacity(0.55), location: 0.45),
-                                                 .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
-                    .frame(height: 78)
-                Rectangle().fill(.ultraThinMaterial)
-                    .mask(LinearGradient(colors: [.black, .black.opacity(0.35), .clear], startPoint: .top, endPoint: .bottom))
-                    .frame(height: 140)
-            }
+            // One light layer, tall enough to cover the avatar and name and no more, as in Apple's Messages.
+            Rectangle().fill(.ultraThinMaterial)
+                .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0), .init(color: .black.opacity(0.5), location: 0.5),
+                                             .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                .frame(height: 88)
             .allowsHitTesting(false)
             .ignoresSafeArea(.container, edges: .top)
         }
@@ -243,7 +239,7 @@ struct MessagesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) { conversation }
-                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 84) // room for the floating header
+                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 104) // room for the floating header
                 }
                 .onChange(of: manager.messages) { _, new in
                     if let last = new.last?.id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) } }
@@ -260,9 +256,9 @@ struct MessagesView: View {
     /// The avatar over a glass name capsule, centred at the top of the conversation where the title bar is, like Apple's
     /// Messages. Floats above the messages, which blur out beneath it.
     private var conversationHeader: some View {
-        VStack(spacing: -10) {
+        VStack(spacing: -14) {
             if let t = manager.openThread {
-                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 46)
+                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 62)
                     .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
                     .zIndex(1) // in front of the name capsule it overlaps
                 GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1) }
