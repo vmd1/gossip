@@ -134,15 +134,15 @@ struct MessagesView: View {
     @State private var pickedNumber: String?
 
     var body: some View {
-        NavigationSplitView {
+        // A plain split rather than NavigationSplitView: that installs a window toolbar, which macOS keeps as an opaque strip over
+        // the conversation header in full screen.
+        HStack(spacing: 0) {
             sidebar
-                .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 380)
-        } detail: {
+                .frame(width: 300)
+                .background(.regularMaterial)
+            Divider()
             detail
         }
-        .navigationSplitViewStyle(.balanced)
-        .toolbar(.hidden, for: .windowToolbar)
-        .toolbar(removing: .sidebarToggle)
         .frame(minWidth: 680, minHeight: 440)
         .onAppear { manager.open() }
     }
