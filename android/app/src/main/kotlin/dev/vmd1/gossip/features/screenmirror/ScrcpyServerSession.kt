@@ -24,6 +24,8 @@ import java.security.SecureRandom
  */
 class ScrcpyServerSession private constructor(
     private val serverProcess: Process,
+    /** The session's `scid`; names its processes so they can be killed even when `Process.destroy()` can't reach them. */
+    private val scid: String,
     private val relayProcess: Process,
     val deviceName: String,
     val codec: String,
@@ -103,6 +105,7 @@ class ScrcpyServerSession private constructor(
         runCatching { relayProcess.outputStream.close() }
         runCatching { relayProcess.destroy() }
         runCatching { serverProcess.destroy() }
+        killByScid(scid)
     }
 
     data class Options(
@@ -130,6 +133,32 @@ class ScrcpyServerSession private constructor(
 
     companion object {
         private const val TAG = "ScrcpyServerSession"
+
+        /**
+         * `Process.destroy()` on a Shizuku remote process doesn't always stop the shell-UID `app_process` behind it. A
+         * leaked app-window session keeps its virtual display alive and holding input focus, which breaks the phone's own
+         * back gesture. So the processes are also killed by name; the scid is eight hex digits we generated.
+         */
+        internal fun killByScid(scid: String) {
+            if (!Regex("[0-9a-f]{8}").matches(scid)) return
+            Thread({
+                runCatching {
+                    ShizukuShell.exec("sh", "-c", "pkill -f 'scid=$scid'; pkill -f 'ShellRelay scrcpy_$scid'").waitFor()
+                }.onFailure { Log.w(TAG, "couldn't kill session $scid: ${it.message}") }
+            }, "scrcpy-kill").apply { isDaemon = true }.start()
+        }
+
+        /** Kills every scrcpy session of ours (servers and relays) — for a fresh start, when none can be live. */
+        fun killAllStale() {
+            Thread({
+                runCatching {
+                    ShizukuShell.exec(
+                        "sh", "-c",
+                        "pkill -f 'com.genymobile.scrcpy.Server'; pkill -f 'dev.vmd1.gossip.features.screenmirror.ShellRelay'"
+                    ).waitFor()
+                }.onFailure { Log.w(TAG, "couldn't clear stale sessions: ${it.message}") }
+            }, "scrcpy-sweep").apply { isDaemon = true }.start()
+        }
         const val SCRCPY_VERSION = "4.1"
         private const val ASSET = "scrcpy-server-v4.1.jar"
         private const val REMOTE_JAR = "/data/local/tmp/gossip-scrcpy-server.jar"
@@ -215,7 +244,7 @@ class ScrcpyServerSession private constructor(
                     if (audioId == AUDIO_ID_RAW) audioFormat = AudioFormat()
                     else Log.w(TAG, "scrcpy audio unavailable (codec id 0x${audioId.toString(16)}); continuing video-only")
                 }
-                return ScrcpyServerSession(server, relay, name, codec, w, h, input, devPipeIn, audioInput, audioFormat)
+                return ScrcpyServerSession(server, scid, relay, name, codec, w, h, input, devPipeIn, audioInput, audioFormat)
             } catch (t: Throwable) {
                 runCatching { relay.destroy() }
                 runCatching { server.destroy() }
@@ -256,7 +285,7 @@ class ScrcpyServerSession private constructor(
                     runCatching { devPipeOut.close() }
                 }
             }, "scrcpy-ctl-demux").apply { isDaemon = true }.start()
-            return ScrcpyServerSession(server, relay, "", "", 0, 0, DataInputStream(java.io.ByteArrayInputStream(ByteArray(0))), devPipeIn, null, null)
+            return ScrcpyServerSession(server, scid, relay, "", "", 0, 0, DataInputStream(java.io.ByteArrayInputStream(ByteArray(0))), devPipeIn, null, null)
         }
 
         private fun pushJar(context: Context) {

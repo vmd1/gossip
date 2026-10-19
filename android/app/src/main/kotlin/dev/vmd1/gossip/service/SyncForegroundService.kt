@@ -1,5 +1,6 @@
 package dev.vmd1.gossip.service
 
+import kotlinx.coroutines.flow.first
 import androidx.core.graphics.drawable.toBitmap
 import android.app.Notification
 import android.app.NotificationChannel
@@ -181,6 +182,12 @@ class SyncForegroundService : Service() {
         dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.ensureHandlersRegistered()
         shizukuManager = dev.vmd1.gossip.features.hotspot.ShizukuManager(applicationContext).also { it.start() }
         setUpMessages(messageRouter, identity.deviceId)
+        // Sessions leaked by an earlier run (a crash, an update) would keep virtual displays alive and steal input focus
+        // from the real screen; none of ours can be live yet, so clear them once Shizuku is up.
+        serviceScope.launch {
+            shizukuManager?.state?.first { it == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED }
+            dev.vmd1.gossip.features.screenmirror.ScrcpyServerSession.killAllStale()
+        }
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
             transportManager = transportManager,
