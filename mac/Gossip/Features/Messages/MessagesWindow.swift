@@ -137,10 +137,13 @@ struct MessagesView: View {
         // A plain split rather than NavigationSplitView: that installs a window toolbar, which macOS keeps as an opaque strip over
         // the conversation header in full screen.
         HStack(spacing: 0) {
+            // A floating rounded panel like the system sidebar, with the traffic lights sitting inside its top.
             sidebar
+                .padding(.top, 36)
                 .frame(width: 300)
-                .background(.regularMaterial)
-            Divider()
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5))
+                .padding(10)
             detail
         }
         .frame(minWidth: 680, minHeight: 440)
