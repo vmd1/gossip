@@ -354,9 +354,16 @@ fn clipboard_recopy_after_a_remote_write_is_published_again() {
     // Copy A, receive B from a peer, copy A again: the peers still hold A's old slot value (or B), so A must go out again.
     let mut g = ClipboardGuard::new();
     let first = g.outgoing_text("me", "A", false).unwrap();
-    assert!(g.incoming_text(&ClipboardGuard::text_payload("peer", "B")).is_some());
-    let again = g.outgoing_text("me", "A", false).expect("A is a real copy again");
-    assert_ne!(first, again, "the same text must still be a new slot value, or the slot would ignore it");
+    assert!(g
+        .incoming_text(&ClipboardGuard::text_payload("peer", "B"))
+        .is_some());
+    let again = g
+        .outgoing_text("me", "A", false)
+        .expect("A is a real copy again");
+    assert_ne!(
+        first, again,
+        "the same text must still be a new slot value, or the slot would ignore it"
+    );
     // And the remote value copied again later is a real copy too.
     assert!(g.outgoing_text("me", "B", false).is_some());
 }
@@ -370,10 +377,13 @@ fn clipboard_sensitive_copy_resets_the_markers() {
         g.outgoing_text("me", "A", false).is_some(),
         "after a secret was on the clipboard, A is a real copy again"
     );
-    assert!(g.incoming_text(&ClipboardGuard::text_payload("peer", "B")).is_some());
+    assert!(g
+        .incoming_text(&ClipboardGuard::text_payload("peer", "B"))
+        .is_some());
     assert!(g.outgoing_text("me", "secret", true).is_none());
     assert!(
-        g.incoming_text(&ClipboardGuard::text_payload("peer", "B")).is_some(),
+        g.incoming_text(&ClipboardGuard::text_payload("peer", "B"))
+            .is_some(),
         "the clipboard no longer holds B, so B from the peer is written again"
     );
 }
@@ -386,8 +396,14 @@ fn clipboard_image_markers_follow_the_clipboard_too() {
     assert!(g.outgoing_image("me", &img, false).is_some());
     assert!(g.outgoing_image("me", &img, false).is_none());
     assert!(g.incoming_image(&ClipboardGuard::image_payload("peer", other.len()), &other));
-    assert!(!g.incoming_image(&ClipboardGuard::image_payload("peer", other.len()), &other), "repeat delivery");
-    assert!(g.outgoing_image("me", &img, false).is_some(), "re-copying the first image is a real copy");
+    assert!(
+        !g.incoming_image(&ClipboardGuard::image_payload("peer", other.len()), &other),
+        "repeat delivery"
+    );
+    assert!(
+        g.outgoing_image("me", &img, false).is_some(),
+        "re-copying the first image is a real copy"
+    );
 }
 
 #[test]
