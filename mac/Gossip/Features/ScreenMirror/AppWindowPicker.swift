@@ -37,6 +37,7 @@ struct AppWindowPickerView: View {
                             }
                             .frame(width: 32, height: 32).clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                             Text(app.label)
+                            if app.disabled { Text("Disabled · opens after enabling").font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                         }
                     }.buttonStyle(.plain)

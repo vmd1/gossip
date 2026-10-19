@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// Keeps the "Device Mirroring" launcher app (embedded inside `Gossip.app`) installed next to Gossip so it
+/// Keeps the "Gossip Mirroring" launcher app (embedded inside `Gossip.app`) installed next to Gossip so it
 /// shows up in Spotlight and Launchpad as its own app. An app nested in another app's bundle isn't indexed
 /// individually, so it is copied out — into `/Applications` or `~/Applications`, whichever Gossip lives in.
 ///
@@ -12,17 +12,17 @@ import CryptoKit
 /// Never touches an app it didn't put there: it only replaces a bundle whose identifier is the launcher's. The
 /// replacement is atomic, and "up to date" means the whole bundle matches the embedded one, not just its executable.
 struct LauncherInstaller {
-    static let launcherName = "Device Mirroring.app"
+    static let launcherName = "Gossip Mirroring.app"
     static let launcherBundleIdentifier = "dev.vmd1.gossip.DeviceMirroring"
 
     /// The Messages launcher, installed the same way: a tiny app that opens Gossip's Messages window.
     static let messagesLauncherName = "Gossip Messages.app"
     static let messagesLauncherBundleIdentifier = "dev.vmd1.gossip.GossipMessages"
 
-    /// Which launcher this installer manages (Device Mirroring unless told otherwise).
+    /// Which launcher this installer manages (Gossip Mirroring unless told otherwise).
     let launcherName: String
     let launcherBundleIdentifier: String
-    /// The launcher's name as shown to the user ("Device Mirroring").
+    /// The launcher's name as shown to the user ("Gossip Mirroring").
     var title: String { (launcherName as NSString).deletingPathExtension }
 
     enum Outcome: Equatable {

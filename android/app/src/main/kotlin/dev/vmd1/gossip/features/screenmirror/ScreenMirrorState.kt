@@ -42,7 +42,10 @@ class ScreenMirrorState(
     private val send: (Envelope) -> Unit,
     private val sessionFactory: (sessionId: String, options: ScrcpyServerSession.Options, onEnded: () -> Unit) -> ScreenSession,
     private val logReadyToken: Boolean = false,
-    /** Why [pkg] can't be opened as a window (`app_unavailable` / `app_disabled`), or `null` if it can. */
+    /** Runs on the launch thread just before an app window starts: enables a disabled app and wakes the screen. Returns a
+     *  `screen.error` reason (`app_enable_failed`) if the app can't be made launchable, else `null`. */
+    private val prepareApp: (String) -> String? = { null },
+    /** Why [pkg] can't be opened as a window (`app_unavailable`), or `null` if it can. */
     private val appChecker: (String) -> String? = { null },
     /** A 48 px PNG icon for [pkg], or `null`. */
     private val iconProvider: (String) -> ByteArray? = { null },
@@ -53,7 +56,7 @@ class ScreenMirrorState(
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
 ) {
     /** A launchable app: its package, label and `lastUpdateTime` (a version stamp: a changed value means a new icon may exist). */
-    data class AppInfo(val pkg: String, val label: String, val version: Long)
+    data class AppInfo(val pkg: String, val label: String, val version: Long, val disabled: Boolean = false)
 
     private class Active(val sessionId: String, val requester: String, val isApp: Boolean) {
         var session: ScreenSession? = null
@@ -131,6 +134,7 @@ class ScreenMirrorState(
                         buildJsonObject {
                             put("package", JsonPrimitive(a.pkg)); put("label", JsonPrimitive(a.label.take(MAX_LABEL)))
                             put("v", JsonPrimitive(a.version))
+                            if (a.disabled) put("disabled", JsonPrimitive(true))
                         }
                     }))
                     if (!enabled) put("reason", JsonPrimitive("feature_disabled"))
@@ -168,6 +172,7 @@ class ScreenMirrorState(
 
     private fun launchSession(entry: Active, options: ScrcpyServerSession.Options) {
         if (!shizukuReady()) return fail(entry, "shizuku_unavailable")
+        options.startApp?.let { app -> prepareApp(app)?.let { reason -> return fail(entry, reason) } }
         val session = sessionFactory(entry.sessionId, options) { onSessionEnded(entry) }
         synchronized(lock) {
             if (actives[entry.sessionId] !== entry) { session.close(); return }

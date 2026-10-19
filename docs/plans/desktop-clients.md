@@ -142,7 +142,7 @@ Mac feature → Windows / Linux, with the main obstacle.
 | Battery sync | Yes | Yes | `GetSystemPowerStatus` / UPower. |
 | Screen mirroring viewer | Yes | Yes | H.264 hardware decode via Media Foundation / GStreamer VA; raw PCM audio is trivial. The scrcpy control encoding is platform-neutral. |
 | Universal Control (source) | Feasible, **hard** | X11 feasible; **Wayland unsure** | Windows: low-level hooks, cursor hide and clamp, HID usage mapping. Linux Wayland needs the InputCapture portal; support varies by compositor and version. `PointerRouter` and `ControlLayout` move into the core; `ControlEventTap` and `SystemCursorController` are the Mac-specific parts to rewrite. |
-| Device Mirroring launcher | Yes | Yes | Mac installs a launcher app that opens `connect://mirror`; equivalent: a Start-menu shortcut plus a URL handler, or a `.desktop` file. |
+| Gossip Mirroring launcher | Yes | Yes | Mac installs a launcher app that opens `connect://mirror`; equivalent: a Start-menu shortcut plus a URL handler, or a `.desktop` file. |
 | Single-instance guard, onboarding permissions, menu-bar UI | Rewrite | Rewrite | Platform UI; no logic to reuse. |
 
 Summary: everything is portable in principle. The real risks are on the OS side: **Linux Wayland** (clipboard and input capture), **Windows DND** (undocumented), and **Universal Control as a source** on both. Protocol, trust, mesh and reconcile logic carry over wholesale through the core.

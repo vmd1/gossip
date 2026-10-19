@@ -38,7 +38,7 @@ targets:
       - path: Shared
     dependencies:
       - package: GossipCoreKit
-      # The "Device Mirroring" launcher rides inside Gossip.app (Contents/SharedSupport) and is copied
+      # The "Gossip Mirroring" launcher rides inside Gossip.app (Contents/SharedSupport) and is copied
       # out next to it on first run — see LauncherInstaller.
       - target: DeviceMirroring
         embed: true
@@ -74,7 +74,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.vmd1.gossip.DeviceMirroring
-        PRODUCT_NAME: Device Mirroring
+        PRODUCT_NAME: Gossip Mirroring
         INFOPLIST_FILE: DeviceMirroringLauncher/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

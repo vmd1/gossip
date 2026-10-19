@@ -85,13 +85,17 @@ class SyncForegroundService : Service() {
             },
             appLister = {
                 val pm = applicationContext.packageManager
+                // MATCH_DISABLED_*: disabled apps stay in the list; opening one enables it first (see prepareApp).
+                val flags = android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS or
+                    android.content.pm.PackageManager.MATCH_DISABLED_UNTIL_USED_COMPONENTS
                 pm.queryIntentActivities(
-                    android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0
-                ).filter { it.activityInfo.applicationInfo.enabled }
-                    .map {
+                    android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), flags
+                ).map {
                         val pkg = it.activityInfo.packageName
                         val version = runCatching { pm.getPackageInfo(pkg, 0).lastUpdateTime }.getOrDefault(0L)
-                        dev.vmd1.gossip.features.screenmirror.ScreenMirrorState.AppInfo(pkg, it.loadLabel(pm).toString(), version)
+                        dev.vmd1.gossip.features.screenmirror.ScreenMirrorState.AppInfo(
+                            pkg, it.loadLabel(pm).toString(), version, disabled = !it.activityInfo.applicationInfo.enabled
+                        )
                     }
                     .filter { it.pkg != packageName }
                     .distinctBy { it.pkg }
@@ -99,12 +103,23 @@ class SyncForegroundService : Service() {
             },
             appChecker = { pkg ->
                 val pm = applicationContext.packageManager
-                val info = runCatching { pm.getApplicationInfo(pkg, 0) }.getOrNull()
-                when {
-                    info == null || pm.getLaunchIntentForPackage(pkg) == null -> "app_unavailable"
-                    !info.enabled -> "app_disabled"
-                    else -> null
+                val info = runCatching { pm.getApplicationInfo(pkg, android.content.pm.PackageManager.MATCH_DISABLED_COMPONENTS) }.getOrNull()
+                // A disabled app has no launcher intent until it is enabled, so only an enabled one is checked for it.
+                if (info == null || (info.enabled && pm.getLaunchIntentForPackage(pkg) == null)) "app_unavailable" else null
+            },
+            prepareApp = { pkg ->
+                val pm = applicationContext.packageManager
+                val enabled = runCatching { pm.getApplicationInfo(pkg, 0).enabled }.getOrDefault(false)
+                var reason: String? = null
+                if (!enabled) {
+                    // Enable it for the user (shell UID, through Shizuku), like `pm enable --user 0 <pkg>`.
+                    val ok = runCatching { dev.vmd1.gossip.features.screenmirror.ShizukuShell.exec("pm", "enable", "--user", "0", pkg).waitFor() == 0 }
+                        .getOrDefault(false)
+                    if (!ok) reason = "app_enable_failed"
                 }
+                // Wake the screen so the app's launch is visible and not held behind a dark display.
+                dev.vmd1.gossip.features.screenmirror.ScreenOff.wake()
+                reason
             },
             iconProvider = { pkg ->
                 runCatching {

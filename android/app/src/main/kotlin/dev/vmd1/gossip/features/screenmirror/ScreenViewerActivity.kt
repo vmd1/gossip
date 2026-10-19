@@ -110,6 +110,12 @@ class ScreenViewerActivity : Activity(), ScreenViewerSession.Listener, SurfaceHo
         session = ScreenViewerSession(transport, IdentityKeyStore.getInstance(this).deviceId, deviceId, deviceName, scope, this).also { it.start() }
     }
 
+    /** Back always closes this screen. (Spelled out so it can never fall through to "move the task to the background".) */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        finish()
+    }
+
     override fun onDestroy() {
         finishedByUs = true
         session?.stop()

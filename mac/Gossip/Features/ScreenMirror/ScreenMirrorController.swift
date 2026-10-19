@@ -35,6 +35,8 @@ final class ScreenMirrorController: ObservableObject {
         let package: String
         let label: String
         var version: Int64 = 0
+        /// Disabled on the phone; opening it enables it first.
+        var disabled = false
         var id: String { package }
     }
 
@@ -230,7 +232,7 @@ final class ScreenMirrorController: ObservableObject {
             guard !disabled else { return }
             let apps: [PhoneApp] = envelope.payload["apps"]?.arrayValue?.compactMap { item in
                 guard let pkg = item["package"]?.stringValue, let label = item["label"]?.stringValue else { return nil }
-                return PhoneApp(package: pkg, label: label, version: Int64(item["v"]?.numberValue ?? 0))
+                return PhoneApp(package: pkg, label: label, version: Int64(item["v"]?.numberValue ?? 0), disabled: item["disabled"]?.boolValue ?? false)
             } ?? []
             appsByDevice[envelope.senderId] = apps // the phone's list is the truth: uninstalled apps drop out
             catalog.replaceApps(apps.map { AppCatalogCache.Entry(package: $0.package, label: $0.label, version: $0.version) }, for: envelope.senderId)
@@ -283,8 +285,8 @@ final class ScreenMirrorController: ObservableObject {
             return "Screen mirroring is turned off on \(deviceName). Turn it on in Gossip's settings there."
         case "capture_failed":
             return "\(deviceName) couldn't start screen capture. Check Shizuku and try again."
-        case "app_disabled":
-            return "\(app ?? "That app") is disabled on \(deviceName), so it can't be opened. Enable it in Android's app settings."
+        case "app_enable_failed":
+            return "\(app ?? "That app") is disabled on \(deviceName) and Gossip couldn't enable it. Enable it in Android's app settings."
         case "app_unavailable":
             return "\(app ?? "That app") can't be opened on \(deviceName) (it was uninstalled or has no launcher)."
         default:

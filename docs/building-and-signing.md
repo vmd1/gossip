@@ -27,7 +27,7 @@ xcodegen generate
 xcodebuild -project Gossip.xcodeproj -scheme Gossip -configuration Release -destination 'platform=macOS' build
 ```
 
-  - the output is `Gossip.app` (it contains the Device Mirroring launcher app)
+  - the output is `Gossip.app` (it contains the Gossip Mirroring launcher app)
   - re-run `xcodegen generate` after adding or removing files or editing `project.yml`
 - **Android**
 

@@ -156,13 +156,13 @@ private struct SettingsView: View {
                             LauncherSetup.ensureInstalled()
                             if case .notApplicable(let reason) = LauncherInstaller().status() { launcherMessage = reason } else { launcherMessage = nil }
                         } else {
-                            launcherMessage = "To remove it, delete “Device Mirroring” from your Applications folder."
+                            launcherMessage = "To remove it, delete “Gossip Mirroring” from your Applications folder."
                         }
                     }
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Device Mirroring app")
-                        Text("Keeps a “Device Mirroring” app next to Gossip so you can open the device list from Spotlight or Launchpad.")
+                        Text("Gossip Mirroring app")
+                        Text("Keeps a “Gossip Mirroring” app next to Gossip so you can open the device list from Spotlight or Launchpad.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

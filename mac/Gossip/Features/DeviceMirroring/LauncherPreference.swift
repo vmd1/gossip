@@ -31,6 +31,7 @@ extension LauncherInstaller {
 enum LauncherSetup {
     /// Installs or repairs the launcher if it is missing, outdated or quarantined. Fire-and-forget.
     static func ensureInstalled(installer: LauncherInstaller = LauncherInstaller()) {
+        removeRenamedLauncher(installer)
         switch installer.status() {
         case .missing, .outdated, .quarantined: break
         case .current, .notApplicable: return
@@ -38,5 +39,17 @@ enum LauncherSetup {
         DispatchQueue.global(qos: .utility).async {
             NSLog("Gossip: \(installer.title) launcher install -> \(installer.install())")
         }
+    }
+}
+
+extension LauncherSetup {
+    /// The mirroring launcher used to be called "Device Mirroring". Remove that old copy (only if it really is our launcher)
+    /// so Spotlight doesn't list two.
+    static func removeRenamedLauncher(_ installer: LauncherInstaller) {
+        guard installer.launcherName == LauncherInstaller.launcherName,
+              let dir = installer.destinationDirectory else { return }
+        let old = dir.appendingPathComponent("Device Mirroring.app")
+        guard LauncherInstaller.bundleIdentifier(of: old) == installer.launcherBundleIdentifier else { return }
+        try? FileManager.default.removeItem(at: old)
     }
 }

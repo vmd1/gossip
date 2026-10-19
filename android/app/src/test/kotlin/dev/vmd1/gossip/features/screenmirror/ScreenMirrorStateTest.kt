@@ -33,6 +33,7 @@ class ScreenMirrorStateTest {
     private var failStart = false
     private var screenEnabled = true
 
+    private val prepared = CopyOnWriteArrayList<String>()
     private val capturedOptions = CopyOnWriteArrayList<ScrcpyServerSession.Options>()
 
     private fun state() = ScreenMirrorState(
@@ -43,7 +44,8 @@ class ScreenMirrorStateTest {
         sessionFactory = { id, options, _ -> capturedOptions.add(options); FakeSession(id, failStart).also { sessions.add(it) } },
         appLister = { listOf(ScreenMirrorState.AppInfo("com.example.notes", "Notes", 5L), ScreenMirrorState.AppInfo("org.demo.maps", "Maps", 9L)) },
         iconProvider = { byteArrayOf(1, 2, 3) },
-        appChecker = { pkg -> if (pkg == "com.example.off") "app_disabled" else null },
+        appChecker = { pkg -> if (pkg == "com.example.gone") "app_unavailable" else null },
+        prepareApp = { pkg -> prepared.add(pkg); if (pkg == "com.example.stuck") "app_enable_failed" else null },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
     )
@@ -268,12 +270,36 @@ class ScreenMirrorStateTest {
         assertEquals(0, sessions[1].closed)
     }
 
-    @Test fun aDisabledAppIsRefusedWithAReasonAndStartsNothing() {
+    @Test fun anUninstalledAppIsRefusedWithAReasonAndStartsNothing() {
         val s = state()
-        s.onScreenStart(appStart("x", "com.example.off"))
+        s.onScreenStart(appStart("x", "com.example.gone"))
         awaitSent(1)
-        assertEquals("app_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals("app_unavailable", sent[0].payload["reason"]!!.jsonPrimitive.content)
         assertEquals(0, sessions.size)
+        assertTrue(prepared.isEmpty())
+    }
+
+    @Test fun anAppIsPreparedBeforeItsSessionStarts() {
+        val s = state()
+        s.onScreenStart(appStart("p", "com.example.sleepy"))
+        awaitSent(1)
+        assertEquals(listOf("com.example.sleepy"), prepared.toList())
+        assertEquals(MessageType.SCREEN_READY, sent[0].type)
+    }
+
+    @Test fun anAppThatCantBeEnabledIsReportedAndStartsNothing() {
+        val s = state()
+        s.onScreenStart(appStart("q", "com.example.stuck"))
+        awaitSent(1)
+        assertEquals("app_enable_failed", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals(0, sessions.size)
+    }
+
+    @Test fun aWholeScreenMirrorPreparesNoApp() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "w"))
+        awaitSent(1)
+        assertTrue(prepared.isEmpty())
     }
 
     @Test fun onlyMissingOrChangedIconsAreSent() {

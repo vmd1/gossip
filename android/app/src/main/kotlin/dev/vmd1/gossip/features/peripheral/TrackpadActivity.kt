@@ -159,6 +159,12 @@ class TrackpadActivity : Activity() {
         suppress = false
     }
 
+    /** Back always closes this screen. (Spelled out so it can never fall through to "move the task to the background".) */
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        finish()
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(flusher)
         sender?.flush(); sender?.close()

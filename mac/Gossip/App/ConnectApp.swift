@@ -103,7 +103,7 @@ struct ConnectApp: App {
         transport.start()
         notificationMirror.requestAuthorizationIfNeeded()
 
-        // Keep the "Device Mirroring" launcher app (embedded in this app) installed next to Gossip.
+        // Keep the "Gossip Mirroring" launcher app (embedded in this app) installed next to Gossip.
         if LauncherPreference.autoInstall {
             LauncherSetup.ensureInstalled()
         }
@@ -158,7 +158,7 @@ struct ConnectApp: App {
                     // Sent by the "Gossip Messages" launcher app: show the Messages window.
                     MessagesWindow.show(manager: messagesManager)
                 } else if url.host == "mirror" {
-                    // Sent by the "Device Mirroring" launcher app: show the device-list window.
+                    // Sent by the "Gossip Mirroring" launcher app: show the device-list window.
                     deviceMirroringWindowBox.show {
                         DeviceMirroringView(
                             trustedDevicesStore: TrustedDevicesStore.shared,
