@@ -83,8 +83,17 @@ final class ClipboardSyncManager: ObservableObject {
         let pasteboard = NSPasteboard.general
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount // also while disabled, so re-enabling doesn't send a stale copy
+        // The history is its own feature (device-local, own switch): it records every genuine local copy whether or not
+        // clipboard sync is on, and whether or not the sync guard would suppress it as a repeat.
+        recordLocalCopyInHistory()
         guard FeatureSettings.shared.isEnabled(.clipboard) else { return }
         sendCurrentPasteboardContentIfNeeded()
+    }
+
+    private func recordLocalCopyInHistory() {
+        let pasteboard = NSPasteboard.general
+        guard !Self.isSensitive(types: pasteboard.types), let text = pasteboard.string(forType: .string) else { return }
+        ClipboardHistoryStore.shared.record(text, remote: false)
     }
 
     /// Publishes whatever is currently on the pasteboard (if anything, and if it isn't just the echo of a remote update we
@@ -100,7 +109,6 @@ final class ClipboardSyncManager: ObservableObject {
         if let text = pasteboard.string(forType: .string) {
             if let value = guardLogic.outgoingText(me: identity.deviceId, text: text, sensitive: sensitive) {
                 transportManager.setState(slot: GossipCoreKit.clipboardTextSlot(), valueJSON: value)
-                ClipboardHistoryStore.shared.record(text, remote: false)
             }
             return
         }
@@ -128,10 +136,12 @@ final class ClipboardSyncManager: ObservableObject {
     func handleIncomingText(valueJSON: String) {
         guard let text = try? guardLogic.incomingText(payloadJson: valueJSON) else { return }
 
+        ClipboardHistoryStore.shared.record(text, remote: true)
         let pasteboard = NSPasteboard.general
+        // Already there (e.g. the same text copied on both devices): leave the pasteboard alone instead of rewriting it.
+        if pasteboard.string(forType: .string) == text { lastChangeCount = pasteboard.changeCount; return }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-        ClipboardHistoryStore.shared.record(text, remote: true)
 
         // Record the resulting changeCount so our own poll doesn't treat this as a new local copy and echo it back.
         lastChangeCount = pasteboard.changeCount
