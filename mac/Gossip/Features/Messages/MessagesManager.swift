@@ -212,6 +212,12 @@ final class MessagesManager: ObservableObject {
 
     func showError(_ text: String) { error = text }
 
+    /// The conversation with `address` on `phoneId`, if one exists (numbers compare regardless of formatting).
+    func thread(forAddress address: String, phoneId: String) -> MessageThread? {
+        let n = ContactMatching.normalize(address)
+        return threads.first { $0.phoneId == phoneId && ContactMatching.normalize($0.address) == n }
+    }
+
     func startComposing() {
         openThreadId = nil
         messages = []
