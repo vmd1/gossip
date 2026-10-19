@@ -306,12 +306,14 @@ private struct ThreadRow: View {
 enum MessagesWindow {
     private static var window: NSWindow?
     private static let closeObserver = CloseObserver()
+    fileprivate static weak var manager: MessagesManager?
 
     private final class CloseObserver: NSObject, NSWindowDelegate {
         func windowWillClose(_ notification: Notification) {
             // Back to a menu-bar app: no Dock icon, and the default icon again.
             NSApp.applicationIconImage = nil
             NSApp.setActivationPolicy(.accessory)
+            MessagesWindow.manager?.close()
         }
     }
 
@@ -322,6 +324,7 @@ enum MessagesWindow {
     }
 
     static func show(manager: MessagesManager) {
+        self.manager = manager
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
                              styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -334,6 +337,7 @@ enum MessagesWindow {
             w.center()
             window = w
         }
+        manager.open() // also when the window is re-shown after being closed
         NSApp.setActivationPolicy(.regular)
         if let icon { NSApp.applicationIconImage = icon }
         window?.makeKeyAndOrderFront(nil)

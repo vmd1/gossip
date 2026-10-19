@@ -87,6 +87,10 @@ final class MessagesManager: ObservableObject {
     private var retryTimer: Timer?
     /// Set after sending to a new number from the composer, so the conversation opens once the phone lists it.
     private var openAddressWhenListed: String?
+    /// `true` while the Messages window is open: connection changes and a periodic tick then refresh the list.
+    private var isOpen = false
+    private var cancellables = Set<AnyCancellable>()
+    private var refreshTimer: Timer?
 
     private struct PendingSend { let address: String; let body: String; let to: String; var tries: Int; var lastSent: Date; let messageId: String }
 
@@ -100,6 +104,12 @@ final class MessagesManager: ObservableObject {
             guard change.slot == "messages.state" else { return }
             DispatchQueue.main.async { self?.stateChanged(from: change.deviceId) }
         }
+        // A phone that connects (or reconnects) after the window opened must not leave "isn't connected" on screen.
+        Publishers.Merge3(transport.$connectedDeviceIds.map { _ in () }, transport.$meshReachableDeviceIds.map { _ in () },
+                          transport.$relayedDeviceIds.map { _ in () })
+            .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
+            .sink { [weak self] in if self?.isOpen == true { self?.refreshThreads() } }
+            .store(in: &cancellables)
     }
 
     /// Paired phones, connected ones first.
@@ -118,15 +128,33 @@ final class MessagesManager: ObservableObject {
 
     /// Loads the conversation list from every connected phone.
     func open() {
+        isOpen = true
+        // Self-healing: a reply or connection change can be missed, so the list is also re-requested every 15 s while open
+        // (a repeat request just gets a fresh answer).
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            if self?.isOpen == true { self?.refreshThreads() }
+        }
         if composePhoneId == nil || !phones.contains(where: { $0.deviceId == composePhoneId }) { composePhoneId = reachablePhones.first?.deviceId ?? phones.first?.deviceId }
         refreshThreads()
+    }
+
+    /// The Messages window closed: stop refreshing in the background.
+    func close() {
+        isOpen = false
+        refreshTimer?.invalidate(); refreshTimer = nil
     }
 
     func refreshThreads() {
         guard FeatureSettings.shared.isEnabled(.messages) else { error = "Messages is turned off in Gossip's Settings on this Mac."; return }
         guard !phones.isEmpty else { error = "No paired phone."; return }
         let targets = reachablePhones
-        guard !targets.isEmpty else { error = "Your phone isn't connected."; loading = false; return }
+        guard !targets.isEmpty else {
+            // Not an error yet: Gossip may have just started. The connection observer refreshes as soon as a phone appears.
+            error = threads.isEmpty ? "Connecting to your phone…" : "Your phone isn't connected. Showing the last conversations."
+            loading = false
+            return
+        }
         error = nil; loading = true
         for phone in targets {
             let id = UUID().uuidString
