@@ -36,6 +36,11 @@ Direct on your local network, optionally relayed (end-to-end encrypted) when you
 | 🔒 | **Lock on leave** | Lock a Mac or tablet when your phone walks out of Bluetooth range. |
 | 📍 | **Find my device** | Make a paired device ring at full volume. |
 | 🔋 | **Battery sync** | See every device's battery, with low-battery alerts. |
+| 💬 | **Messages** | A native Mac app for your phone's SMS conversations, with contact names, replies and a cache so it opens instantly. SMS only for now. |
+| 🪟 | **Android apps as Mac windows** | Open a phone app as its own Mac window on a virtual display, so the phone's screen stays free. *Needs Shizuku.* |
+| ⌨️ | **Phone as trackpad and keyboard** | Use the phone as a trackpad and keyboard for the Mac. |
+| 🕘 | **Clipboard history** | Searchable, pinnable history of what you copied, kept on each device only. |
+| 🔁 | **Android to Android mirroring** | Mirror and control a phone or tablet from another Android device. |
 | 🛡️ | **Multi-device trust** | Pair two devices once and every device they already trust learns about the new one. |
 
 <p align="center">
