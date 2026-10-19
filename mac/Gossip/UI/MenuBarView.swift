@@ -16,6 +16,7 @@ struct MenuBarView: View {
     @ObservedObject var batterySyncManager: BatterySyncManager
     @ObservedObject var featureSettings: FeatureSettings
     let clipboardSync: ClipboardSyncManager
+    let messagesManager: MessagesManager
 
     @State private var settingsWindow: SettingsWindow?
     @State private var deviceSettingsWindow: DeviceSettingsWindow?
@@ -90,6 +91,11 @@ struct MenuBarView: View {
                     NSApplication.shared.terminate(nil)
                 }
                 Spacer()
+                if featureSettings.isEnabled(.messages) {
+                    Button { MessagesWindow.show(manager: messagesManager) } label: { Image(systemName: "message") }
+                        .buttonStyle(.borderless)
+                        .help("Messages…")
+                }
                 Button {
                     ClipboardHistoryWindow.show { [clipboardSync] text in clipboardSync.copyFromHistory(text) }
                 } label: {

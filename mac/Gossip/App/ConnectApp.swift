@@ -23,6 +23,7 @@ struct ConnectApp: App {
     /// Shares this Mac's BLE beacon key (a direct-only state slot) and stores peers'; held for its handlers.
     private let beaconKeyManager: BeaconKeyManager
     private let phoneInputManager: PhoneInputManager
+    private let messagesManager: MessagesManager
     @StateObject private var ringManager: RingManager
     @StateObject private var batterySyncManager: BatterySyncManager
     private let deviceMirroringWindowBox = DeviceMirroringWindowBox()
@@ -71,6 +72,7 @@ struct ConnectApp: App {
         beaconKeyManager = BeaconKeyManager(transportManager: transport)
         phoneInputManager = PhoneInputManager()
         phoneInputManager.register(on: transport.router)
+        messagesManager = MessagesManager(transport: transport, devices: TrustedDevicesStore.shared)
         let bleMonitor = BLEProximityMonitor(trustedDevicesStore: TrustedDevicesStore.shared)
         _bleProximityMonitor = StateObject(wrappedValue: bleMonitor)
         _hotspotStateManager = StateObject(wrappedValue: HotspotStateManager(transportManager: transport))
@@ -253,7 +255,8 @@ struct ConnectApp: App {
                 ringManager: ringManager,
                 batterySyncManager: batterySyncManager,
                 featureSettings: FeatureSettings.shared,
-                clipboardSync: clipboardSyncManager
+                clipboardSync: clipboardSyncManager,
+                messagesManager: messagesManager
             )
         }
         .menuBarExtraStyle(.window)

@@ -57,6 +57,8 @@ class SyncForegroundService : Service() {
     private lateinit var bleProximityMonitor: BLEProximityMonitor
     private lateinit var lockOnLeaveManager: LockOnLeaveManager
     private var shizukuManager: dev.vmd1.gossip.features.hotspot.ShizukuManager? = null
+    private var messagesBridge: dev.vmd1.gossip.features.messages.MessagesBridge? = null
+    private var smsObserver: android.database.ContentObserver? = null
     private var hotspotGattServer: dev.vmd1.gossip.features.hotspot.HotspotGattServer? = null
     private lateinit var hotspotStateManager: dev.vmd1.gossip.features.hotspot.HotspotStateManager
     private lateinit var ringManager: dev.vmd1.gossip.features.find.RingManager
@@ -142,6 +144,7 @@ class SyncForegroundService : Service() {
         // its reply/dismiss handlers now.
         dev.vmd1.gossip.features.notifications.NotificationListenerImpl.active?.ensureHandlersRegistered()
         shizukuManager = dev.vmd1.gossip.features.hotspot.ShizukuManager(applicationContext).also { it.start() }
+        setUpMessages(messageRouter, identity.deviceId)
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,
             transportManager = transportManager,
@@ -592,6 +595,7 @@ class SyncForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        smsObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         mediaControlBridge.stop()
         dndSyncManager.stop()
         clipboardSyncManager.stop()
@@ -607,6 +611,29 @@ class SyncForegroundService : Service() {
         NotificationMirrorReceiver.instance = null
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    /** The phone side of the Messages app: off until the user turns it on in Settings, and serving SMS only. */
+    private fun setUpMessages(router: MessageRouter, selfId: String) {
+        val settings = dev.vmd1.gossip.features.messages.MessagesSettings.getInstance(applicationContext)
+        val bridge = dev.vmd1.gossip.features.messages.MessagesBridge(
+            selfId = selfId,
+            scope = serviceScope,
+            backend = dev.vmd1.gossip.features.messages.SmsBackend(applicationContext),
+            send = { envelope -> serviceScope.launch { runCatching { transportManager.send(envelope) } } },
+            publishState = { state -> transportManager.setState(dev.vmd1.gossip.features.messages.MessagesBridge.SLOT, state) },
+            isEnabled = { settings.enabled.value },
+        )
+        messagesBridge = bridge
+        bridge.register(router)
+        bridge.start()
+        // A new or changed SMS publishes the new state right away (the 60 s resync covers anything missed).
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) = bridge.notifyChanged().let { }
+        }
+        runCatching { contentResolver.registerContentObserver(android.provider.Telephony.Sms.CONTENT_URI, true, observer) }
+        smsObserver = observer
+        serviceScope.launch { settings.enabled.collect { bridge.notifyChanged() } }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

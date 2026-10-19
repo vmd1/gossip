@@ -20,10 +20,12 @@ pub enum Feature {
     UniversalControl,
     /// A paired phone acting as this computer's trackpad and keyboard (`peripheral.`).
     PhoneInput,
+    /// The Messages app: a Mac reading and sending a paired phone's text messages (`messages.`).
+    Messages,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 11] = [
+    pub const ALL: [Feature; 12] = [
         Feature::Clipboard,
         Feature::Dnd,
         Feature::Notifications,
@@ -35,6 +37,7 @@ impl Feature {
         Feature::Battery,
         Feature::UniversalControl,
         Feature::PhoneInput,
+        Feature::Messages,
     ];
 
     /// The stable key used to persist the toggle (`feature.<key>.enabled`).
@@ -51,6 +54,7 @@ impl Feature {
             Feature::Battery => "battery",
             Feature::UniversalControl => "universalControl",
             Feature::PhoneInput => "phoneInput",
+            Feature::Messages => "messages",
         }
     }
 
@@ -73,6 +77,7 @@ impl Feature {
             Feature::Battery => &["battery."],
             Feature::UniversalControl => &["control."],
             Feature::PhoneInput => &["peripheral."],
+            Feature::Messages => &["messages."],
         }
     }
 

@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- BLE proximity primitive (see docs/ble-proximity-protocol.md). Pre-Android-12 needs
          the old BLUETOOTH/BLUETOOTH_ADMIN pair plus location (BLE scan results were treated

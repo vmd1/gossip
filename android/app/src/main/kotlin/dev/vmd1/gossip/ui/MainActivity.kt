@@ -469,6 +469,11 @@ fun ConnectHomeScreen(
                         settingsPage = SettingsPage.NOTIFICATIONS
                     }
                 }
+                if (isPhone) {
+                    SettingsMenuRow("Messages", "Let your Mac read and send this phone's text messages") {
+                        settingsPage = SettingsPage.MESSAGES
+                    }
+                }
                 SettingsMenuRow("Clipboard history", "Search and pin what you copied on this device") {
                     settingsPage = SettingsPage.CLIPBOARD_HISTORY
                 }
@@ -528,6 +533,10 @@ fun ConnectHomeScreen(
 
             SettingsPage.NOTIFICATION_APPS -> SettingsPageScaffold("Forwarded apps", onBack = { settingsPage = page.parent }, scroll = false) {
                 NotificationAppsContent()
+            }
+
+            SettingsPage.MESSAGES -> SettingsPageScaffold("Messages", onBack = { settingsPage = page.parent }) {
+                MessagesSettingsContent()
             }
 
             SettingsPage.CLIPBOARD_HISTORY -> {

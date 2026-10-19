@@ -59,6 +59,7 @@ enum class SettingsPage(val parent: SettingsPage?) {
     RELAY(ROOT),
     HOTSPOT(ROOT),
     CLIPBOARD_HISTORY(ROOT),
+    MESSAGES(ROOT),
     PERMISSIONS(ROOT)
 }
 
@@ -282,5 +283,44 @@ fun ColumnScope.ClipboardHistoryContent(onCopy: (String) -> Unit) {
             confirmButton = { TextButton(onClick = { store.clear(); confirmClear = false }) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
         )
+    }
+}
+
+/** Settings → Messages: lets a paired Mac read and send this phone's SMS. Off by default; asks for the SMS and contacts permissions. */
+@Composable
+fun ColumnScope.MessagesSettingsContent() {
+    val context = LocalContext.current
+    val settings = remember { dev.vmd1.gossip.features.messages.MessagesSettings.getInstance(context) }
+    val enabled by settings.enabled.collectAsState()
+    val permissions = arrayOf(
+        android.Manifest.permission.READ_SMS, android.Manifest.permission.SEND_SMS, android.Manifest.permission.READ_CONTACTS
+    )
+    fun smsGranted() = context.checkSelfPermission(android.Manifest.permission.READ_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+        context.checkSelfPermission(android.Manifest.permission.SEND_SMS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var granted by remember { mutableStateOf(smsGranted()) }
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { granted = smsGranted() }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text("Let my paired Mac use my text messages", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "The Mac can list conversations, read them and send texts through this phone. SMS only (no MMS or RCS). " +
+                    "Message text travels only over your encrypted Gossip connection. Off by default.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = { settings.setEnabled(it) })
+    }
+    if (enabled && !granted) {
+        Text("Gossip needs permission to read and send SMS (and read contacts to show names).", style = MaterialTheme.typography.bodySmall)
+        androidx.compose.material3.Button(onClick = { launcher.launch(permissions) }) { Text("Grant permissions") }
+    } else if (enabled) {
+        Text("Ready. Open Messages from the Gossip menu on your Mac.", style = MaterialTheme.typography.bodySmall)
     }
 }

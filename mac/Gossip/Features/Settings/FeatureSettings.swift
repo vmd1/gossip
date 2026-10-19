@@ -6,10 +6,10 @@ import Combine
 /// for it are never sent and incoming ones are dropped (see `isMessageAllowed`), plus local
 /// triggers that don't go through messages (e.g. Lock-on-Leave's BLE trigger) are skipped.
 enum Feature: String, CaseIterable, Identifiable {
-    case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot, findDevice, battery, universalControl, phoneInput
+    case clipboard, dnd, notifications, media, screenMirroring, lockOnLeave, hotspot, findDevice, battery, universalControl, phoneInput, messages
 
     /// Features that start switched off: letting a paired phone type and click on this Mac is something to opt in to.
-    static let offByDefault: Set<Feature> = [.phoneInput]
+    static let offByDefault: Set<Feature> = [.phoneInput, .messages]
 
     var id: String { rawValue }
 
@@ -26,6 +26,7 @@ enum Feature: String, CaseIterable, Identifiable {
         case .battery: return "Battery sync"
         case .universalControl: return "Universal Control"
         case .phoneInput: return "Phone as trackpad & keyboard"
+        case .messages: return "Messages"
         }
     }
 
@@ -42,6 +43,7 @@ enum Feature: String, CaseIterable, Identifiable {
         case .battery: return "Share this Mac's battery level and get low-battery alerts for paired devices."
         case .universalControl: return "Push the pointer off a screen edge to use this Mac's mouse and keyboard on your tablets and phones."
         case .phoneInput: return "Let a paired phone move the pointer, click, scroll and type on this Mac. Off by default; needs Accessibility."
+        case .messages: return "Read and send your phone's text messages (SMS) from this Mac. Off by default; also needs turning on in Gossip on the phone."
         }
     }
 
@@ -61,6 +63,7 @@ enum Feature: String, CaseIterable, Identifiable {
         case .battery: return ["battery."]
         case .universalControl: return ["control."]
         case .phoneInput: return ["peripheral."]
+        case .messages: return ["messages."]
         }
     }
 }
