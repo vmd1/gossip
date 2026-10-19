@@ -149,12 +149,19 @@ struct MessagesView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 12))
-                TextField("Search", text: $query).textFieldStyle(.plain)
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 12))
+                    TextField("Search", text: $query).textFieldStyle(.plain)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5)))
+                // The window toolbar is hidden with the title bar, so the new-message button lives here.
+                Button { composeTo = ""; pickedNumber = nil; manager.startComposing() } label: {
+                    Image(systemName: "square.and.pencil").font(.system(size: 14))
+                }
+                .buttonStyle(.plain).help("New Message")
             }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .quaternaryLabelColor).opacity(0.5)))
             .padding(.horizontal, 10).padding(.vertical, 8)
 
             List(selection: Binding(get: { manager.openThreadId }, set: { manager.openThread($0) })) {
@@ -351,8 +358,18 @@ struct MessagesView: View {
     private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !recipient.isEmpty && phoneId != nil }
 
     private func sendDraft() {
-        guard canSend, let phoneId else { return }
-        manager.send(body: draft, to: recipient, via: phoneId)
+        guard canSend, var phoneId else { return }
+        var to = recipient
+        if composing, pickedNumber == nil, !isPhoneNumber(to) {
+            // A name was typed instead of picked from the suggestions: use the best matching contact.
+            guard let match = manager.suggestions(for: to).first else {
+                manager.showError("No contact matches \"\(to)\". Pick one from the suggestions or type a phone number.")
+                return
+            }
+            to = match.number; phoneId = match.phoneId
+            composeTo = match.contact.name; pickedNumber = match.number; manager.composePhoneId = match.phoneId
+        }
+        manager.send(body: draft, to: to, via: phoneId)
         draft = ""
     }
 }

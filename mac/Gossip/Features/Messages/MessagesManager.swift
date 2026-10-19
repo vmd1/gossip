@@ -210,6 +210,8 @@ final class MessagesManager: ObservableObject {
         }
     }
 
+    func showError(_ text: String) { error = text }
+
     func startComposing() {
         openThreadId = nil
         messages = []
