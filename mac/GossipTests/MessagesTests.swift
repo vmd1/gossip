@@ -95,4 +95,19 @@ final class ContactsTests: XCTestCase {
         cache.save(.init(digest: "x", contacts: [ann]), for: "../escape")
         XCTAssertNil(cache.load("../escape"))
     }
+
+    func testMessagesCacheRoundTripsAndSkipsUnconfirmed() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("msgcache-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = MessagesCache(root: dir)
+        let thread = MessageThread(id: "p|1", phoneId: "p", phoneName: "Phone", remoteId: "1", address: "+447700900123", name: "Ann",
+                                   snippet: "hi", date: Date(timeIntervalSince1970: 1000), outgoing: false, unread: 2)
+        cache.saveThreads([thread], for: "p")
+        XCTAssertEqual(MessagesCache(root: dir).loadThreads("p"), [thread])
+        let sent = ChatMessage(id: "m1", date: Date(timeIntervalSince1970: 1), outgoing: true, body: "yo")
+        cache.saveMessages([sent, ChatMessage(id: "local-x", date: Date(), outgoing: true, body: "pending", sending: true)], for: "p|1")
+        XCTAssertEqual(cache.loadMessages("p|1"), [sent])
+        XCTAssertEqual(cache.loadThreads("nobody"), [])
+    }
 }

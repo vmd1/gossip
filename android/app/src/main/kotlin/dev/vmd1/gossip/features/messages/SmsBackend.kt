@@ -84,8 +84,9 @@ class SmsBackend(private val context: Context, private val sentLog: SentLog = Se
         }
         val norm = address?.let(SmsThreading::normalize)
         if (norm != null) {
-            sentLog.all().filter { SmsThreading.normalize(it.address) == norm && (before == null || it.date < before) }
-                .forEach { out += ChatMessage(it.id, it.date, true, it.body) }
+            val sent = sentLog.all().filter { SmsThreading.normalize(it.address) == norm && (before == null || it.date < before) }
+                .map { ChatMessage(it.id, it.date, true, it.body) }
+            out += SmsThreading.withoutEchoes(sent, out.toList()) // the provider may already hold what we sent
         }
         return out.sortedByDescending { it.date }.take(limit)
     }

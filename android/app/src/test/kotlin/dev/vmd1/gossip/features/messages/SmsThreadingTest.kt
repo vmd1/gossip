@@ -30,4 +30,12 @@ class SmsThreadingTest {
         assertFalse(SmsThreading.isPlausibleAddress("12"))
         assertFalse(SmsThreading.isPlausibleAddress("5551234; DROP"))
     }
+
+    @Test
+    fun `a sent-log message the provider already recorded is not shown twice`() {
+        val provider = listOf(ChatMessage("sms-9", 10_000, true, "hello"), ChatMessage("sms-8", 5_000, false, "hi"))
+        val sent = listOf(ChatMessage("gossip-1", 10_500, true, "hello"), ChatMessage("gossip-2", 900_000, true, "hello"))
+        assertEquals(listOf("gossip-2"), SmsThreading.withoutEchoes(sent, provider).map { it.id })
+        assertEquals(sent, SmsThreading.withoutEchoes(sent, emptyList()))
+    }
 }

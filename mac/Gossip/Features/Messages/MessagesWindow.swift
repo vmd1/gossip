@@ -172,12 +172,8 @@ struct MessagesView: View {
                 }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button { manager.startComposing() } label: { Image(systemName: "square.and.pencil") }
-                    .help("New Message")
-            }
-        }
+        // ⌘N starts a new message (the window has no toolbar: in full screen it would show as an opaque strip over the header).
+        .background(Button("New Message") { composeTo = ""; pickedNumber = nil; manager.startComposing() }.keyboardShortcut("n").opacity(0).allowsHitTesting(false))
     }
 
     private var filtered: [MessageThread] {
@@ -239,10 +235,6 @@ struct MessagesView: View {
                 Divider()
                 suggestionList
             }
-            if let error = manager.error {
-                Text(error).font(.callout).foregroundStyle(.white).padding(8).frame(maxWidth: .infinity)
-                    .background(MessagesStyle.failed)
-            }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) { conversation }
@@ -258,7 +250,18 @@ struct MessagesView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .overlay(alignment: .top) { conversationHeader.ignoresSafeArea(.container, edges: .top) }
+        .overlay(alignment: .top) {
+            // Below the floating header, which would otherwise cover it.
+            if let error = manager.error {
+                Text(error).font(.callout).foregroundStyle(.white).multilineTextAlignment(.center).padding(8).frame(maxWidth: .infinity)
+                    .background(MessagesStyle.failed, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.horizontal, 16).padding(.top, composing ? 80 : 60)
+            }
+        }
     }
+
+    /// How far the avatar sits below its natural spot, overlapping the name capsule more (points).
+    private static let avatarDrop: CGFloat = 8
 
     /// The avatar over a glass name capsule, centred at the top of the conversation where the title bar is, like Apple's
     /// Messages. Floats above the messages, which blur out beneath it.
@@ -266,6 +269,7 @@ struct MessagesView: View {
         VStack(spacing: -4) {
             if let t = manager.openThread {
                 Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 56)
+                    .offset(y: Self.avatarDrop) // moves only the avatar; the name stays put
                     .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
                     .zIndex(1) // in front of the name capsule it overlaps
                 GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1).padding(.top, 10) }
@@ -274,7 +278,7 @@ struct MessagesView: View {
                     .padding(.top, 14)
             }
         }
-        .padding(.top, 18)
+        .padding(.top, 6)
         .frame(maxWidth: .infinity)
         .allowsHitTesting(false)
     }
@@ -347,8 +351,20 @@ struct MessagesView: View {
     private var canSend: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !recipient.isEmpty && phoneId != nil }
 
     private func sendDraft() {
-        guard canSend, let phoneId else { return }
-        manager.send(body: draft, to: recipient, via: phoneId)
+        guard canSend, var phoneId else { return }
+        var to = recipient
+        if composing, pickedNumber == nil, !isPhoneNumber(to) {
+            // A name was typed instead of picked from the suggestions: use the best matching contact.
+            guard let match = manager.suggestions(for: to).first else {
+                manager.showError("No contact matches \"\(to)\". Pick one from the suggestions or type a phone number.")
+                return
+            }
+            to = match.number; phoneId = match.phoneId
+            composeTo = match.contact.name; pickedNumber = match.number; manager.composePhoneId = match.phoneId
+        }
+        // Messaging someone who already has a conversation continues that conversation rather than starting a second one.
+        if composing, let existing = manager.thread(forAddress: to, phoneId: phoneId) { manager.openThread(existing.id) }
+        manager.send(body: draft, to: to, via: phoneId)
         draft = ""
     }
 }
@@ -387,6 +403,12 @@ enum MessagesWindow {
     fileprivate static weak var manager: MessagesManager?
 
     private final class CloseObserver: NSObject, NSWindowDelegate {
+        // A window with a toolbar keeps its title bar as an opaque strip in full screen, over the conversation header; this
+        // window has no use for one (the sidebar toggle is the only thing SwiftUI puts there), so drop it.
+        func windowWillEnterFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
+        func windowDidEnterFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
+        func windowDidExitFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
+
         func windowWillClose(_ notification: Notification) {
             // Back to a menu-bar app: no Dock icon, and the default icon again.
             NSApp.applicationIconImage = nil
@@ -411,7 +433,11 @@ enum MessagesWindow {
             w.titlebarAppearsTransparent = true
             w.isReleasedWhenClosed = false
             w.delegate = closeObserver
-            w.contentView = NSHostingView(rootView: MessagesView(manager: manager))
+            let host = NSHostingView(rootView: MessagesView(manager: manager))
+            // Don't let SwiftUI install a window toolbar (just the sidebar toggle): macOS keeps its title bar as an opaque strip
+            // over the conversation header in full screen.
+            host.sceneBridgingOptions = []
+            w.contentView = host
             w.setFrameAutosaveName("GossipMessages")
             w.center()
             window = w
