@@ -99,17 +99,23 @@ private struct GlassCapsule<Content: View>: View {
     }
 }
 
-/// Fades the top edge of a scroll view into a blur so content passing under the header softens instead of being cut off.
+/// A gradual blur over the top of the conversation: messages passing under the header soften more the closer they get to
+/// the edge, rather than being cut off. Two material layers with different fade lengths stack into a smooth ramp. Drawn
+/// on every macOS version (the system scroll-edge effect only applies under a real toolbar, which this header isn't).
 private struct SoftTopEdge: ViewModifier {
     func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.scrollEdgeEffectStyle(.soft, for: .top).ignoresSafeArea(.container, edges: .top)
-        } else {
-            content.overlay(alignment: .top) {
+        content.overlay(alignment: .top) {
+            ZStack(alignment: .top) {
+                Rectangle().fill(.regularMaterial)
+                    .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black.opacity(0.55), location: 0.45),
+                                                 .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                    .frame(height: 78)
                 Rectangle().fill(.ultraThinMaterial)
-                    .mask(LinearGradient(colors: [.black, .black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
-                    .frame(height: 96).allowsHitTesting(false)
+                    .mask(LinearGradient(colors: [.black, .black.opacity(0.35), .clear], startPoint: .top, endPoint: .bottom))
+                    .frame(height: 140)
             }
+            .allowsHitTesting(false)
+            .ignoresSafeArea(.container, edges: .top)
         }
     }
 }
@@ -258,6 +264,7 @@ struct MessagesView: View {
             if let t = manager.openThread {
                 Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 46)
                     .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                    .zIndex(1) // in front of the name capsule it overlaps
                 GlassCapsule { Text(t.title).font(.system(size: 13, weight: .semibold)).lineLimit(1) }
             } else {
                 GlassCapsule { Text("New Message").font(.system(size: 13, weight: .semibold)) }
