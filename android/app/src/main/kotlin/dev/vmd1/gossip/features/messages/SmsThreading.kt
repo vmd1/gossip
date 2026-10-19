@@ -32,4 +32,11 @@ object SmsThreading {
     /** A phone number (digits, spaces, `+ - ( )`) of a sane length. Short codes and alphanumeric senders are readable but not sendable. */
     fun isPlausibleAddress(address: String) =
         address.length in 3..20 && address.all { it.isDigit() || it in "+-() " } && address.count { it.isDigit() } >= 3
+
+    /** Sent-log messages that the system provider has not already recorded. Some phones (Samsung) write an SMS sent through
+     *  [android.telephony.SmsManager] into the provider themselves, so the same text would otherwise show twice: once as the
+     *  provider's row and once as the sent-log entry. A provider row counts as the echo when it is outgoing with the same text
+     *  within [windowMs] of the send. */
+    fun withoutEchoes(sent: List<ChatMessage>, provider: List<ChatMessage>, windowMs: Long = 120_000): List<ChatMessage> =
+        sent.filter { s -> provider.none { it.outgoing && it.body == s.body && kotlin.math.abs(it.date - s.date) <= windowMs } }
 }
