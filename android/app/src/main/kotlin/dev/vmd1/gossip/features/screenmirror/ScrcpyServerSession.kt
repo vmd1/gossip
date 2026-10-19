@@ -150,7 +150,7 @@ class ScrcpyServerSession private constructor(
             val serverCmd = "CLASSPATH=$REMOTE_JAR exec app_process / com.genymobile.scrcpy.Server " +
                 "$SCRCPY_VERSION scid=$scid log_level=info tunnel_forward=true " +
                 (if (options.audio) "audio=true audio_codec=raw " else "audio=false ") +
-                (options.newDisplay?.takeIf { Options.isValidDisplaySpec(it) }?.let { "new_display=$it vd_system_decorations=false " } ?: "") +
+                (options.newDisplay?.takeIf { Options.isValidDisplaySpec(it) }?.let { "new_display=$it vd_system_decorations=false display_ime_policy=local " } ?: "") +
                 "control=true cleanup=false max_size=${options.maxSize} " +
                 "video_bit_rate=${options.videoBitRate} max_fps=${options.maxFps}"
             val relayCmd = "CLASSPATH=${context.applicationInfo.sourceDir} exec app_process / " +
