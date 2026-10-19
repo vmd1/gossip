@@ -70,6 +70,8 @@ object MessageType {
     const val SCREEN_STOP = "screen.stop"
     const val SCREEN_READY = "screen.ready"
     const val SCREEN_ERROR = "screen.error"
+    const val SCREEN_APPS_REQUEST = "screen.apps_request"
+    const val SCREEN_APPS = "screen.apps"
 
     // File transfer (Wave 2, unit 9 / M6). See schema/message-types.md.
     const val FILE_OFFER = "file.offer"

@@ -42,6 +42,8 @@ class ScreenMirrorState(
     private val send: (Envelope) -> Unit,
     private val sessionFactory: (sessionId: String, options: ScrcpyServerSession.Options, onEnded: () -> Unit) -> ScreenSession,
     private val logReadyToken: Boolean = false,
+    /** The apps that can be opened as windows: (package, label) of every launchable app. */
+    private val appLister: () -> List<Pair<String, String>> = { emptyList() },
     /** Screen mirroring turned off on this device: refuse with `screen.error feature_disabled`. */
     private val isEnabled: () -> Boolean = { true },
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
@@ -62,6 +64,7 @@ class ScreenMirrorState(
     fun register(router: MessageRouter) {
         router.register(MessageType.SCREEN_START, EnvelopeHandler { onScreenStart(it) })
         router.register(MessageType.SCREEN_STOP, EnvelopeHandler { onScreenStop(it) })
+        router.register(MessageType.SCREEN_APPS_REQUEST, EnvelopeHandler { onAppsRequest(it) })
     }
 
     internal fun onScreenStart(envelope: Envelope) {
@@ -92,6 +95,23 @@ class ScreenMirrorState(
             publish()
         }
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { launchSession(entry, options) }
+    }
+
+    /** `screen.apps_request`: answers with the launchable apps. A pure query, so a duplicate just gets the same answer. */
+    internal fun onAppsRequest(envelope: Envelope) {
+        val enabled = isEnabled()
+        val apps = if (enabled) appLister().take(MAX_APPS) else emptyList()
+        send(
+            Envelope(
+                type = MessageType.SCREEN_APPS, senderId = selfId, recipientId = envelope.senderId, ttl = 0,
+                payload = buildJsonObject {
+                    put("apps", kotlinx.serialization.json.JsonArray(apps.map { (pkg, label) ->
+                        buildJsonObject { put("package", JsonPrimitive(pkg)); put("label", JsonPrimitive(label.take(MAX_LABEL))) }
+                    }))
+                    if (!enabled) put("reason", JsonPrimitive("feature_disabled"))
+                }
+            )
+        )
     }
 
     private fun launchSession(entry: Active, options: ScrcpyServerSession.Options) {
@@ -190,6 +210,14 @@ class ScreenMirrorState(
             videoBitRate = (p.int("bitRate") ?: d.videoBitRate).coerceIn(500_000, 20_000_000),
             maxFps = (p.int("maxFps") ?: d.maxFps).coerceIn(1, 60),
             audio = p["audio"]?.jsonPrimitive?.booleanOrNull ?: d.audio,
+            // An app window: a virtual display of `appSize` (default 1080x2340) at `appDpi` (default 420), and the app on it.
+            // Both are validated here because they end up in a shell command line / a length-prefixed control message.
+            startApp = p.str("app")?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) },
+            newDisplay = p.str("app")?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) }?.let {
+                val size = p.str("appSize")?.takeIf { s -> Regex("[0-9]{3,4}x[0-9]{3,4}").matches(s) } ?: "1080x2340"
+                val dpi = (p.int("appDpi") ?: 420).coerceIn(120, 640)
+                "$size/$dpi"
+            },
         )
     }
 
@@ -199,5 +227,7 @@ class ScreenMirrorState(
     companion object {
         private const val TAG = "ScreenMirror"
         private const val RECENT_CACHE = 64
+        private const val MAX_APPS = 300
+        private const val MAX_LABEL = 40
     }
 }

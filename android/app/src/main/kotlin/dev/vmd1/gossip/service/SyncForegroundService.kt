@@ -80,6 +80,15 @@ class SyncForegroundService : Service() {
             sessionFactory = { sessionId, options, onEnded ->
                 dev.vmd1.gossip.features.screenmirror.ScreenBridge(applicationContext, sessionId, options, onEnded)
             },
+            appLister = {
+                val pm = applicationContext.packageManager
+                pm.queryIntentActivities(
+                    android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0
+                ).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                    .filter { it.first != packageName }
+                    .distinctBy { it.first }
+                    .sortedBy { it.second.lowercase() }
+            },
             logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
         )

@@ -84,6 +84,7 @@ class ScreenBridge(
                 send(latestSize!!)
             }
         }
+        options.startApp?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) }?.let { s.writeControl(startAppMessage(it)) }
         thread("scr-video") { videoLoop(s) }
         thread("scr-devmsg") { deviceMessageLoop(s) }
         if (s.audio != null) thread("scr-audio") { audioLoop(s) }
@@ -233,11 +234,17 @@ class ScreenBridge(
         Log.i(TAG, "[$sessionId] ended")
         // A session someone was actually watching leaves the screen lit; put it to sleep. Sessions that
         // never got a viewer (failed start, attach timeout) must not touch the screen.
-        if (viewerAttached) ScreenOff.sleep()
+        if (viewerAttached && !options.isAppWindow) ScreenOff.sleep()
         onEnded()
     }
 
     override fun close() = end()
+
+    /** scrcpy `START_APP` (type 16): u8 length + UTF-8 package; launches it on the display being captured. */
+    private fun startAppMessage(pkg: String): ByteArray {
+        val name = pkg.toByteArray()
+        return byteArrayOf(CONTROL_START_APP, name.size.toByte()) + name
+    }
 
     private fun sizeMessage(w: Int, h: Int): ByteArray =
         ByteBuffer.allocate(9).put(KIND_SIZE).putInt(w).putInt(h).array()
@@ -253,6 +260,7 @@ class ScreenBridge(
         const val KIND_AUDIO: Byte = 0x03
         private const val FLAG_CONFIG = 1L shl 62
         private const val CONTROL_RESET_VIDEO: Byte = 17
+        private const val CONTROL_START_APP: Byte = 16
         const val ATTACH_TIMEOUT_MS = 30_000L
         private const val AUTH_TIMEOUT_MS = 10_000
         private const val MAX_AUTHENTICATING = 4

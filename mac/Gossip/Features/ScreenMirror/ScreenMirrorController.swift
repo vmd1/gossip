@@ -21,6 +21,27 @@ final class ScreenMirrorController: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
+    /// A launchable app on a phone (`screen.apps`), for "Open App Window".
+    struct PhoneApp: Identifiable, Equatable {
+        let package: String
+        let label: String
+        var id: String { package }
+    }
+
+    /// Apps each phone reported for `screen.apps_request`, keyed by device id; `appsError` is a user-facing reason a list couldn't be had.
+    @Published private(set) var appsByDevice: [String: [PhoneApp]] = [:]
+    @Published private(set) var appsError: [String: String] = [:]
+
+    /// Asks `deviceId` for the apps it can open as windows. A pure query: asking again just gets a fresh answer.
+    func requestApps(deviceId: String, transport: TransportManager) {
+        registerRouterIfNeeded(transport)
+        let envelope = Envelope(
+            type: "screen.apps_request", senderId: IdentityKeyStore.shared.deviceId,
+            recipientId: deviceId, ttl: 0, payload: .object([:])
+        )
+        try? transport.send(envelope: envelope)
+    }
+
     /// Which trusted device (by Gossip `deviceId`) the current/last session targets, so the
     /// menu can show "Stop Mirroring" on the right row — only one session runs at a time.
     @Published private(set) var mirroringDeviceId: String?
@@ -48,6 +69,8 @@ final class ScreenMirrorController: ObservableObject {
 
     private final class Session {
         let id = UUID().uuidString
+        /// Package of the app this session opens as its own window, or `nil` when mirroring the whole screen.
+        var app: String?
         let deviceId: String
         let deviceName: String
         let transport: TransportManager
@@ -67,7 +90,7 @@ final class ScreenMirrorController: ObservableObject {
     /// Starts mirroring `deviceId`. Must be called on the main thread. The device must currently
     /// be connected over the mesh (the session is negotiated there and the viewer dials the
     /// address the mesh connection came from).
-    func start(deviceId: String, deviceName: String, transport: TransportManager) {
+    func start(deviceId: String, deviceName: String, transport: TransportManager, app: PhoneApp? = nil) {
         guard case .idle = state else { return }
         lastError = nil
         guard FeatureSettings.shared.isEnabled(.screenMirroring) else {
@@ -83,7 +106,8 @@ final class ScreenMirrorController: ObservableObject {
             return
         }
         registerRouterIfNeeded(transport)
-        let s = Session(deviceId: deviceId, deviceName: deviceName, transport: transport)
+        let s = Session(deviceId: deviceId, deviceName: app?.label ?? deviceName, transport: transport)
+        s.app = app?.package
         session = s
         state = .starting
         mirroringDeviceId = deviceId
@@ -116,6 +140,16 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     private func handle(_ envelope: Envelope) {
+        if envelope.type == "screen.apps" {
+            let apps: [PhoneApp] = envelope.payload["apps"]?.arrayValue?.compactMap { item in
+                guard let pkg = item["package"]?.stringValue, let label = item["label"]?.stringValue else { return nil }
+                return PhoneApp(package: pkg, label: label)
+            } ?? []
+            appsByDevice[envelope.senderId] = apps
+            appsError[envelope.senderId] = envelope.payload["reason"]?.stringValue == "feature_disabled"
+                ? "Screen mirroring is turned off on that device." : nil
+            return
+        }
         guard let s = session else { return }
         guard envelope.payload["sessionId"]?.stringValue == s.id, envelope.senderId == s.deviceId else {
             NSLog("Gossip: ignoring \(envelope.type) (session/sender mismatch: sender=\(envelope.senderId) expected=\(s.deviceId))")
@@ -153,7 +187,9 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     private func sendStart(_ s: Session) {
-        send(type: "screen.start", for: s, extra: ["maxSize": .number(1600), "bitRate": .number(8_000_000), "maxFps": .number(60), "audio": .bool(true)])
+        var extra: [String: JSONValue] = ["maxSize": .number(1600), "bitRate": .number(8_000_000), "maxFps": .number(60), "audio": .bool(true)]
+        if let app = s.app { extra["app"] = .string(app) } // an app window on a virtual display instead of the whole screen
+        send(type: "screen.start", for: s, extra: extra)
     }
 
     private func send(type: String, for s: Session, extra: [String: JSONValue] = [:]) {

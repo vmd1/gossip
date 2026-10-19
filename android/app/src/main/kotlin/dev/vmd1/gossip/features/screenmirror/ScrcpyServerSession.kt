@@ -110,7 +110,23 @@ class ScrcpyServerSession private constructor(
         val videoBitRate: Int = 4_000_000,
         val maxFps: Int = 30,
         val audio: Boolean = false,
-    )
+        /** `WxH/dpi`: capture a new virtual display of this size instead of the phone's own screen (an app window). */
+        val newDisplay: String? = null,
+        /** Package to launch on that virtual display once it exists. Sent as a control message, never put in a shell. */
+        val startApp: String? = null,
+    ) {
+        /** An app window: the phone's own screen is untouched, so it is not put to sleep when the session ends. */
+        val isAppWindow: Boolean get() = newDisplay != null
+
+        companion object {
+            private val DISPLAY_SPEC = Regex("""^[0-9]{3,4}x[0-9]{3,4}/[0-9]{2,3}$""")
+            private val PACKAGE = Regex("""^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$""")
+
+            /** `true` only for a spec that is safe to put in the server command line. */
+            fun isValidDisplaySpec(spec: String) = DISPLAY_SPEC.matches(spec)
+            fun isValidPackage(name: String) = name.length <= 200 && PACKAGE.matches(name)
+        }
+    }
 
     companion object {
         private const val TAG = "ScrcpyServerSession"
@@ -134,6 +150,7 @@ class ScrcpyServerSession private constructor(
             val serverCmd = "CLASSPATH=$REMOTE_JAR exec app_process / com.genymobile.scrcpy.Server " +
                 "$SCRCPY_VERSION scid=$scid log_level=info tunnel_forward=true " +
                 (if (options.audio) "audio=true audio_codec=raw " else "audio=false ") +
+                (options.newDisplay?.takeIf { Options.isValidDisplaySpec(it) }?.let { "new_display=$it " } ?: "") +
                 "control=true cleanup=false max_size=${options.maxSize} " +
                 "video_bit_rate=${options.videoBitRate} max_fps=${options.maxFps}"
             val relayCmd = "CLASSPATH=${context.applicationInfo.sourceDir} exec app_process / " +

@@ -195,6 +195,14 @@ struct MenuBarView: View {
             }
             if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
                 mirrorButton(for: device)
+                if device.deviceType == .androidPhone || device.deviceType == .androidTablet {
+                    Button {
+                        AppWindowPicker.show(device: device, controller: screenMirrorController, transport: transportManager)
+                    } label: { Image(systemName: "macwindow.badge.plus") }
+                        .buttonStyle(.borderless)
+                        .disabled(transportManager.isRelayed(device.deviceId))
+                        .help("Open an app from \(device.deviceName) in its own window")
+                }
             }
             if featureSettings.isEnabled(.hotspot), device.deviceType == .androidPhone, let state = mergedHotspotState(for: device.deviceId) {
                 hotspotButton(for: device, state: state)

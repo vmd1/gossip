@@ -33,12 +33,15 @@ class ScreenMirrorStateTest {
     private var failStart = false
     private var screenEnabled = true
 
+    private val capturedOptions = CopyOnWriteArrayList<ScrcpyServerSession.Options>()
+
     private fun state() = ScreenMirrorState(
         selfId = "phone",
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
         shizukuReady = { shizuku },
         send = { sent.add(it) },
-        sessionFactory = { id, _, _ -> FakeSession(id, failStart).also { sessions.add(it) } },
+        sessionFactory = { id, options, _ -> capturedOptions.add(options); FakeSession(id, failStart).also { sessions.add(it) } },
+        appLister = { listOf("com.example.notes" to "Notes", "org.demo.maps" to "Maps") },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
     )
@@ -185,5 +188,49 @@ class ScreenMirrorStateTest {
         assertEquals(1, sessions[0].closed)
         s.stopActive() // nothing active: harmless
         assertFalse(s.isMirroring.value)
+    }
+
+    @Test fun appWindowOptionsAreValidatedAndDefaulted() {
+        val s = state()
+        s.onScreenStart(Envelope(type = MessageType.SCREEN_START, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("sessionId", JsonPrimitive("w")); put("app", JsonPrimitive("com.example.notes")) }))
+        awaitSent(1)
+        val o = capturedOptions[0]
+        assertEquals("com.example.notes", o.startApp)
+        assertEquals("1080x2340/420", o.newDisplay)
+        assertTrue(o.isAppWindow)
+    }
+
+    @Test fun hostileAppOrSizeNeverReachesTheCommandLine() {
+        val s = state()
+        s.onScreenStart(Envelope(type = MessageType.SCREEN_START, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("sessionId", JsonPrimitive("x")); put("app", JsonPrimitive("a.b; rm -rf /")) }))
+        awaitSent(1)
+        assertEquals(null, capturedOptions[0].startApp)
+        assertEquals(null, capturedOptions[0].newDisplay)
+        assertFalse(capturedOptions[0].isAppWindow)
+        assertFalse(ScrcpyServerSession.Options.isValidDisplaySpec("1080x2340/420 && id"))
+        assertTrue(ScrcpyServerSession.Options.isValidDisplaySpec("1080x2340/420"))
+        assertFalse(ScrcpyServerSession.Options.isValidPackage("nodots"))
+    }
+
+    @Test fun appsRequestListsAppsAndIsRepeatable() {
+        val s = state()
+        val req = env(MessageType.SCREEN_APPS_REQUEST)
+        s.onAppsRequest(req); s.onAppsRequest(req)
+        awaitSent(2)
+        assertEquals(2, sent.count { it.type == MessageType.SCREEN_APPS })
+        assertEquals(sent[0].payload, sent[1].payload)
+        assertEquals(2, (sent[0].payload["apps"] as kotlinx.serialization.json.JsonArray).size)
+        assertEquals("a query never starts capture", 0, sessions.size)
+    }
+
+    @Test fun appsRequestIsRefusedWhenMirroringIsOff() {
+        screenEnabled = false
+        val s = state()
+        s.onAppsRequest(env(MessageType.SCREEN_APPS_REQUEST))
+        awaitSent(1)
+        assertEquals(0, (sent[0].payload["apps"] as kotlinx.serialization.json.JsonArray).size)
+        assertEquals("feature_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
     }
 }
