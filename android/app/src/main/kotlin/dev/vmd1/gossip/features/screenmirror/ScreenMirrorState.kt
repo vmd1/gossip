@@ -47,11 +47,14 @@ class ScreenMirrorState(
     /** A 48 px PNG icon for [pkg], or `null`. */
     private val iconProvider: (String) -> ByteArray? = { null },
     /** The apps that can be opened as windows: (package, label) of every launchable app. */
-    private val appLister: () -> List<Pair<String, String>> = { emptyList() },
+    private val appLister: () -> List<AppInfo> = { emptyList() },
     /** Screen mirroring turned off on this device: refuse with `screen.error feature_disabled`. */
     private val isEnabled: () -> Boolean = { true },
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
 ) {
+    /** A launchable app: its package, label and `lastUpdateTime` (a version stamp: a changed value means a new icon may exist). */
+    data class AppInfo(val pkg: String, val label: String, val version: Long)
+
     private class Active(val sessionId: String, val requester: String, val isApp: Boolean) {
         var session: ScreenSession? = null
         var ready: ScreenSession.Ready? = null
@@ -124,8 +127,11 @@ class ScreenMirrorState(
             Envelope(
                 type = MessageType.SCREEN_APPS, senderId = selfId, recipientId = envelope.senderId, ttl = 0,
                 payload = buildJsonObject {
-                    put("apps", kotlinx.serialization.json.JsonArray(apps.map { (pkg, label) ->
-                        buildJsonObject { put("package", JsonPrimitive(pkg)); put("label", JsonPrimitive(label.take(MAX_LABEL))) }
+                    put("apps", kotlinx.serialization.json.JsonArray(apps.map { a ->
+                        buildJsonObject {
+                            put("package", JsonPrimitive(a.pkg)); put("label", JsonPrimitive(a.label.take(MAX_LABEL)))
+                            put("v", JsonPrimitive(a.version))
+                        }
                     }))
                     if (!enabled) put("reason", JsonPrimitive("feature_disabled"))
                 }
@@ -134,13 +140,17 @@ class ScreenMirrorState(
         // Icons follow in batches (one envelope for all of them would be far too big). Each batch is a merge into the
         // viewer's icon table, so a repeated request or a duplicate batch changes nothing.
         if (enabled && envelope.payload["icons"]?.jsonPrimitive?.booleanOrNull == true) {
+            // The viewer lists `pkg@version` for icons it already has; only missing or changed ones are sent.
+            val have = (envelope.payload["haveIcons"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toHashSet() ?: emptySet()
+            val missing = apps.filter { "${it.pkg}@${it.version}" !in have }
             scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                for (batch in apps.chunked(ICON_BATCH)) {
-                    val icons = batch.mapNotNull { (pkg, _) ->
-                        runCatching { iconProvider(pkg) }.getOrNull()?.let { png ->
+                for (batch in missing.chunked(ICON_BATCH)) {
+                    val icons = batch.mapNotNull { a ->
+                        runCatching { iconProvider(a.pkg) }.getOrNull()?.let { png ->
                             buildJsonObject {
-                                put("package", JsonPrimitive(pkg))
-                                put("png", JsonPrimitive(android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP)))
+                                put("package", JsonPrimitive(a.pkg)); put("v", JsonPrimitive(a.version))
+                                put("png", JsonPrimitive(java.util.Base64.getEncoder().encodeToString(png)))
                             }
                         }
                     }

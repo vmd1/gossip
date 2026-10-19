@@ -41,7 +41,8 @@ class ScreenMirrorStateTest {
         shizukuReady = { shizuku },
         send = { sent.add(it) },
         sessionFactory = { id, options, _ -> capturedOptions.add(options); FakeSession(id, failStart).also { sessions.add(it) } },
-        appLister = { listOf("com.example.notes" to "Notes", "org.demo.maps" to "Maps") },
+        appLister = { listOf(ScreenMirrorState.AppInfo("com.example.notes", "Notes", 5L), ScreenMirrorState.AppInfo("org.demo.maps", "Maps", 9L)) },
+        iconProvider = { byteArrayOf(1, 2, 3) },
         appChecker = { pkg -> if (pkg == "com.example.off") "app_disabled" else null },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
@@ -273,5 +274,25 @@ class ScreenMirrorStateTest {
         awaitSent(1)
         assertEquals("app_disabled", sent[0].payload["reason"]!!.jsonPrimitive.content)
         assertEquals(0, sessions.size)
+    }
+
+    @Test fun onlyMissingOrChangedIconsAreSent() {
+        val s = state()
+        val have = kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("com.example.notes@5"), JsonPrimitive("org.demo.maps@8")))
+        s.onAppsRequest(Envelope(type = MessageType.SCREEN_APPS_REQUEST, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("icons", JsonPrimitive(true)); put("haveIcons", have) }))
+        awaitSent(2)
+        val icons = sent.first { it.type == MessageType.SCREEN_APP_ICONS }.payload["icons"] as kotlinx.serialization.json.JsonArray
+        assertEquals("Notes is unchanged, Maps was updated", 1, icons.size)
+        assertEquals("org.demo.maps", (icons[0] as kotlinx.serialization.json.JsonObject)["package"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun noIconsAreSentWhenTheViewerHasThemAll() {
+        val s = state()
+        val have = kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("com.example.notes@5"), JsonPrimitive("org.demo.maps@9")))
+        s.onAppsRequest(Envelope(type = MessageType.SCREEN_APPS_REQUEST, senderId = "mac", recipientId = "phone",
+            payload = buildJsonObject { put("icons", JsonPrimitive(true)); put("haveIcons", have) }))
+        Thread.sleep(300)
+        assertEquals(0, sent.count { it.type == MessageType.SCREEN_APP_ICONS })
     }
 }

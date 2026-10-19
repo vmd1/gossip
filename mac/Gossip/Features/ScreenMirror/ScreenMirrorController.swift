@@ -34,7 +34,23 @@ final class ScreenMirrorController: ObservableObject {
     struct PhoneApp: Identifiable, Equatable {
         let package: String
         let label: String
+        var version: Int64 = 0
         var id: String { package }
+    }
+
+    /// Apps and icons remembered on this Mac (see `AppCatalogCache`); only what changed is fetched from the phone.
+    private let catalog = AppCatalogCache()
+
+    init() {
+        // The picker opens instantly from what was stored last time.
+        for dir in ((try? FileManager.default.contentsOfDirectory(atPath: AppCatalogCache.defaultRoot?.path ?? "")) ?? []) {
+            let apps = catalog.apps(for: dir)
+            if apps.isEmpty { continue }
+            appsByDevice[dir] = apps.map { PhoneApp(package: $0.package, label: $0.label, version: $0.version) }
+            var icons: [String: NSImage] = [:]
+            for a in apps { if let img = catalog.icon(for: a.package, version: a.version, deviceId: dir) { icons[a.package] = img } }
+            iconsByDevice[dir] = icons
+        }
     }
 
     /// Apps each phone reported for `screen.apps_request`, keyed by device id; `appsError` is a user-facing reason a list couldn't be had.
@@ -48,7 +64,9 @@ final class ScreenMirrorController: ObservableObject {
         registerRouterIfNeeded(transport)
         let envelope = Envelope(
             type: "screen.apps_request", senderId: IdentityKeyStore.shared.deviceId,
-            recipientId: deviceId, ttl: 0, payload: .object(["icons": .bool(true)])
+            recipientId: deviceId, ttl: 0,
+            // `haveIcons` lists the icons already stored, so the phone sends only the missing or changed ones.
+            payload: .object(["icons": .bool(true), "haveIcons": .array(catalog.haveIcons(for: deviceId).map { .string($0) })])
         )
         try? transport.send(envelope: envelope)
     }
@@ -207,19 +225,27 @@ final class ScreenMirrorController: ObservableObject {
     private func handle(_ envelope: Envelope) {
         switch envelope.type {
         case "screen.apps":
+            let disabled = envelope.payload["reason"]?.stringValue == "feature_disabled"
+            appsError[envelope.senderId] = disabled ? "Screen mirroring is turned off on that device." : nil
+            guard !disabled else { return }
             let apps: [PhoneApp] = envelope.payload["apps"]?.arrayValue?.compactMap { item in
                 guard let pkg = item["package"]?.stringValue, let label = item["label"]?.stringValue else { return nil }
-                return PhoneApp(package: pkg, label: label)
+                return PhoneApp(package: pkg, label: label, version: Int64(item["v"]?.numberValue ?? 0))
             } ?? []
-            appsByDevice[envelope.senderId] = apps
-            appsError[envelope.senderId] = envelope.payload["reason"]?.stringValue == "feature_disabled"
-                ? "Screen mirroring is turned off on that device." : nil
+            appsByDevice[envelope.senderId] = apps // the phone's list is the truth: uninstalled apps drop out
+            catalog.replaceApps(apps.map { AppCatalogCache.Entry(package: $0.package, label: $0.label, version: $0.version) }, for: envelope.senderId)
+            var icons = iconsByDevice[envelope.senderId] ?? [:]
+            for a in apps where icons[a.package] == nil || catalog.icon(for: a.package, version: a.version, deviceId: envelope.senderId) == nil {
+                if let img = catalog.icon(for: a.package, version: a.version, deviceId: envelope.senderId) { icons[a.package] = img } else { icons[a.package] = nil }
+            }
+            iconsByDevice[envelope.senderId] = icons.filter { key, _ in apps.contains { $0.package == key } }
             return
         case "screen.app_icons":
             var table = iconsByDevice[envelope.senderId] ?? [:]
             for item in envelope.payload["icons"]?.arrayValue ?? [] {
                 guard let pkg = item["package"]?.stringValue, let b64 = item["png"]?.stringValue,
                       let data = Data(base64Encoded: b64), data.count < 64 * 1024, let image = NSImage(data: data) else { continue }
+                catalog.storeIcon(data, package: pkg, version: Int64(item["v"]?.numberValue ?? 0), deviceId: envelope.senderId)
                 table[pkg] = image
             }
             iconsByDevice[envelope.senderId] = table

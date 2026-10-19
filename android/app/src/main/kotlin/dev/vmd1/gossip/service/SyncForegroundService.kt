@@ -88,10 +88,14 @@ class SyncForegroundService : Service() {
                 pm.queryIntentActivities(
                     android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0
                 ).filter { it.activityInfo.applicationInfo.enabled }
-                    .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
-                    .filter { it.first != packageName }
-                    .distinctBy { it.first }
-                    .sortedBy { it.second.lowercase() }
+                    .map {
+                        val pkg = it.activityInfo.packageName
+                        val version = runCatching { pm.getPackageInfo(pkg, 0).lastUpdateTime }.getOrDefault(0L)
+                        dev.vmd1.gossip.features.screenmirror.ScreenMirrorState.AppInfo(pkg, it.loadLabel(pm).toString(), version)
+                    }
+                    .filter { it.pkg != packageName }
+                    .distinctBy { it.pkg }
+                    .sortedBy { it.label.lowercase() }
             },
             appChecker = { pkg ->
                 val pm = applicationContext.packageManager
