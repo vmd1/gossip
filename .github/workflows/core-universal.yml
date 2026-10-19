@@ -4,14 +4,6 @@ name: Core universal build
 # The Mac CI builds the host architecture only, so this runs just when something that decides the universal build changes
 # (and on every release, see release.yml). It is the slowest job in the repository, which is why it is not on every PR.
 on:
-  push:
-    branches: [dev, main]
-    paths:
-      - "desktop/scripts/build-xcframework.sh"
-      - "desktop/Cargo.toml"
-      - "desktop/Cargo.lock"
-      - "desktop/rust-toolchain.toml"
-      - ".github/workflows/core-universal.yml"
   pull_request:
     paths:
       - "desktop/scripts/build-xcframework.sh"

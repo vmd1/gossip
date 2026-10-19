@@ -4,12 +4,6 @@ name: Core CI
 # Runs on pull requests (and manually), like the other CI workflows.
 # A push to dev or main also runs it, which warms the Rust build cache that pull requests start from.
 on:
-  push:
-    branches: [dev, main]
-    paths:
-      - "desktop/**"
-      - "schema/**"
-      - ".github/workflows/core.yml"
   pull_request:
     paths:
       - "desktop/**"
