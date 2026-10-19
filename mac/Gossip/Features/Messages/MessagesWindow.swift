@@ -132,6 +132,7 @@ struct MessagesView: View {
     @State private var composeTo = ""
     /// A contact picked from the suggestions (the typed text is then just their name).
     @State private var pickedNumber: String?
+    @State private var fullScreen = false
 
     var body: some View {
         NavigationSplitView {
@@ -141,10 +142,11 @@ struct MessagesView: View {
             detail
         }
         .navigationSplitViewStyle(.balanced)
-        // In full screen the title bar becomes a real toolbar strip; without this its background covers the top of the header.
-        .toolbarBackground(.hidden, for: .windowToolbar)
         .frame(minWidth: 680, minHeight: 440)
         .onAppear { manager.open() }
+        // In full screen the title bar becomes an opaque toolbar strip that content cannot sit under, so the header must start below it.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in fullScreen = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in fullScreen = false }
     }
 
     // MARK: Sidebar
@@ -255,7 +257,7 @@ struct MessagesView: View {
             composer
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .overlay(alignment: .top) { conversationHeader.ignoresSafeArea(.container, edges: .top) }
+        .overlay(alignment: .top) { conversationHeader.ignoresSafeArea(.container, edges: fullScreen ? [] : .top) }
         .overlay(alignment: .top) {
             // Below the floating header, which would otherwise cover it.
             if let error = manager.error {
