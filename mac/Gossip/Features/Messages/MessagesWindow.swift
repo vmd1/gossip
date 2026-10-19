@@ -197,7 +197,7 @@ struct MessagesView: View {
                         }.labelsHidden().fixedSize()
                     }
                 }
-                .padding(.horizontal, 16).padding(.vertical, 10)
+                .padding(.horizontal, 16).padding(.bottom, 10).padding(.top, 36) // clears the traffic lights
                 Divider()
                 suggestionList
             }
@@ -213,22 +213,29 @@ struct MessagesView: View {
                 .onChange(of: manager.messages) { _, new in
                     if let last = new.last?.id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) } }
                 }
+                // The header is a blurred bar the messages scroll underneath, like Apple's Messages.
+                .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
             }
             composer
         }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                if let t = manager.openThread {
-                    VStack(spacing: 1) {
-                        Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 26)
-                        Text(t.title).font(.system(size: 11, weight: .medium))
-                    }
-                } else {
-                    Text("New Message").font(.headline)
-                }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var conversationHeader: some View {
+        VStack(spacing: 3) {
+            if let t = manager.openThread {
+                Avatar(title: t.title, isNumber: isPhoneNumber(t.title), size: 40)
+                Text(t.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            } else {
+                Text("New Message").font(.system(size: 14, weight: .semibold))
             }
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .frame(maxWidth: .infinity)
+        // Clear the traffic lights when the header is the topmost thing; below the To: row or an error banner it isn't.
+        .padding(.top, manager.error != nil ? 8 : (composing ? 8 : 34))
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) { Divider().opacity(0.5) }
     }
 
     @ViewBuilder
