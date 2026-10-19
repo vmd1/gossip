@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-struct MessageThread: Identifiable, Equatable {
+struct MessageThread: Identifiable, Equatable, Codable {
     /// `<phoneId>|<phone's thread id>`: unique across phones.
     let id: String
     let phoneId: String
@@ -18,7 +18,7 @@ struct MessageThread: Identifiable, Equatable {
     static func makeId(phoneId: String, remoteId: String) -> String { "\(phoneId)|\(remoteId)" }
 }
 
-struct ChatMessage: Identifiable, Equatable {
+struct ChatMessage: Identifiable, Equatable, Codable {
     let id: String
     let date: Date
     let outgoing: Bool
@@ -90,6 +90,8 @@ final class MessagesManager: ObservableObject {
     /// Every paired phone's contacts (from the phone, cached on this Mac), by phone id.
     @Published private(set) var contactsByPhone: [String: [PhoneContact]] = [:]
     private let contactsCache = ContactsCache()
+    /// Conversations and recent messages from the last sync, shown at once while the phone is asked again.
+    private let messagesCache = MessagesCache()
     private var assemblers: [String: ContactsAssembler] = [:]
     /// `true` while the Messages window is open: connection changes and a periodic tick then refresh the list.
     private var isOpen = false
@@ -104,7 +106,13 @@ final class MessagesManager: ObservableObject {
         // Contacts from the last sync are available immediately.
         for phone in devices.devices where phone.deviceType == .androidPhone {
             if let stored = contactsCache.load(phone.deviceId) { contactsByPhone[phone.deviceId] = stored.contacts }
+            let cached = messagesCache.loadThreads(phone.deviceId)
+            if !cached.isEmpty { byPhone[phone.deviceId] = cached.map { t in
+                MessageThread(id: t.id, phoneId: t.phoneId, phoneName: phone.deviceName, remoteId: t.remoteId, address: t.address,
+                              name: t.name, snippet: t.snippet, date: t.date, outgoing: t.outgoing, unread: t.unread)
+            } }
         }
+        rebuild()
         transport.router.register(prefix: "messages.") { [weak self] envelope in
             DispatchQueue.main.async { self?.handle(envelope) }
         }
@@ -196,7 +204,10 @@ final class MessagesManager: ObservableObject {
     func openThread(_ id: String?) {
         openThreadId = id
         messages = []
-        if let t = openThread { loadHistory(t) }
+        if let t = openThread {
+            messages = messagesCache.loadMessages(t.id) // the last sync, until the phone answers
+            loadHistory(t)
+        }
     }
 
     func startComposing() {
@@ -282,7 +293,9 @@ final class MessagesManager: ObservableObject {
             loading = false
             if let reason { error = reason; byPhone[phoneId] = nil } else {
                 error = nil
-                byPhone[phoneId] = MessagesWire.threads(envelope.payload, phoneId: phoneId, phoneName: phone.deviceName)
+                let fresh = MessagesWire.threads(envelope.payload, phoneId: phoneId, phoneName: phone.deviceName)
+                byPhone[phoneId] = fresh
+                messagesCache.saveThreads(fresh, for: phoneId)
             }
             rebuild()
         case "messages.history":
@@ -291,7 +304,9 @@ final class MessagesManager: ObservableObject {
             if let reason { error = reason; return }
             // Keep messages still waiting for the phone's confirmation at the end.
             let waiting = messages.filter { $0.sending || $0.failed }
-            messages = MessagesWire.messages(envelope.payload) + waiting
+            let history = MessagesWire.messages(envelope.payload)
+            messages = history + waiting
+            if let open = openThread { messagesCache.saveMessages(history, for: open.id) }
         case "messages.contacts":
             guard let digest = envelope.payload["digest"]?.stringValue else { return }
             if envelope.payload["unchanged"]?.boolValue == true { return } // our copy is current
