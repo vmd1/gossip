@@ -64,6 +64,7 @@ class ScreenBridge(
     private val ended = AtomicBoolean(false)
     @Volatile private var viewerAttached = false
     private val lock = Any()
+    private val launchLock = Any()
     private var session: ScrcpyServerSession? = null
     private var listener: ServerSocket? = null
     private var client: WebSocketConnection? = null
@@ -84,7 +85,7 @@ class ScreenBridge(
                 send(latestSize!!)
             }
         }
-        options.startApp?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) }?.let { s.writeControl(startAppMessage(it)) }
+        options.startApp?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) }?.let { launchApp(s, it) }
         thread("scr-video") { videoLoop(s) }
         thread("scr-devmsg") { deviceMessageLoop(s) }
         if (s.audio != null) thread("scr-audio") { audioLoop(s) }
@@ -228,7 +229,8 @@ class ScreenBridge(
 
     /** Idempotent teardown: closes viewer, listener, and both shell-UID processes. */
     fun end() {
-        if (!ended.compareAndSet(false, true)) return
+        // Taken with launchApp's check, so no launch is sent once teardown has begun.
+        synchronized(launchLock) { if (!ended.compareAndSet(false, true)) return }
         synchronized(lock) { runCatching { client?.close(1001) } }
         runCatching { listener?.close() }
         runCatching { session?.close() }
@@ -253,11 +255,21 @@ class ScreenBridge(
                 try { Thread.sleep(delayMs) } catch (_: InterruptedException) { return@thread }
                 if (ended.get()) return@thread
                 runCatching {
-                    s.writeControl(startAppMessage(app))
+                    if (!launchApp(s, app)) return@thread
                     s.writeControl(byteArrayOf(CONTROL_RESET_VIDEO))
                 }
             }
         }
+    }
+
+    /**
+     * Sends the app launch only while the session is alive. A launch sent for a virtual display that is going away lands
+     * on the phone's own screen instead, so nothing is sent once [end] has begun. Returns false when it was not sent.
+     */
+    private fun launchApp(s: ScrcpyServerSession, app: String): Boolean = synchronized(launchLock) {
+        if (ended.get() || s.isClosed) return false
+        s.writeControl(startAppMessage(app))
+        true
     }
 
     /** scrcpy `START_APP` (type 16): u8 length + UTF-8 package; launches it on the display being captured. */
