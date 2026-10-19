@@ -134,18 +134,13 @@ struct MessagesView: View {
     @State private var pickedNumber: String?
 
     var body: some View {
-        // A plain split rather than NavigationSplitView: that installs a window toolbar, which macOS keeps as an opaque strip over
-        // the conversation header in full screen.
-        HStack(spacing: 0) {
-            // A floating rounded panel like the system sidebar, with the traffic lights sitting inside its top.
+        NavigationSplitView {
             sidebar
-                .padding(.top, 36)
-                .frame(width: 300)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5))
-                .padding(10)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 380)
+        } detail: {
             detail
         }
+        .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 680, minHeight: 440)
         .onAppear { manager.open() }
     }
@@ -438,8 +433,11 @@ enum MessagesWindow {
             w.titlebarAppearsTransparent = true
             w.isReleasedWhenClosed = false
             w.delegate = closeObserver
-            w.contentView = NSHostingView(rootView: MessagesView(manager: manager))
-            w.toolbar = nil // SwiftUI's split view adds one with just the sidebar toggle
+            let host = NSHostingView(rootView: MessagesView(manager: manager))
+            // Don't let SwiftUI install a window toolbar (just the sidebar toggle): macOS keeps its title bar as an opaque strip
+            // over the conversation header in full screen.
+            host.sceneBridgingOptions = []
+            w.contentView = host
             w.setFrameAutosaveName("GossipMessages")
             w.center()
             window = w
