@@ -7,6 +7,10 @@ name: Version check
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - "schema/**"
+      - "VERSION"
+      - ".github/workflows/version-check.yml"
 
 concurrency:
   group: version-check-${{ github.ref }}
