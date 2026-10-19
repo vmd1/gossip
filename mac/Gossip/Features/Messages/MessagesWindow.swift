@@ -246,7 +246,7 @@ struct MessagesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) { conversation }
-                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 124) // room for the floating header
+                        .padding(.horizontal, 16).padding(.bottom, 12).padding(.top, composing ? 12 : 150) // room for the floating header
                 }
                 .onChange(of: manager.messages) { _, new in
                     if let last = new.last?.id { withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) } }
@@ -274,7 +274,7 @@ struct MessagesView: View {
                     .padding(.top, 14)
             }
         }
-        .padding(.top, 18)
+        .padding(.top, 44)
         .frame(maxWidth: .infinity)
         .allowsHitTesting(false)
     }
