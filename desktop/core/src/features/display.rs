@@ -142,7 +142,11 @@ mod tests {
             rotation: 1,
         };
         assert_eq!(DisplayInfo::parse(&d.payload()), Some(d));
-        assert_eq!(DisplayInfo::parse_displays(&d.payload()), Some(vec![]), "a single display has no list");
+        assert_eq!(
+            DisplayInfo::parse_displays(&d.payload()),
+            Some(vec![]),
+            "a single display has no list"
+        );
         for bad in [
             json!({"width": 0, "height": 5, "rotation": 0}),
             json!({"width": 5, "height": 99999, "rotation": 0}),
@@ -173,7 +177,11 @@ mod tests {
         };
         let list = vec![rect("A", 0, 0), rect("B", -2560, 120)];
         let payload = d.payload_with_displays(&list);
-        assert_eq!(DisplayInfo::parse(&payload), Some(d), "an old receiver still reads the size");
+        assert_eq!(
+            DisplayInfo::parse(&payload),
+            Some(d),
+            "an old receiver still reads the size"
+        );
         assert_eq!(DisplayInfo::parse_displays(&payload), Some(list));
         assert!(!d.payload_with_displays(&[]).contains_key("displays"));
     }
@@ -187,7 +195,9 @@ mod tests {
             json!([{"id": "A", "x": 0, "y": 0, "width": 5, "height": 5}, {"id": "A", "x": 9, "y": 0, "width": 5, "height": 5}]),
             json!([{"id": "A", "x": "0", "y": 0, "width": 5, "height": 5}]),
             json!("nope"),
-            json!((0..17).map(|i| json!({"id": format!("d{i}"), "x": 0, "y": 0, "width": 5, "height": 5})).collect::<Vec<_>>()),
+            json!((0..17)
+                .map(|i| json!({"id": format!("d{i}"), "x": 0, "y": 0, "width": 5, "height": 5}))
+                .collect::<Vec<_>>()),
         ] {
             let mut m = base.as_object().unwrap().clone();
             m.insert("displays".into(), bad.clone());
