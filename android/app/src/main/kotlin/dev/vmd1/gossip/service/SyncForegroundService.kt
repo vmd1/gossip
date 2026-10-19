@@ -110,13 +110,23 @@ class SyncForegroundService : Service() {
             },
             prepareApp = { pkg ->
                 val pm = applicationContext.packageManager
-                val enabled = runCatching { pm.getApplicationInfo(pkg, 0).enabled }.getOrDefault(false)
+                // `ApplicationInfo.enabled` is false for "disabled until used" apps (Samsung ships many) even though opening
+                // them on the phone just works, so only a real user/system disable needs enabling by hand.
+                val setting = runCatching { pm.getApplicationEnabledSetting(pkg) }.getOrDefault(android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT)
+                val needsEnable = setting == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED ||
+                    setting == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER ||
+                    runCatching { pm.getApplicationInfo(pkg, 0) }.isFailure
                 var reason: String? = null
-                if (!enabled) {
+                if (needsEnable) {
                     // Enable it for the user (shell UID, through Shizuku), like `pm enable --user 0 <pkg>`.
-                    val ok = runCatching { dev.vmd1.gossip.features.screenmirror.ShizukuShell.exec("pm", "enable", "--user", "0", pkg).waitFor() == 0 }
-                        .getOrDefault(false)
-                    if (!ok) reason = "app_enable_failed"
+                    runCatching {
+                        val p = dev.vmd1.gossip.features.screenmirror.ShizukuShell.exec("pm", "enable", "--user", "0", pkg)
+                        val out = p.inputStream.bufferedReader().readText() + p.errorStream.bufferedReader().readText()
+                        val code = p.waitFor()
+                        if (code != 0) dev.vmd1.gossip.util.Log.w("SyncForegroundService", "pm enable $pkg exited $code: ${out.trim()}")
+                    }.onFailure { dev.vmd1.gossip.util.Log.w("SyncForegroundService", "pm enable $pkg failed: ${it.message}") }
+                    // Judge by the result, not the exit code: it only matters that the app can now be launched.
+                    if (pm.getLaunchIntentForPackage(pkg) == null) reason = "app_enable_failed"
                 }
                 // Wake the screen so the app's launch is visible and not held behind a dark display.
                 dev.vmd1.gossip.features.screenmirror.ScreenOff.wake()
