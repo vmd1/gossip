@@ -259,7 +259,7 @@ struct MessagesView: View {
             if let error = manager.error {
                 Text(error).font(.callout).foregroundStyle(.white).multilineTextAlignment(.center).padding(8).frame(maxWidth: .infinity)
                     .background(MessagesStyle.failed, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .padding(.horizontal, 16).padding(.top, composing ? 80 : 100)
+                    .padding(.horizontal, 16).padding(.top, 80)
             }
         }
     }
