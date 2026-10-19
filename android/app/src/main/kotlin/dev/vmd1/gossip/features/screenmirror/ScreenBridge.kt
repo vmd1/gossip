@@ -201,6 +201,7 @@ class ScreenBridge(
         }
         s.writeControl(byteArrayOf(CONTROL_RESET_VIDEO)) // force a key frame for the late joiner
         Log.i(TAG, "[$sessionId] viewer attached")
+        options.startApp?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) }?.let { app -> nudgeAppWindow(s, app) }
     }
 
     private fun controlLoop(ws: WebSocketConnection, s: ScrcpyServerSession) {
@@ -239,6 +240,25 @@ class ScreenBridge(
     }
 
     override fun close() = end()
+
+    /**
+     * A cold-starting app can finish drawing before the virtual display is fully attached, or have its first launch land
+     * while the display is still being set up, leaving the stream black until the app is launched again (resizing the window
+     * did exactly that). So after the viewer attaches the launch is repeated, which is harmless for a running app (it is just
+     * brought to the front), and a key frame is requested each time so a frame drawn since is sent immediately.
+     */
+    private fun nudgeAppWindow(s: ScrcpyServerSession, app: String) {
+        thread("scr-nudge") {
+            for (delayMs in longArrayOf(1_000, 1_500, 2_500)) {
+                try { Thread.sleep(delayMs) } catch (_: InterruptedException) { return@thread }
+                if (ended.get()) return@thread
+                runCatching {
+                    s.writeControl(startAppMessage(app))
+                    s.writeControl(byteArrayOf(CONTROL_RESET_VIDEO))
+                }
+            }
+        }
+    }
 
     /** scrcpy `START_APP` (type 16): u8 length + UTF-8 package; launches it on the display being captured. */
     private fun startAppMessage(pkg: String): ByteArray {
