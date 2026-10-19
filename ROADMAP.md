@@ -95,7 +95,7 @@ Not new features, but work that is known and unscheduled:
 - **Mac release signing:** release builds use the self-signed `gossip.vmd1.dev` certificate, which has no team ID, so each update asks for the Keychain password once per item. Local builds can use an Apple Development certificate (`mac/scripts/use-apple-development-signing.sh`, see `docs/building-and-signing.md`), which stops the prompts; releases need a stable team identity (a paid Developer ID, or another way to hold the signing secrets in CI).
 - **Code-pairing emulator end-to-end test** (`mac/scripts/e2e-code-pairing.sh`) fails on a developer Mac and did before the 2.0 work; the core and unit tests for code pairing pass.
 - **Shizuku "not running" onboarding state:** Shizuku needs re-activation after a phone reboot; surface a clear state instead of a silent mirroring or Universal Control failure.
-- **Website cut-over:** point `gossip.vmd1.dev` at the relay-served site and remove `pages.yml`.
+- **Website cut-over:** point `gossip.vmd1.dev` at the relay-served site (`pages.yml` is already removed).
 
 ## Shelved — desirable but complicated 🗄️
 

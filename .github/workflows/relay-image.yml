@@ -12,6 +12,7 @@ on:
       - "site/**"
       - ".github/workflows/relay-image.yml"
   pull_request:
+    branches: [dev] # a dev to main release PR repeats what already passed on dev
     paths:
       - "relay/**"
       - ".github/workflows/relay-image.yml"

@@ -5,6 +5,7 @@ name: Core universal build
 # (and on every release, see release.yml). It is the slowest job in the repository, which is why it is not on every PR.
 on:
   pull_request:
+    branches: [dev] # a dev to main release PR repeats what already passed on dev
     paths:
       - "desktop/scripts/build-xcframework.sh"
       - "desktop/Cargo.toml"

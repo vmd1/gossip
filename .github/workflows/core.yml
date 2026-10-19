@@ -5,6 +5,7 @@ name: Core CI
 # A push to dev or main also runs it, which warms the Rust build cache that pull requests start from.
 on:
   pull_request:
+    branches: [dev] # a dev to main release PR repeats what already passed on dev
     paths:
       - "desktop/**"
       - "schema/**"
