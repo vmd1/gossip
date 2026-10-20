@@ -36,6 +36,12 @@ object MediaMessageType {
     const val COMMAND = "media.command"
 }
 
+/** Lets the notification listener tell [MediaControlBridge] that notification access is now available, so the bridge never
+ *  has to poll for it. */
+object MediaListenerAccess {
+    @Volatile var onConnected: (() -> Unit)? = null
+}
+
 /**
  * Plain-data snapshot of a media session's now-playing state (android -> mac),
  * independent of `MediaController`/`MediaMetadata` so it can be unit tested and
@@ -68,8 +74,8 @@ data class NowPlayingSnapshot(
  * `media.command` envelopes into [MediaController.getTransportControls] calls.
  *
  * Enumerating sessions via [MediaSessionManager.getActiveSessions] requires
- * notification-listener access bound to [MediaNotificationListenerService]'s
- * `ComponentName` — see that class's doc for why a listener service exists at all here.
+ * notification-listener access bound to a listener service's `ComponentName`; Gossip's one
+ * listener ([dev.vmd1.gossip.features.notifications.NotificationListenerImpl]) is used.
  * If the user hasn't granted that access yet, [start] logs and no-ops rather than
  * crashing; call [start] again (e.g. on resume) once access may have been granted.
  */
@@ -81,8 +87,12 @@ class MediaControlBridge(
 ) {
     private val mediaSessionManager =
         context.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-    private val listenerComponent = ComponentName(context, MediaNotificationListenerService::class.java)
+    /** `getActiveSessions` needs an enabled notification listener of this app: the same one that mirrors notifications
+     *  ("Notification access" in Settings), so there is a single permission to grant. */
+    private val listenerComponent = ComponentName(context, dev.vmd1.gossip.features.notifications.NotificationListenerImpl::class.java)
     private val scope = CoroutineScope(Dispatchers.Main)
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var listening = false
 
     private var activeController: MediaController? = null
 
@@ -102,19 +112,32 @@ class MediaControlBridge(
      *  are the core's `CommandGuard` (`desktop/core/src/features/media.rs`), shared with every platform. */
     private val commandGuard = CoreCommandGuard()
 
-    /** Registers the `media.command` handler and starts observing active sessions. */
+    /** Registers the `media.command` handler and starts observing active sessions. If notification access is not
+     *  granted yet nothing polls: the listener service calls [MediaListenerAccess.onConnected] the moment access is
+     *  granted (or the system reconnects it), which tries again. */
     fun start() {
         messageRouter.register(MediaMessageType.COMMAND, commandHandler)
+        MediaListenerAccess.onConnected = { handler.post { tryListen() } }
+        tryListen()
+    }
+
+    private fun tryListen() {
+        if (listening) return
         try {
             mediaSessionManager.addOnActiveSessionsChangedListener(sessionsChangedListener, listenerComponent)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Notification listener access not granted; media controls unavailable for now", e)
+            listening = true
+            refreshActiveSessions()
             return
+        } catch (e: SecurityException) {
+            // not enabled in Settings > Notification access yet
         }
-        refreshActiveSessions()
+        Log.w(TAG, "Notification access not granted to Gossip; media controls unavailable until it is")
     }
 
     fun stop() {
+        MediaListenerAccess.onConnected = null
+        handler.removeCallbacksAndMessages(null)
+        listening = false
         messageRouter.unregister(commandHandler)
         runCatching { mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener) }
         activeController?.unregisterCallback(controllerCallback)
@@ -158,6 +181,7 @@ class MediaControlBridge(
      *  already holds does nothing, so this is safe to call on any event. */
     private fun publishNowPlaying() {
         val snapshot = activeController?.let { snapshotFrom(it) }
+        Log.i(TAG, "publishing now-playing: ${snapshot?.let { "${it.packageName} playing=${it.isPlaying} art=${it.artBase64?.length ?: 0}B" } ?: "none"}")
         transportManager.setState(MediaMessageType.NOWPLAYING_SLOT, snapshot?.toPayload())
     }
 
