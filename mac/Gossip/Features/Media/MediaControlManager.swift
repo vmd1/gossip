@@ -73,9 +73,11 @@ final class MediaControlManager: ObservableObject {
             self?.apply(deviceId: change.deviceId, valueJSON: change.valueJSON)
         }
         // A phone that is no longer reachable stops showing its card; the card comes back with the phone.
-        transportManager.$meshReachableDeviceIds
+        // `meshReachableDeviceIds` leaves out phones that are connected directly or through the relay, so those sets count too.
+        Publishers.Merge3(transportManager.$meshReachableDeviceIds.map { _ in () }, transportManager.$connectedDeviceIds.map { _ in () },
+                          transportManager.$relayedDeviceIds.map { _ in () })
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
     }
 
@@ -100,7 +102,7 @@ final class MediaControlManager: ObservableObject {
     }
 
     private var shown: Set<String> {
-        Self.shownDevices(reported: Set(nowPlayingByDevice.keys), reachable: transportManager?.meshReachableDeviceIds ?? [])
+        Self.shownDevices(reported: Set(nowPlayingByDevice.keys), reachable: transportManager.map { $0.meshReachableDeviceIds.union($0.connectedDeviceIds).union($0.relayedDeviceIds) } ?? [])
     }
 
     /// The now-playing state currently shown/controlled by the menu bar UI.
