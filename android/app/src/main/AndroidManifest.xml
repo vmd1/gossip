@@ -175,16 +175,6 @@
             android:name=".features.notifications.NotificationMirrorReplyReceiver"
             android:exported="false" />
 
-        <service
-            android:name=".features.media.MediaNotificationListenerService"
-            android:exported="true"
-            android:label="Gossip media controls"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-        </service>
-
         <!-- Backs a content:// Uri for a received clipboard image — the system
              clipboard's image items must be Uri-backed, not raw bytes. See
              features/clipboard/ClipboardSyncManager.kt and
