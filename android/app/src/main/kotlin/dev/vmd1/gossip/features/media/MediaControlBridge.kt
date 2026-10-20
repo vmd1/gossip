@@ -181,6 +181,7 @@ class MediaControlBridge(
      *  already holds does nothing, so this is safe to call on any event. */
     private fun publishNowPlaying() {
         val snapshot = activeController?.let { snapshotFrom(it) }
+        Log.i(TAG, "publishing now-playing: ${snapshot?.let { "${it.packageName} playing=${it.isPlaying} art=${it.artBase64?.length ?: 0}B" } ?: "none"}")
         transportManager.setState(MediaMessageType.NOWPLAYING_SLOT, snapshot?.toPayload())
     }
 
