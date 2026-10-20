@@ -172,8 +172,12 @@ struct MessagesView: View {
                 }
             }
         }
-        // ⌘N starts a new message (the window has no toolbar: in full screen it would show as an opaque strip over the header).
-        .background(Button("New Message") { composeTo = ""; pickedNumber = nil; manager.startComposing() }.keyboardShortcut("n").opacity(0).allowsHitTesting(false))
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button { manager.startComposing() } label: { Image(systemName: "square.and.pencil") }
+                    .help("New Message")
+            }
+        }
     }
 
     private var filtered: [MessageThread] {
@@ -403,12 +407,6 @@ enum MessagesWindow {
     fileprivate static weak var manager: MessagesManager?
 
     private final class CloseObserver: NSObject, NSWindowDelegate {
-        // A window with a toolbar keeps its title bar as an opaque strip in full screen, over the conversation header; this
-        // window has no use for one (the sidebar toggle is the only thing SwiftUI puts there), so drop it.
-        func windowWillEnterFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
-        func windowDidEnterFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
-        func windowDidExitFullScreen(_ notification: Notification) { (notification.object as? NSWindow)?.toolbar = nil }
-
         func windowWillClose(_ notification: Notification) {
             // Back to a menu-bar app: no Dock icon, and the default icon again.
             NSApp.applicationIconImage = nil
@@ -431,13 +429,11 @@ enum MessagesWindow {
             w.title = "Messages"
             w.titleVisibility = .hidden // the conversation header and the sidebar already say what this is
             w.titlebarAppearsTransparent = true
+            // The toolbar's title-bar strip would cover the conversation header in full screen, so full screen is not offered.
+            w.collectionBehavior.insert(.fullScreenNone)
             w.isReleasedWhenClosed = false
             w.delegate = closeObserver
-            let host = NSHostingView(rootView: MessagesView(manager: manager))
-            // Don't let SwiftUI install a window toolbar (just the sidebar toggle): macOS keeps its title bar as an opaque strip
-            // over the conversation header in full screen.
-            host.sceneBridgingOptions = []
-            w.contentView = host
+            w.contentView = NSHostingView(rootView: MessagesView(manager: manager))
             w.setFrameAutosaveName("GossipMessages")
             w.center()
             window = w
