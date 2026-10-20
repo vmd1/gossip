@@ -78,6 +78,7 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        dev.vmd1.gossip.features.media.MediaListenerAccess.onConnected?.invoke() // media sessions can now be read
         if (!isPhone) {
             Log.i(TAG, "Not a phone — notification forwarding disabled on this device")
             return

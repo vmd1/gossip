@@ -36,6 +36,12 @@ object MediaMessageType {
     const val COMMAND = "media.command"
 }
 
+/** Lets the notification listener tell [MediaControlBridge] that notification access is now available, so the bridge never
+ *  has to poll for it. */
+object MediaListenerAccess {
+    @Volatile var onConnected: (() -> Unit)? = null
+}
+
 /**
  * Plain-data snapshot of a media session's now-playing state (android -> mac),
  * independent of `MediaController`/`MediaMetadata` so it can be unit tested and
@@ -106,10 +112,12 @@ class MediaControlBridge(
      *  are the core's `CommandGuard` (`desktop/core/src/features/media.rs`), shared with every platform. */
     private val commandGuard = CoreCommandGuard()
 
-    /** Registers the `media.command` handler and starts observing active sessions. Access can be granted after the
-     *  service started, so until a listener works this retries every 20 s instead of giving up once. */
+    /** Registers the `media.command` handler and starts observing active sessions. If notification access is not
+     *  granted yet nothing polls: the listener service calls [MediaListenerAccess.onConnected] the moment access is
+     *  granted (or the system reconnects it), which tries again. */
     fun start() {
         messageRouter.register(MediaMessageType.COMMAND, commandHandler)
+        MediaListenerAccess.onConnected = { handler.post { tryListen() } }
         tryListen()
     }
 
@@ -123,11 +131,11 @@ class MediaControlBridge(
         } catch (e: SecurityException) {
             // not enabled in Settings > Notification access yet
         }
-        Log.w(TAG, "Notification access not granted to Gossip; media controls unavailable, retrying")
-        handler.postDelayed({ tryListen() }, 20_000)
+        Log.w(TAG, "Notification access not granted to Gossip; media controls unavailable until it is")
     }
 
     fun stop() {
+        MediaListenerAccess.onConnected = null
         handler.removeCallbacksAndMessages(null)
         listening = false
         messageRouter.unregister(commandHandler)
