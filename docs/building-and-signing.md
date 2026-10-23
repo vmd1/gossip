@@ -77,19 +77,20 @@ xcodegen generate
   - `--generate-only` creates the files without touching your keychain
   - without the local file, builds fall back to ad-hoc signing and work, but permission grants reset on each build
   - Debug builds have Hardened Runtime switched off so the unit-test host can load its test bundle with this team-less identity; Release keeps it
-  - **Keychain prompts on every rebuild.** The self-signed identity has no team ID, so macOS records the code hash of one build in each Keychain item's partition list, and every rebuilt or updated Gossip is asked for the login password again (once per item: identity, trusted devices, revoked devices, relay topic). For local development you can avoid this with a free Apple Development certificate, which carries a team ID that stays the same across builds:
+  - **Secrets are not in the Keychain.** The identity keys, trusted/revoked devices and relay topic are `0600` files under `~/Library/Application Support/Gossip/secrets/` (`SecretBlobStore.swift`). A self-signed app has no team ID, so any Keychain storage asked for the login password once per item and again per rebuild, and no access list avoids that without a paid Developer ID. The trade-off: any process running as your user can read these files, as it could an unrestricted Keychain item. An install upgraded from a release that used the Keychain starts with a new identity and has to be paired again
+  - for local development, a free Apple Development certificate carries a team ID that stays the same across builds, so Accessibility and Input Monitoring grants survive rebuilds:
     - add your Apple ID in Xcode (Settings > Accounts), select the Personal Team, then Manage Certificates > + > Apple Development
     - run `mac/scripts/use-apple-development-signing.sh` (it finds the certificate, reads the team ID, and rewrites `Signing.local.xcconfig`, keeping the old one as `.bak`; `--undo` restores it)
-    - rebuild; the switch changes the signature once, so expect one last round of Keychain prompts (choose **Always Allow**) and give Accessibility and Input Monitoring again
-    - releases are not affected by this script; users of the self-signed releases still get the prompts after an update until releases carry a team ID (a paid Developer ID, or a different place to keep the secrets)
+    - rebuild; the switch changes the signature once, so give Accessibility and Input Monitoring again
+    - releases are not affected by this script
 - **Android: one project key**
   - Gradle (`android/app/build.gradle.kts`) signs with the project key when it finds one, and otherwise falls back to the default debug keystore
     - CI: environment variables `GOSSIP_ANDROID_KEYSTORE`, `GOSSIP_ANDROID_KEYSTORE_PASSWORD`, `GOSSIP_ANDROID_KEY_ALIAS`, `GOSSIP_ANDROID_KEY_PASSWORD`
     - local: `~/.gossip-signing/gossip-android.keystore` and `gossip-android.properties`
-  - reuse the keystore your installed apps are already signed with, so they keep updating in place:
+  - a dedicated keystore, independent of `~/.android/debug.keystore`, so the project's signing key isn't a well-known password sitting in a file every Android dev machine has:
 
 ```bash
-android/scripts/signing.sh adopt     # copies ~/.android/debug.keystore into ~/.gossip-signing/
+android/scripts/signing.sh generate     # creates a fresh keystore at ~/.gossip-signing/, random password
 ```
 
 - **Back up `~/.gossip-signing/`** and never commit anything in it (`.gitignore` blocks `*.p12`, `*.keystore` and `*.password`)
@@ -155,8 +156,8 @@ JSON endpoint whose URL is one constant, `RelayEndpointPolicy.directoryEndpoint`
 the relay socket cannot connect), parses the answer in the Rust core (any `wss://`/`ws://` host it names is used) and
 keeps the last good raw answer in `~/Library/Application Support/Connect/relay-directory.json`, which it keeps using when
 the directory is unreachable. Release builds only connect with `wss://`, to whichever host the user or the directory names;
-Debug builds also allow `ws://` to `localhost`/`127.0.0.1`. The topic secret is stored in the
-login Keychain (account `relay-topic`; a throwaway file under XCTest). A device reached only through the relay shows in
+Debug builds also allow `ws://` to `localhost`/`127.0.0.1`. The topic secret is stored in a private file
+(`secrets/relay-topic.secret`; a throwaway file under XCTest). A device reached only through the relay shows in
 teal in the menu bar and refuses screen mirroring and Universal Control ("needs the same network").
 
 `mac/scripts/e2e-relay.sh` starts the local relay (`POW_BITS=8`, a free port) and a tiny local relay directory (an HTTP server
