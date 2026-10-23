@@ -113,7 +113,7 @@ android/scripts/signing.sh generate     # creates a fresh keystore at ~/.gossip-
     - `version-check.yml` runs on every pull request: `VERSION` must be well formed and never go down, and a PR that changes `schema/` must raise the major above the one on `main` unless it carries the `schema-compatible` label (for edits that don't change the wire format, such as wording fixes)
     - to release: open a PR that edits `VERSION`, merge it to `main`
   - versions: the version becomes Android's `versionName` and the Mac app's version (`MARKETING_VERSION`); local builds show `dev` on Android and `1.0` on the Mac
-    - Android's `versionCode` stays 1 on purpose, so a local build can still replace a release APK
+    - Android's `versionCode` is `major * 10000 + minor * 100` from `VERSION` (2.3 is 20300), so it rises with every release; a local build of an older version needs an uninstall before it can replace a newer release APK
 - **Where the signing keys live (public repo)**
   - in a GitHub **environment** named `release`, restricted to the `main` branch, so only jobs running on `main` that declare `environment: release` can read them
   - pull-request workflows, fork PRs and feature branches cannot
