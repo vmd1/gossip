@@ -79,11 +79,12 @@ android {
         applicationId = "dev.vmd1.gossip"
         minSdk = 29
         targetSdk = 34
-        // versionCode stays 1 on purpose: Android refuses to install a lower versionCode over a higher one, so
-        // stamping the release number into it would stop a local build from replacing a release APK. Only the
-        // human-readable name carries the release number (set by the release workflow); local builds are "dev".
-        versionCode = 1
-        versionName = System.getenv("GOSSIP_RELEASE_NUMBER")?.takeIf { it.isNotBlank() } ?: "dev"
+        // Both come from the repo-root VERSION file (MAJOR.MINOR), so every release has a higher versionCode
+        // (F-Droid and Android updates need one): 2.3 is 20300. A local build of the same version reinstalls over a
+        // release APK; one of an older version needs an uninstall first.
+        val (major, minor) = rootProject.file("../VERSION").readText().trim().split(".").map { it.toInt() }
+        versionCode = major * 10000 + minor * 100
+        versionName = System.getenv("GOSSIP_RELEASE_NUMBER")?.takeIf { it.isNotBlank() } ?: "$major.$minor"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
