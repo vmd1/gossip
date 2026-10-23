@@ -557,7 +557,11 @@ struct PairingSheetView: View {
                     Image(nsImage: qrImage)
                         .interpolation(.none)
                         .resizable()
-                        .frame(width: 220, height: 220)
+                        .frame(width: 300, height: 300)
+                        // Scanners need a light border (the "quiet zone") around the code, which dark mode's
+                        // background would otherwise take away.
+                        .padding(16)
+                        .background(Color.white)
                 }
                 Text("Waiting for phone to connect…")
                     .foregroundStyle(.secondary)

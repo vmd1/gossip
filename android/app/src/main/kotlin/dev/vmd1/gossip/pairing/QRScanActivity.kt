@@ -14,6 +14,8 @@ import androidx.activity.viewModels
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Arrangement
@@ -42,10 +44,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
+import com.google.zxing.NotFoundException
+import com.google.zxing.ReaderException
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.GlobalHistogramBinarizer
+import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeReader
 import dev.vmd1.gossip.crypto.IdentityKeyStore
 import dev.vmd1.gossip.crypto.TrustedDevicesStore
 import dev.vmd1.gossip.service.SyncForegroundService
@@ -56,6 +63,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "QRScanActivity"
+
+private val decodeHints = mapOf(
+    DecodeHintType.TRY_HARDER to true,
+    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+)
 
 /**
  * Scans the other device's pairing QR. As soon as a code is read the screen changes to the pairing screen, which
@@ -216,16 +228,22 @@ class QRScanActivity : ComponentActivity() {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
 
-            val scannerOptions = BarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                .build()
-            val scanner = BarcodeScanning.getClient(scannerOptions)
+            val reader = QRCodeReader()
 
+            // The pairing QR carries a few hundred bytes, so its modules are small: CameraX's 640x480 default analysis
+            // size is too coarse for zxing to resolve them.
             val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(android.util.Size(1920, 1080), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+                        )
+                        .build()
+                )
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
             analysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                processImageProxy(scanner, imageProxy)
+                processImageProxy(reader, imageProxy)
             }
 
             try {
@@ -237,22 +255,35 @@ class QRScanActivity : ComponentActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun processImageProxy(scanner: com.google.mlkit.vision.barcode.BarcodeScanner, imageProxy: ImageProxy) {
-        val mediaImage = imageProxy.image
-        if (mediaImage == null) {
-            imageProxy.close()
-            return
-        }
-        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        scanner.process(image)
-            .addOnSuccessListener { barcodes ->
-                val value = barcodes.firstOrNull { it.rawValue != null }?.rawValue
-                if (value != null && handledScan.compareAndSet(false, true)) {
-                    runOnUiThread { viewModel.onQrScanned(value) }
-                }
+    // zxing's finder-pattern detector tolerates the frame's actual rotation, so the Y plane is decoded as-is
+    // rather than rotated to match the display — the same approach zxing's own Camera1-based callers used.
+    private fun processImageProxy(reader: QRCodeReader, imageProxy: ImageProxy) {
+        try {
+            val plane = imageProxy.planes[0]
+            val data = ByteArray(plane.buffer.remaining())
+            plane.buffer.get(data)
+            val source = PlanarYUVLuminanceSource(
+                data, plane.rowStride, imageProxy.height,
+                0, 0, imageProxy.width, imageProxy.height, false
+            )
+            val result = try {
+                reader.decode(BinaryBitmap(HybridBinarizer(source)), decodeHints)
+            } catch (e: NotFoundException) {
+                // The global threshold copes better with a bright screen's glare than the local one on some frames.
+                reader.decode(BinaryBitmap(GlobalHistogramBinarizer(source)), decodeHints)
             }
-            .addOnFailureListener { e -> Log.w(TAG, "Barcode scan failed", e) }
-            .addOnCompleteListener { imageProxy.close() }
+            if (handledScan.compareAndSet(false, true)) {
+                runOnUiThread { viewModel.onQrScanned(result.text) }
+            }
+        } catch (e: ReaderException) {
+            // No readable QR code in this frame (not found, or found but too blurry to decode) — expected while the
+            // camera searches and focuses.
+        } catch (e: Exception) {
+            Log.w(TAG, "Barcode scan failed", e)
+        } finally {
+            reader.reset()
+            imageProxy.close()
+        }
     }
 
     override fun onDestroy() {
