@@ -16,7 +16,8 @@ Direct on your local network, optionally relayed (end-to-end encrypted) when you
 
 [**Download**](https://github.com/vmd1/gossip/releases/latest) · [Website](https://gossip.vmd1.dev) · [Getting started](docs/getting-started.md) · [FAQ](docs/faq.md) · [Roadmap](ROADMAP.md)
 
-<img src="site/hero.svg" alt="A Mac, an Android tablet and an Android phone linked together, with an optional relay for when you are away" width="720">
+<a href="site/video/gossip.mp4"><img src="site/video/gossip.gif" alt="Demo: a phone notification appears on the Mac and is answered inline, then the Mac's cursor moves onto the phone and turns on a setting" width="720"></a>
+<br><sub>Watch with sound: <a href="site/video/gossip.mp4">gossip.mp4</a></sub>
 
 </div>
 

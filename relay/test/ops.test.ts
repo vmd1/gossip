@@ -165,6 +165,25 @@ describe("website", () => {
     expect((await fetchRaw(`${base}/`, { headers: { "if-none-match": first.etag! } })).status).toBe(304);
   });
 
+  it("answers byte ranges, which Safari needs to play video", async () => {
+    const dir = makeSite();
+    writeFileSync(pjoin(dir, "clip.mp4"), "0123456789");
+    relay = await startRelay({ SITE_DIR: dir });
+    const url = `http://127.0.0.1:${relay.port}/clip.mp4`;
+    const part = await fetch(url, { headers: { range: "bytes=2-5" } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get("content-type")).toBe("video/mp4");
+    expect(part.headers.get("content-range")).toBe("bytes 2-5/10");
+    expect(await part.text()).toBe("2345");
+    expect(await (await fetch(url, { headers: { range: "bytes=7-" } })).text()).toBe("789");
+    expect(await (await fetch(url, { headers: { range: "bytes=-3" } })).text()).toBe("789");
+    expect(await (await fetch(url, { headers: { range: "bytes=4-99" } })).text()).toBe("456789");
+    expect((await fetch(url, { headers: { range: "bytes=10-" } })).status).toBe(416);
+    const whole = await fetch(url, { headers: { range: "bytes=0-1,4-5" } });
+    expect(whole.status).toBe(200);
+    expect(await whole.text()).toBe("0123456789");
+  });
+
   it("is off unless SITE_DIR is set, and refuses a directory without an index", async () => {
     relay = await startRelay();
     expect((await fetchRaw(`http://127.0.0.1:${relay.port}/`)).status).toBe(404);

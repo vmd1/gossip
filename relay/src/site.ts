@@ -7,7 +7,9 @@ const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
   ".svg": "image/svg+xml",
+  ".mp4": "video/mp4",
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
   ".webmanifest": "application/manifest+json",
@@ -15,7 +17,7 @@ const TYPES: Record<string, string> = {
 
 /** The site loads no scripts, fonts, frames or third-party resources, so the policy can be this tight. */
 const SECURITY_HEADERS = {
-  "content-security-policy": "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "content-security-policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
 };
@@ -83,6 +85,7 @@ export class Site {
       "content-type": asset.type,
       "content-length": asset.body.length,
       etag: asset.etag,
+      "accept-ranges": "bytes",
       // The page can change with a release; the icon and stylesheet are small. Revalidate cheaply.
       "cache-control": "public, max-age=300, must-revalidate",
     };
@@ -91,8 +94,43 @@ export class Site {
       res.end();
       return true;
     }
+    const range = req.headers.range === undefined ? null : parseRange(req.headers.range, asset.body.length);
+    if (range === "unsatisfiable") {
+      res.writeHead(416, { ...SECURITY_HEADERS, "content-range": `bytes */${asset.body.length}` });
+      res.end();
+      return true;
+    }
+    if (range) {
+      // Safari will not play a video from a server that cannot answer byte ranges.
+      const [start, end] = range;
+      res.writeHead(206, { ...headers, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${asset.body.length}` });
+      res.end(req.method === "HEAD" ? undefined : asset.body.subarray(start, end + 1));
+      return true;
+    }
     res.writeHead(200, headers);
     res.end(req.method === "HEAD" ? undefined : asset.body);
     return true;
   }
+}
+
+/**
+ * Parses a single `bytes=` range into inclusive offsets. Multi-range and malformed headers return null, so the whole
+ * file is sent (which RFC 9110 allows); a well-formed range outside the file is "unsatisfiable".
+ */
+function parseRange(header: string, size: number): [number, number] | "unsatisfiable" | null {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  let start: number, end: number;
+  if (m[1] === "") {
+    const suffix = Number(m[2]);
+    if (suffix === 0) return "unsatisfiable";
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
+    if (m[2] !== "" && Number(m[2]) < start) return null;
+  }
+  if (start >= size) return "unsatisfiable";
+  return [start, end];
 }
