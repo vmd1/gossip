@@ -170,7 +170,14 @@ final class RelayDirectoryService: ObservableObject {
 
     static func defaultCacheURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("Connect", isDirectory: true).appendingPathComponent("relay-directory.json")
+        let url = appSupport.appendingPathComponent("Gossip", isDirectory: true).appendingPathComponent("relay-directory.json")
+        // One-time migration from the pre-rebrand "Connect" folder name; a no-op once it's moved or was never there.
+        let oldURL = appSupport.appendingPathComponent("Connect", isDirectory: true).appendingPathComponent("relay-directory.json")
+        if !FileManager.default.fileExists(atPath: url.path), FileManager.default.fileExists(atPath: oldURL.path) {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.moveItem(at: oldURL, to: url)
+        }
+        return url
     }
 
     /// Polling is switched off entirely while the endpoint is still the placeholder (the built-in default is used).
