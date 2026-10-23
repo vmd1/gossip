@@ -2,7 +2,7 @@ import Foundation
 import CoreGraphics
 
 /// Persists the user's placements (and the last-known pixel size of each device) as JSON next to the other
-/// Gossip state: `~/Library/Application Support/Connect/universal-control-layout.json`. Keyed by device id;
+/// Gossip state: `~/Library/Application Support/Gossip/universal-control-layout.json`. Keyed by device id;
 /// Mac displays are not stored — they come from the OS (by display UUID).
 final class ControlLayoutStore {
     private struct File: Codable {
@@ -19,10 +19,15 @@ final class ControlLayoutStore {
             self.fileURL = fileURL
         } else {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            // Still "Connect" — see IdentityKeyStore.
-            let dir = appSupport.appendingPathComponent("Connect", isDirectory: true)
+            let dir = appSupport.appendingPathComponent("Gossip", isDirectory: true)
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            self.fileURL = dir.appendingPathComponent("universal-control-layout.json")
+            let url = dir.appendingPathComponent("universal-control-layout.json")
+            // One-time migration from the pre-rebrand "Connect" folder name; a no-op once it's moved or was never there.
+            let oldURL = appSupport.appendingPathComponent("Connect", isDirectory: true).appendingPathComponent("universal-control-layout.json")
+            if !FileManager.default.fileExists(atPath: url.path), FileManager.default.fileExists(atPath: oldURL.path) {
+                try? FileManager.default.moveItem(at: oldURL, to: url)
+            }
+            self.fileURL = url
         }
     }
 
