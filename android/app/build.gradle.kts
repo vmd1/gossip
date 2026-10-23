@@ -46,6 +46,17 @@ val buildGossipCore by tasks.registering(Exec::class) {
     onlyIf { project.hasProperty("rebuildCore") || !File(gossipCoreOutput, "kotlin").isDirectory }
 }
 
+// ---- scrcpy server (Apache 2.0, github.com/Genymobile/scrcpy) ---------------------------------------------------
+// Built from source (pinned commit, see scripts/build-scrcpy-server.sh) instead of bundling the binary downloaded
+// from GitHub Releases, so nothing in the APK's assets is a blob this build didn't compile itself.
+val gossipScrcpyServerDir: File = File(projectDir, "build/scrcpy")
+val buildScrcpyServer by tasks.registering(Exec::class) {
+    description = "Builds the bundled scrcpy server jar from source instead of a downloaded prebuilt binary."
+    workingDir = rootDir
+    commandLine("bash", "scripts/build-scrcpy-server.sh")
+    onlyIf { project.hasProperty("rebuildScrcpyServer") || !File(gossipScrcpyServerDir, "scrcpy-server-v4.1.jar").isFile }
+}
+
 // JVM unit tests load the engine through JNA from a host build of the same library.
 val gossipCoreHostLibDir: File = File(gossipDesktopDir, "target/debug")
 val buildGossipCoreHost by tasks.registering(Exec::class) {
@@ -120,6 +131,8 @@ android {
             // by desktop/scripts/build-android.sh (see the buildGossipCore task below).
             jniLibs.srcDir(File(gossipCoreOutput, "jniLibs"))
             java.srcDir(File(gossipCoreOutput, "kotlin"))
+            // The scrcpy server jar, built from source by the buildScrcpyServer task below.
+            assets.srcDir(gossipScrcpyServerDir)
         }
     }
 
@@ -184,10 +197,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
-    implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    // Pure-Java QR *encoding* (no Android dependency, unlike the scanning stack above) —
-    // used to render this device's own pairing QR when it's the one being scanned rather
-    // than scanning. See features/pairing/... QR generation.
+    // Pure-Java QR encoding and decoding (no Play Services dependency): renders this device's
+    // own pairing QR, and (fed from CameraX frames in QRScanActivity) scans the other device's.
     implementation("com.google.zxing:core:3.5.3")
 
     // Shizuku (Instant Hotspot, background clipboard reads): obtains a shell-UID Binder to
@@ -244,7 +255,7 @@ configurations.matching { it.name == "testCompileClasspath" || it.name == "testR
 }
 
 // The engine must exist before anything compiles, and unit tests need its host build.
-tasks.named("preBuild") { dependsOn(buildGossipCore) }
+tasks.named("preBuild") { dependsOn(buildGossipCore, buildScrcpyServer) }
 tasks.withType<Test>().configureEach {
     dependsOn(buildGossipCoreHost)
     systemProperty("jna.library.path", gossipCoreHostLibDir.absolutePath)

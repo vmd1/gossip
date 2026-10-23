@@ -3,9 +3,15 @@
 # installed from any other in place. Android refuses an update signed with a different key (you would have to
 # uninstall first, losing the app's data and pairings).
 #
-#   signing.sh adopt     Use this machine's existing ~/.android/debug.keystore as the project key: copies it to
-#                        ~/.gossip-signing/gossip-android.keystore (+ .properties). Apps already installed from
-#                        local builds keep updating in place. Gradle picks the key up automatically.
+#   signing.sh generate  Create a fresh, dedicated keystore at ~/.gossip-signing/gossip-android.keystore
+#                        (+ .properties) with a random password, independent of ~/.android/debug.keystore.
+#                        This is the project key: keep it the same across releases and local builds keep
+#                        updating in place. Gradle picks the key up automatically.
+#   signing.sh adopt     Legacy path: copies an existing keystore (default ~/.android/debug.keystore) in as
+#                        the project key instead of generating a dedicated one. Prefer `generate` for a new
+#                        project key — reusing the OS debug keystore means a well-known password sitting in
+#                        a file most machines already have, which is unnecessary exposure for a key that
+#                        apps trust for silent in-place updates.
 #   signing.sh upload    Store the key in the GitHub `release` environment (restricted to main) so the release
 #                        workflow signs with it. Needs `gh` with admin rights on the repo.
 #
@@ -24,6 +30,20 @@ ENVIRONMENT="release"
 fingerprint() { keytool -list -v -keystore "$1" -storepass "$2" 2>/dev/null | sed -n 's/.*SHA256: //p' | head -1; }
 
 case "${1:-}" in
+  generate)
+    if [ -f "$KEYSTORE" ]; then echo "$KEYSTORE already exists; not overwriting."; exit 0; fi
+    mkdir -p "$STORE"; chmod 700 "$STORE"
+    umask 077
+    ALIAS="gossip-release"
+    PW="$(openssl rand -base64 24)"
+    keytool -genkeypair -v -keystore "$KEYSTORE" -alias "$ALIAS" -keyalg RSA -keysize 2048 -validity 10950 \
+      -storepass "$PW" -keypass "$PW" -dname "CN=Gossip, OU=Gossip, O=vmd1, L=Unknown, ST=Unknown, C=US" >/dev/null
+    printf 'storePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' "$PW" "$ALIAS" "$PW" > "$PROPS"
+    chmod 600 "$KEYSTORE" "$PROPS"
+    echo "Generated a dedicated project key: $KEYSTORE"
+    echo "SHA-256: $(fingerprint "$KEYSTORE" "$PW")"
+    echo "Back up $STORE now (password manager, etc.) — GitHub secrets cannot be read back."
+    ;;
   adopt)
     SRC="${2:-$HOME/.android/debug.keystore}"
     [ -f "$SRC" ] || { echo "No keystore at $SRC" >&2; exit 1; }
@@ -51,5 +71,5 @@ case "${1:-}" in
     echo "Secrets in '$ENVIRONMENT': $(gh secret list --env "$ENVIRONMENT" --repo "$REPO" | awk '{print $1}' | tr '\n' ' ')"
     echo "Key SHA-256 (put this in release.yml's EXPECTED_ANDROID_CERT_SHA256, lowercase, no colons): $(fingerprint "$KEYSTORE" "$(prop storePassword)")"
     ;;
-  *) echo "usage: $0 adopt [keystore] | upload" >&2; exit 2 ;;
+  *) echo "usage: $0 generate | adopt [keystore] | upload" >&2; exit 2 ;;
 esac

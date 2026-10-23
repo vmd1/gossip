@@ -63,7 +63,7 @@ jobs:
     env:
       # SHA-256 of the project signing certificate (public information). The build fails if the APK is signed by
       # anything else, so a release can never silently break in-place updates on installed devices.
-      EXPECTED_ANDROID_CERT_SHA256: "092f9e34db305f55a2f638128753e71a28d111bcaa741784531df39f60101101"
+      EXPECTED_ANDROID_CERT_SHA256: "ed84bf869ddb60d2842532053d394bee0a7868f62d94550713309f1c1b26deca"
     defaults:
       run:
         working-directory: android

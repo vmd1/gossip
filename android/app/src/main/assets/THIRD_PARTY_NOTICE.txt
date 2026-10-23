@@ -1,6 +1,7 @@
 scrcpy-server-v4.1.jar
-  Source:   https://github.com/Genymobile/scrcpy (release v4.1, asset "scrcpy-server-v4.1")
+  Source:   https://github.com/Genymobile/scrcpy (tag v4.1, commit 2926c06c5dc3064ae6d8db706f1a98a37cfcf3f0)
   License:  Apache License 2.0 — https://www.apache.org/licenses/LICENSE-2.0
   Copyright (C) 2018 Genymobile, Romain Vimont
-  SHA-256:  deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae (matches the release's SHA256SUMS.txt)
-  Unmodified. Pinned to this version: scrcpy's client/server wire format is not a stable API.
+  Built from source by this build (scripts/build-scrcpy-server.sh), not bundled as a downloaded binary. The
+  script pins the exact commit and fails if the tag resolves to anything else.
+  Pinned to this version: scrcpy's client/server wire format is not a stable API.

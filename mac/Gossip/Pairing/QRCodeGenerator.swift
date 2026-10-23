@@ -56,7 +56,9 @@ enum QRCodeGenerator {
         let context = CIContext()
         let filter = CIFilter.qrCodeGenerator()
         filter.message = data
-        filter.correctionLevel = "M"
+        // "L" keeps the code as sparse as possible: the payload is a few hundred bytes, and the screen-to-camera link
+        // is clean enough that bigger modules matter more than error correction.
+        filter.correctionLevel = "L"
 
         guard let outputImage = filter.outputImage else { return nil }
         let transform = CGAffineTransform(scaleX: scale, y: scale)
