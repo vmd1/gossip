@@ -26,6 +26,8 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import uniffi.gossip_ffi.CommandGuard as CoreCommandGuard
 import uniffi.gossip_ffi.MediaAction
+import uniffi.gossip_ffi.MediaVolumeDirection
+import uniffi.gossip_ffi.VolumeGuard as CoreVolumeGuard
 
 private const val TAG = "MediaControlBridge"
 
@@ -34,6 +36,8 @@ object MediaMessageType {
     /** The synchronised state slot a phone keeps its now-playing state in. */
     const val NOWPLAYING_SLOT = "media.nowplaying"
     const val COMMAND = "media.command"
+    /** Mac -> phone: one volume step of the music stream (`direction`: up or down, `commandId`). */
+    const val VOLUME = "media.volume"
 }
 
 /** Lets the notification listener tell [MediaControlBridge] that notification access is now available, so the bridge never
@@ -106,6 +110,10 @@ class MediaControlBridge(
         MediaSessionManager.OnActiveSessionsChangedListener { controllers -> refreshActiveSessions(controllers) }
 
     private val commandHandler = EnvelopeHandler { envelope -> handleCommand(envelope) }
+    private val volumeHandler = EnvelopeHandler { envelope -> handleVolume(envelope) }
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+    /** A volume step is not idempotent either: each `media.volume` `commandId` is acted on once, by the core's `VolumeGuard`. */
+    private val volumeGuard = CoreVolumeGuard()
 
     /** Acts on each `media.command` `commandId` once. `skipToNext()`/`skipToPrevious()` are not idempotent, so a duplicate delivery
      *  (retry, relay race, dedupe-cache eviction) must not skip twice; the bounded recently-handled cache and the validation
@@ -117,6 +125,7 @@ class MediaControlBridge(
      *  granted (or the system reconnects it), which tries again. */
     fun start() {
         messageRouter.register(MediaMessageType.COMMAND, commandHandler)
+        messageRouter.register(MediaMessageType.VOLUME, volumeHandler)
         MediaListenerAccess.onConnected = { handler.post { tryListen() } }
         tryListen()
     }
@@ -139,6 +148,7 @@ class MediaControlBridge(
         handler.removeCallbacksAndMessages(null)
         listening = false
         messageRouter.unregister(commandHandler)
+        messageRouter.unregister(volumeHandler)
         runCatching { mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener) }
         activeController?.unregisterCallback(controllerCallback)
         activeController = null
@@ -173,6 +183,17 @@ class MediaControlBridge(
             MediaAction.PREVIOUS -> controls.skipToPrevious()
         }
         accepted.seekMs?.let { controls.seekTo(it) }
+    }
+
+    private fun handleVolume(envelope: Envelope) {
+        if (envelope.type != MediaMessageType.VOLUME) return
+        // `null`: a duplicate delivery or a malformed step.
+        val direction = runCatching { volumeGuard.accept(envelope.payload.toString()) }.getOrNull() ?: return
+        val adjust = when (direction) {
+            MediaVolumeDirection.UP -> android.media.AudioManager.ADJUST_RAISE
+            MediaVolumeDirection.DOWN -> android.media.AudioManager.ADJUST_LOWER
+        }
+        audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, adjust, android.media.AudioManager.FLAG_SHOW_UI)
     }
 
     /** Reports the current now-playing state as the `media.nowplaying` state slot. The core sends it to every device that

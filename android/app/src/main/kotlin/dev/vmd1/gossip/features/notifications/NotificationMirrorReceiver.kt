@@ -102,6 +102,8 @@ class NotificationMirrorReceiver(
         }
         val tag = localTag(envelope.senderId, payload.id)
         if (book.isStale(tag, payload.timestamp)) return
+        // A live notification updates as it goes (a timer, a delivery): an alert per update would be noise.
+        if (payload.live != null) return
         postMirroredNotification(sourceDeviceId = envelope.senderId, payload = payload)
     }
 

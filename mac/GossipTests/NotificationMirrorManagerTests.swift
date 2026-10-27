@@ -61,6 +61,43 @@ final class NotificationMirrorManagerTests: XCTestCase {
         XCTAssertNil(try guardLogic.accept(payloadJson: json), "the same attempt is acted on once")
     }
 
+    func testNotificationActionPayloadIsPressedOnce() throws {
+        let json = GossipCoreKit.notificationActionPayload(notificationId: "42", index: 1, attemptId: "attempt-1")
+        let guardLogic = GossipCoreKit.ActionGuard()
+        let accepted = try guardLogic.accept(payloadJson: json)
+        XCTAssertEqual(accepted?.notificationId, "42")
+        XCTAssertEqual(accepted?.index, 1)
+        XCTAssertNil(try guardLogic.accept(payloadJson: json), "the same press is acted on once")
+    }
+
+    func testDecodeRichNotificationPostedPayload() throws {
+        let manager = makeManager()
+        let payload: JSONValue = .object([
+            "id": .string("42"),
+            "appPackage": .string("com.whatsapp"),
+            "appName": .string("WhatsApp"),
+            "title": .string("Jane Doe"),
+            "body": .string("Running 5 min late"),
+            "hasReplyAction": .bool(true),
+            "timestamp": .number(1_732_300_000_000),
+            "avatarBase64": .string("aGVsbG8="),
+            "actions": .array([.object(["index": .number(1), "title": .string("Mark as read")])]),
+            "smartReplies": .array([.string("On my way")]),
+            "live": .object(["category": .string("progress"), "progress": .number(60), "progressMax": .number(100)])
+        ])
+
+        let decoded = try manager.decode(NotificationPostedPayload.self, from: payload)
+
+        XCTAssertEqual(decoded.avatarBase64, "aGVsbG8=")
+        XCTAssertNil(decoded.pictureBase64)
+        XCTAssertEqual(decoded.actions?.first?.index, 1)
+        XCTAssertEqual(decoded.actions?.first?.title, "Mark as read")
+        XCTAssertEqual(decoded.smartReplies, ["On my way"])
+        XCTAssertEqual(decoded.live?.category, "progress")
+        XCTAssertEqual(decoded.live?.progress, 60)
+        XCTAssertNil(decoded.live?.promoted)
+    }
+
     func testReplyCategoryUsesTextInputAction() {
         XCTAssertEqual(NotificationMirrorManager.replyCategoryIdentifier, "dev.vmd1.gossip.notification.reply")
         XCTAssertEqual(NotificationMirrorManager.replyActionIdentifier, "dev.vmd1.gossip.notification.replyAction")

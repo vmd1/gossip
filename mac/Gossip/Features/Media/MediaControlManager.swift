@@ -144,6 +144,11 @@ final class MediaControlManager: ObservableObject {
         return (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .object([:])
     }
 
+    static func volumePayload(up: Bool, commandId: String = UUID().uuidString) -> JSONValue {
+        let json = GossipCoreKit.mediaVolumePayload(direction: up ? .up : .down, commandId: commandId)
+        return (try? JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) ?? .object([:])
+    }
+
     // MARK: - Sending commands
 
     func sendCommand(_ action: MediaCommandAction, seekMs: Int? = nil) {
@@ -153,6 +158,18 @@ final class MediaControlManager: ObservableObject {
             senderId: identity.deviceId,
             recipientId: deviceId,
             payload: Self.commandPayload(action: action, seekMs: seekMs)
+        )
+        try? transportManager.send(envelope: envelope)
+    }
+
+    /// One volume step of the phone's music stream, `up` or `down`; only the phone acts on it (`media.volume`).
+    func sendVolume(up: Bool) {
+        guard let transportManager, let deviceId = effectiveSelectedDeviceId else { return }
+        let envelope = Envelope(
+            type: "media.volume",
+            senderId: identity.deviceId,
+            recipientId: deviceId,
+            payload: Self.volumePayload(up: up)
         )
         try? transportManager.send(envelope: envelope)
     }

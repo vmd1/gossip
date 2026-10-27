@@ -50,3 +50,47 @@ impl ReplyGuard {
         Some((id, text))
     }
 }
+
+/// `notification.action`: press one of the notification's own buttons, `index` being its position in
+/// `Notification.actions`. Pressing a button is not idempotent either (it can archive or answer twice), so it
+/// carries a fresh `attemptId` like a reply.
+pub fn action_payload(notification_id: &str, index: i32, attempt_id: &str) -> Map<String, Value> {
+    object([
+        ("id", notification_id.into()),
+        ("index", index.into()),
+        ("attemptId", attempt_id.into()),
+    ])
+}
+
+#[derive(Debug, Clone)]
+pub struct ActionGuard {
+    recent: RecentIds,
+}
+
+impl Default for ActionGuard {
+    fn default() -> Self {
+        Self {
+            recent: RecentIds::new(ATTEMPT_CACHE_SIZE),
+        }
+    }
+}
+
+impl ActionGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `(notification id, button index)` to press, or `None` for a duplicate attempt, a negative index or a press
+    /// without an `attemptId` (required: the message is newer than any sender that could omit it).
+    pub fn accept(&mut self, payload: &Map<String, Value>) -> Option<(String, i32)> {
+        let attempt = payload.get("attemptId")?.as_str()?;
+        let id = payload.get("id")?.as_str()?.to_owned();
+        let index = i32::try_from(payload.get("index")?.as_i64()?)
+            .ok()
+            .filter(|i| *i >= 0)?;
+        if !self.recent.first_time(attempt) {
+            return None;
+        }
+        Some((id, index))
+    }
+}

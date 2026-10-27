@@ -495,6 +495,58 @@ pub fn media_command_payload(
     object_json(media::command_payload(action.into(), seek_ms, &command_id))
 }
 
+#[derive(Debug, Clone, Copy, uniffi::Enum)]
+pub enum MediaVolumeDirection {
+    Up,
+    Down,
+}
+
+impl From<MediaVolumeDirection> for media::VolumeDirection {
+    fn from(d: MediaVolumeDirection) -> Self {
+        match d {
+            MediaVolumeDirection::Up => Self::Up,
+            MediaVolumeDirection::Down => Self::Down,
+        }
+    }
+}
+
+impl From<media::VolumeDirection> for MediaVolumeDirection {
+    fn from(d: media::VolumeDirection) -> Self {
+        match d {
+            media::VolumeDirection::Up => Self::Up,
+            media::VolumeDirection::Down => Self::Down,
+        }
+    }
+}
+
+/// The `media.volume` payload JSON; `command_id` must be a fresh UUID per call.
+#[uniffi::export]
+pub fn media_volume_payload(direction: MediaVolumeDirection, command_id: String) -> String {
+    object_json(media::volume_payload(direction.into(), &command_id))
+}
+
+/// Receiver side of `media.volume`: acts on each `commandId` once.
+#[derive(uniffi::Object)]
+pub struct VolumeGuard(Mutex<media::VolumeGuard>);
+
+#[uniffi::export]
+impl VolumeGuard {
+    #[uniffi::constructor]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(media::VolumeGuard::new())))
+    }
+
+    /// The step to take, or `None` for a duplicate or malformed one.
+    pub fn accept(
+        &self,
+        payload_json: String,
+    ) -> Result<Option<MediaVolumeDirection>, GossipError> {
+        Ok(lock(&self.0)
+            .accept(&payload(&payload_json)?)
+            .map(Into::into))
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct AcceptedCommand {
     pub action: MediaAction,
@@ -562,6 +614,47 @@ pub fn notification_reply_payload(
     object_json(notifications::reply_payload(
         &notification_id,
         &text,
+        &attempt_id,
+    ))
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AcceptedAction {
+    pub notification_id: String,
+    pub index: i32,
+}
+
+/// Each button press acts once, so a duplicate delivery cannot archive or answer twice.
+#[derive(uniffi::Object)]
+pub struct ActionGuard(Mutex<notifications::ActionGuard>);
+
+#[uniffi::export]
+impl ActionGuard {
+    #[uniffi::constructor]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(notifications::ActionGuard::new())))
+    }
+
+    pub fn accept(&self, payload_json: String) -> Result<Option<AcceptedAction>, GossipError> {
+        Ok(lock(&self.0)
+            .accept(&payload(&payload_json)?)
+            .map(|(notification_id, index)| AcceptedAction {
+                notification_id,
+                index,
+            }))
+    }
+}
+
+/// The `notification.action` payload JSON for a fresh press (`attempt_id` must be a fresh UUID).
+#[uniffi::export]
+pub fn notification_action_payload(
+    notification_id: String,
+    index: i32,
+    attempt_id: String,
+) -> String {
+    object_json(notifications::action_payload(
+        &notification_id,
+        index,
         &attempt_id,
     ))
 }

@@ -131,6 +131,8 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
 
         let postedIdentifier = localIdentifier(for: posted.id, sourceDeviceId: envelope.senderId)
         if book.isStale(postedIdentifier, postedAt: posted.timestamp) { return }
+        // A live notification updates as it goes (a timer, a delivery): a banner per update would be noise.
+        if posted.live != nil { return }
 
         let content = UNMutableNotificationContent()
         content.title = String(posted.appName.prefix(80))
@@ -297,6 +299,27 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Outbound: notification.action
+
+    /// Presses one of the notification's own buttons on the phone that posted it.
+    func sendAction(id: String, index: Int, to sourceDeviceId: String) {
+        guard let transportManager else { return }
+        do {
+            // The payload shape (and the per-attempt id the receiver de-duplicates on) is the core's.
+            let payloadData = Data(GossipCoreKit.notificationActionPayload(notificationId: id, index: Int32(index), attemptId: UUID().uuidString).utf8)
+            let payloadJSON = try JSONDecoder().decode(JSONValue.self, from: payloadData)
+            let envelope = Envelope(
+                type: "notification.action",
+                senderId: identity.deviceId,
+                recipientId: sourceDeviceId,
+                payload: payloadJSON
+            )
+            try transportManager.send(envelope: envelope)
+        } catch {
+            gossipError("Gossip: failed to send notification.action: \(error)")
+        }
+    }
+
     // MARK: - Helpers
 
     func localIdentifier(for androidId: String, sourceDeviceId: String) -> String {
@@ -375,6 +398,26 @@ struct NotificationPostedPayload: Codable {
     let iconBase64: String?
     let hasReplyAction: Bool
     let timestamp: Int64
+    let avatarBase64: String?
+    let pictureBase64: String?
+    let actions: [NotificationActionInfo]?
+    let smartReplies: [String]?
+    let live: NotificationLiveInfo?
+}
+
+struct NotificationActionInfo: Codable {
+    let index: Int
+    let title: String
+}
+
+struct NotificationLiveInfo: Codable {
+    let category: String?
+    let progress: Int?
+    let progressMax: Int?
+    let indeterminate: Bool?
+    let chronometerBaseMs: Int64?
+    let countDown: Bool?
+    let promoted: Bool?
 }
 
 struct NotificationRemovedPayload: Codable {

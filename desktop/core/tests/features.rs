@@ -5,8 +5,8 @@ use gossip_core::features::clipboard::{self, ClipboardGuard};
 use gossip_core::features::dnd::{self, Dnd};
 use gossip_core::features::hotspot::HotspotStates;
 use gossip_core::features::lock_on_leave;
-use gossip_core::features::media::{self, CommandGuard, MediaController};
-use gossip_core::features::notifications::{self, ReplyGuard};
+use gossip_core::features::media::{self, CommandGuard, MediaController, VolumeGuard};
+use gossip_core::features::notifications::{self, ActionGuard, ReplyGuard};
 use gossip_core::features::ring::{self, Ring};
 use gossip_core::features::{Feature, FeatureSettings, Outgoing};
 use gossip_core::limits::{
@@ -480,6 +480,29 @@ fn media_commands_are_acted_on_once() {
 }
 
 #[test]
+fn media_volume_steps_are_taken_once() {
+    let mut guard = VolumeGuard::new();
+    let p = media::volume_payload(media::VolumeDirection::Up, "vol-1");
+    assert_eq!(guard.accept(&p), Some(media::VolumeDirection::Up));
+    assert_eq!(
+        guard.accept(&p),
+        None,
+        "duplicate delivery must not step twice"
+    );
+    let down = media::volume_payload(media::VolumeDirection::Down, "vol-2");
+    assert_eq!(guard.accept(&down), Some(media::VolumeDirection::Down));
+    assert_eq!(
+        guard.accept(&obj(json!({"direction": "sideways", "commandId": "x"}))),
+        None
+    );
+    assert_eq!(
+        guard.accept(&obj(json!({"direction": "up"}))),
+        None,
+        "commandId is required"
+    );
+}
+
+#[test]
 fn media_controller_tracks_devices_and_targets_the_selected_one() {
     let mut c = MediaController::new();
     assert!(
@@ -543,6 +566,30 @@ fn notification_replies_are_sent_once_per_attempt() {
         g.accept(&obj(json!({"id": "n", "text": "t"}))),
         None,
         "attemptId is required"
+    );
+}
+
+#[test]
+fn notification_actions_are_pressed_once_per_attempt() {
+    let mut g = ActionGuard::new();
+    let p = notifications::action_payload("n1", 1, "attempt-1");
+    assert_eq!(g.accept(&p), Some(("n1".to_owned(), 1)));
+    assert_eq!(
+        g.accept(&p),
+        None,
+        "a duplicate must not press the button twice"
+    );
+    let second = notifications::action_payload("n1", 1, "attempt-2");
+    assert!(g.accept(&second).is_some(), "same button, distinct press");
+    assert_eq!(
+        g.accept(&obj(json!({"id": "n", "index": 0}))),
+        None,
+        "attemptId is required"
+    );
+    assert_eq!(
+        g.accept(&obj(json!({"id": "n", "index": -1, "attemptId": "a"}))),
+        None,
+        "a negative index is malformed"
     );
 }
 

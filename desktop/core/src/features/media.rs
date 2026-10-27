@@ -1,4 +1,4 @@
-//! Media / Now Playing (`media.nowplaying`, `media.command`).
+//! Media / Now Playing (`media.nowplaying`, `media.command`, `media.volume`).
 //!
 //! Any device with a media source broadcasts `media.nowplaying`; a controller tracks the latest state per device and
 //! sends `media.command` targeted at one chosen device. `media.command` is not naturally idempotent (a duplicate
@@ -195,5 +195,68 @@ impl CommandGuard {
             }
         }
         Some((action, payload.get("seekMs").and_then(Value::as_i64)))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeDirection {
+    Up,
+    Down,
+}
+
+impl VolumeDirection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VolumeDirection::Up => "up",
+            VolumeDirection::Down => "down",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "up" => VolumeDirection::Up,
+            "down" => VolumeDirection::Down,
+            _ => return None,
+        })
+    }
+}
+
+/// `media.volume`: one step of the receiver's music volume. Not idempotent either, so it carries a fresh
+/// `commandId` like `media.command`.
+pub fn volume_payload(direction: VolumeDirection, command_id: &str) -> Map<String, Value> {
+    object([
+        ("direction", direction.as_str().into()),
+        ("commandId", command_id.into()),
+    ])
+}
+
+/// Receiver side of `media.volume`: acts on each `commandId` once.
+#[derive(Debug, Clone)]
+pub struct VolumeGuard {
+    recent: RecentIds,
+}
+
+impl Default for VolumeGuard {
+    fn default() -> Self {
+        Self {
+            recent: RecentIds::new(COMMAND_CACHE_SIZE),
+        }
+    }
+}
+
+impl VolumeGuard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The step to take, or `None` for a duplicate, an unknown direction or a step without a `commandId`
+    /// (required: the message is newer than any sender that could omit it).
+    pub fn accept(&mut self, payload: &Map<String, Value>) -> Option<VolumeDirection> {
+        let direction = VolumeDirection::parse(payload.get("direction")?.as_str()?)?;
+        let id = payload.get("commandId")?.as_str()?;
+        if !self.recent.first_time(id) {
+            return None;
+        }
+        Some(direction)
     }
 }

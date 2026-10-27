@@ -1,5 +1,6 @@
 import XCTest
 @testable import Gossip
+import GossipCoreKit
 
 final class MediaControlManagerTests: XCTestCase {
 
@@ -67,5 +68,14 @@ final class MediaControlManagerTests: XCTestCase {
         } else {
             XCTFail("expected seekMs to be a number")
         }
+    }
+
+    func testVolumePayloadIsSteppedOnce() throws {
+        let payload = MediaControlManager.volumePayload(up: false, commandId: "vol-1")
+        XCTAssertEqual(payload["direction"]?.stringValue, "down")
+        let json = String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
+        let guardLogic = GossipCoreKit.VolumeGuard()
+        XCTAssertEqual(try guardLogic.accept(payloadJson: json), .down)
+        XCTAssertNil(try guardLogic.accept(payloadJson: json), "the same step is taken once")
     }
 }

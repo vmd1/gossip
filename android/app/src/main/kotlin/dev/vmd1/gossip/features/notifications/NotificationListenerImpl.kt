@@ -12,6 +12,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Base64
 import dev.vmd1.gossip.util.Log
+import uniffi.gossip_ffi.ActionGuard as CoreActionGuard
 import uniffi.gossip_ffi.ReplyGuard as CoreReplyGuard
 import dev.vmd1.gossip.protocol.Envelope
 import dev.vmd1.gossip.protocol.DeviceType
@@ -103,6 +104,14 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     private val replyEnvelopeHandler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
     private val dismissEnvelopeHandler = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
+    private val actionEnvelopeHandler = EnvelopeHandler { envelope -> handleAction(envelope.payload) }
+
+    /** Ongoing notifications update far more often than anyone reads them; see [LiveThrottle]. */
+    private val liveThrottle = LiveThrottle()
+
+    /** Acts on each `notification.action` attempt once: pressing a button twice (a duplicate delivery) can archive or
+     *  answer twice. The core's `ActionGuard`, like [replyGuard]. */
+    private val actionGuard = CoreActionGuard()
     private var registeredRouter: MessageRouter? = null
 
     /**
@@ -121,9 +130,11 @@ class NotificationListenerImpl : NotificationListenerService() {
         registeredRouter?.let { old ->
             old.unregister(replyEnvelopeHandler)
             old.unregister(dismissEnvelopeHandler)
+            old.unregister(actionEnvelopeHandler)
         }
         router.register(MessageType.NOTIFICATION_REPLY, replyEnvelopeHandler)
         router.register(MessageType.NOTIFICATION_DISMISS, dismissEnvelopeHandler)
+        router.register(MessageType.NOTIFICATION_ACTION, actionEnvelopeHandler)
         registeredRouter = router
     }
 
@@ -136,6 +147,7 @@ class NotificationListenerImpl : NotificationListenerService() {
         registeredRouter?.let { router ->
             router.unregister(replyEnvelopeHandler)
             router.unregister(dismissEnvelopeHandler)
+            router.unregister(actionEnvelopeHandler)
         }
         registeredRouter = null
         if (active === this) active = null
@@ -157,12 +169,16 @@ class NotificationListenerImpl : NotificationListenerService() {
         val body = (extras.getCharSequence(Notification.EXTRA_TEXT)
             ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString().orEmpty()
 
+        val live = NotificationRichContent.live(notification)
+        if (live != null && !liveThrottle.shouldSend(id, System.currentTimeMillis(), "$title\n$body", live.progress, live.progressMax)) return
+
         val replyAction = findReplyAction(notification)
         if (replyAction != null) {
             replyTargets[id] = ReplyTarget(replyAction.actionIntent, replyAction.remoteInputs!!)
         } else {
             replyTargets.remove(id)
         }
+        val ranking = runCatching { Ranking().takeIf { currentRanking?.getRanking(id, it) == true } }.getOrNull()
 
         val payload = NotificationPostedPayload(
             id = id,
@@ -172,7 +188,12 @@ class NotificationListenerImpl : NotificationListenerService() {
             body = body,
             iconBase64 = appIconBase64(sbn.packageName),
             hasReplyAction = replyAction != null,
-            timestamp = sbn.postTime
+            timestamp = sbn.postTime,
+            avatarBase64 = NotificationRichContent.avatarBase64(applicationContext, notification),
+            pictureBase64 = NotificationRichContent.pictureBase64(applicationContext, notification),
+            actions = NotificationRichContent.actions(notification),
+            smartReplies = NotificationRichContent.smartReplies(notification, ranking, replyAction),
+            live = live
         )
         send(payload.toEnvelope(senderId = deviceId()))
     }
@@ -189,7 +210,9 @@ class NotificationListenerImpl : NotificationListenerService() {
         // Never re-mirror a notification this app itself posted to mirror some OTHER device's notification, see
         // EXTRA_IS_MIRROR's doc for why this must be a content-based check, not a package/id exclusion.
         if (sbn.notification.extras.getBoolean(EXTRA_IS_MIRROR, false)) return false
-        if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return false
+        // A plain persistent notification ("VPN on") stays out; one worth following live (a call, a timer, a delivery) goes.
+        if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0 &&
+            NotificationRichContent.live(sbn.notification) == null) return false
         // Media playback notifications are already covered end to end by the dedicated media.nowplaying and
         // media.command pipeline, so a mirrored copy would just be redundant clutter.
         if (sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return false
@@ -222,6 +245,7 @@ class NotificationListenerImpl : NotificationListenerService() {
         if (!isPhone) return
         if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return
         replyTargets.remove(sbn.key)
+        liveThrottle.forget(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
         send(payload.toEnvelope(senderId = deviceId()))
         publishActive()
@@ -243,6 +267,29 @@ class NotificationListenerImpl : NotificationListenerService() {
             return
         }
         cancelNotification(dismiss.id)
+    }
+
+    // MARK: - notification.action (mac -> android)
+
+    /** Presses one of the notification's own buttons ("Mark as read", "Archive", "Answer"), found again by its key among
+     *  the notifications still showing, so a button of one that is gone does nothing. Buttons that want typed input go
+     *  through `notification.reply` instead. */
+    private fun handleAction(payload: JsonObject) {
+        // `null`: a duplicate attempt, or a press without the required `attemptId`.
+        val press = runCatching { actionGuard.accept(payload.toString()) }.getOrNull() ?: return
+        val sbn = runCatching { activeNotifications?.firstOrNull { it.key == press.notificationId } }.getOrNull() ?: return
+        val action = sbn.notification.actions?.getOrNull(press.index) ?: return
+        if (!action.remoteInputs.isNullOrEmpty()) return
+        try {
+            val options = if (android.os.Build.VERSION.SDK_INT >= 34) {
+                android.app.ActivityOptions.makeBasic()
+                    .setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                    .toBundle()
+            } else null
+            action.actionIntent?.send(applicationContext, 0, null, null, null, null, options)
+        } catch (e: PendingIntent.CanceledException) {
+            Log.w(TAG, "Action ${action.title} of ${press.notificationId} was canceled", e)
+        }
     }
 
     // MARK: - notification.reply (mac -> android)
