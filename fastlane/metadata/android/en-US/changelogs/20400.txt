@@ -1,0 +1,1 @@
+Android version codes now follow the release version, and the app has store metadata for F-Droid.
