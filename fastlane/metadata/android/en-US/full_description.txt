@@ -1,0 +1,19 @@
+Gossip makes your devices work together, like Apple's Continuity or Microsoft's Phone Link, without accounts or a cloud service. Your devices pair once and form an end-to-end encrypted mesh, so each one can talk to every other one directly: phone to tablet, phone to computer, tablet to computer.
+
+Features:
+<ul>
+<li>Notification mirroring (with reply) and Do Not Disturb sync</li>
+<li>Clipboard sync (text and images)</li>
+<li>Media controls: see and control what's playing on another device</li>
+<li>Screen mirroring, including individual Android apps as their own windows on a computer</li>
+<li>Universal Control: use a computer's mouse and keyboard on your Android devices</li>
+<li>Use your phone as a trackpad and keyboard for your computer</li>
+<li>Read and send SMS from your computer</li>
+<li>Find my device, battery sync, Instant Hotspot and lock-on-leave</li>
+</ul>
+
+Privacy: all traffic between devices is encrypted with the Noise protocol. There are no accounts, no analytics and no ads. Devices on the same network connect directly; for use away from home there is an optional relay, which only forwards encrypted traffic and can be self-hosted.
+
+Supported today: Android and macOS. Windows and Linux apps are planned.
+
+Requirements: to connect to a computer you need the Gossip desktop app (see the project page). Screen mirroring, Universal Control and some other features need Shizuku (https://shizuku.rikka.app) running on the Android device; no root is needed.
