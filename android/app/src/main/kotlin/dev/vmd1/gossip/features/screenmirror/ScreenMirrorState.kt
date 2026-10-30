@@ -53,6 +53,13 @@ class ScreenMirrorState(
     private val appLister: () -> List<AppInfo> = { emptyList() },
     /** Screen mirroring turned off on this device: refuse with `screen.error feature_disabled`. */
     private val isEnabled: () -> Boolean = { true },
+    /** Screen-off mirroring is on ([ScreenOffMirrorSettings]): whole-screen mirrors run with the panel off, a locked
+     *  phone refuses `screen.start` with `locked`, and `screen.unlock` is honoured. */
+    private val screenOffEnabled: () -> Boolean = { false },
+    /** The keyguard is up and protected by a credential. */
+    private val isLocked: () -> Boolean = { false },
+    /** Types a credential on the lock screen; returns a `screen.unlock_result` result. Blocking. */
+    private val unlock: (String) -> String = { "failed" },
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
 ) {
     /** A launchable app: its package, label and `lastUpdateTime` (a version stamp: a changed value means a new icon may exist). */
@@ -76,6 +83,51 @@ class ScreenMirrorState(
         router.register(MessageType.SCREEN_START, EnvelopeHandler { onScreenStart(it) })
         router.register(MessageType.SCREEN_STOP, EnvelopeHandler { onScreenStop(it) })
         router.register(MessageType.SCREEN_APPS_REQUEST, EnvelopeHandler { onAppsRequest(it) })
+        router.register(MessageType.SCREEN_UNLOCK, EnvelopeHandler { onUnlock(it) })
+    }
+
+    /** `screen.unlock` results by `requestId`, so a re-sent request is answered again without typing twice. */
+    private val unlockResults = LinkedHashMap<String, String>()
+    private val unlocking = HashSet<String>()
+
+    /**
+     * `screen.unlock{requestId, secret}`: types the credential on the lock screen, once, and answers
+     * `screen.unlock_result{requestId, result}`. **Idempotent**: the Mac re-sends the same `requestId` until it hears
+     * back, and a repeat is answered from the cache (or ignored while the attempt is still running) — never typed again,
+     * because a wrong attempt counts toward the lockout. A new attempt needs a new `requestId`, i.e. the user typing
+     * the credential again.
+     */
+    internal fun onUnlock(envelope: Envelope) {
+        val requestId = envelope.payload.str("requestId") ?: return
+        val secret = envelope.payload.str("secret")
+        synchronized(lock) {
+            unlockResults[requestId]?.let { sendUnlockResult(envelope.senderId, requestId, it); return }
+            if (!unlocking.add(requestId)) return
+            if (unlocking.size > 1) { unlocking.remove(requestId); return } // one attempt at a time
+        }
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val result = when {
+                !isEnabled() || !screenOffEnabled() -> "feature_disabled"
+                !shizukuReady() -> "shizuku_unavailable"
+                secret == null || secret.length > MAX_SECRET || secret.any { it < ' ' || it > '~' } -> "failed"
+                else -> runCatching { unlock(secret) }.getOrElse { warn("unlock failed", it); "failed" }
+            }
+            synchronized(lock) {
+                unlocking.remove(requestId)
+                unlockResults[requestId] = result
+                while (unlockResults.size > RECENT_CACHE) unlockResults.remove(unlockResults.keys.first())
+            }
+            sendUnlockResult(envelope.senderId, requestId, result)
+        }
+    }
+
+    private fun sendUnlockResult(to: String, requestId: String, result: String) {
+        send(
+            Envelope(
+                type = MessageType.SCREEN_UNLOCK_RESULT, senderId = selfId, recipientId = to, ttl = 0,
+                payload = buildJsonObject { put("requestId", JsonPrimitive(requestId)); put("result", JsonPrimitive(result)) }
+            )
+        )
     }
 
     internal fun onScreenStart(envelope: Envelope) {
@@ -91,7 +143,19 @@ class ScreenMirrorState(
             )
             return
         }
-        val options = parseOptions(envelope.payload)
+        val screenOff = screenOffEnabled()
+        val options = parseOptions(envelope.payload).copy(screenOff = screenOff)
+        // A locked phone would only mirror its (secure, so black) lock screen: ask the viewer to unlock it first.
+        // Not for a duplicate start of the running session, which already got past this.
+        if (screenOff && isLocked() && synchronized(lock) { sessionId !in actives && sessionId !in recentlyEnded }) {
+            send(
+                Envelope(
+                    type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = envelope.senderId, ttl = 0,
+                    payload = buildJsonObject { put("sessionId", JsonPrimitive(sessionId)); put("reason", JsonPrimitive("locked")) }
+                )
+            )
+            return
+        }
         options.startApp?.let { app ->
             appProblem(app)?.let { reason ->
                 send(Envelope(type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = envelope.senderId, ttl = 0,
@@ -289,5 +353,6 @@ class ScreenMirrorState(
         const val MAX_APP_WINDOWS = 4
         private const val ICON_BATCH = 16
         private const val MAX_LABEL = 40
+        private const val MAX_SECRET = 64
     }
 }
