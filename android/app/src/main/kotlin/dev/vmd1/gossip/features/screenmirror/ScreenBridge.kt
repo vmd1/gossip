@@ -70,9 +70,14 @@ class ScreenBridge(
     private var client: WebSocketConnection? = null
     private var latestConfig: ByteArray? = null
     private var latestSize: ByteArray? = null
+    private var poweredOff = false
+    private var screenOffReceiver: android.content.BroadcastReceiver? = null
+    private val screenOff = options.screenOff && !options.isAppWindow
 
     /** Launches the scrcpy server and opens the listener; blocking. Throws if capture can't start. */
     override fun start(): ScreenSession.Ready {
+        // A dark display captures as black, so a screen-off mirror lights it first; the panel goes dark again on attach.
+        if (screenOff) ScreenOff.wake()
         val s = ScrcpyServerSession.open(context, options)
         if (ended.get()) { s.close(); throw IOException("session cancelled during start") }
         session = s
@@ -202,6 +207,7 @@ class ScreenBridge(
         }
         s.writeControl(byteArrayOf(CONTROL_RESET_VIDEO)) // force a key frame for the late joiner
         Log.i(TAG, "[$sessionId] viewer attached")
+        if (screenOff) panelOff(s)
         options.startApp?.takeIf { ScrcpyServerSession.Options.isValidPackage(it) }?.let { app -> nudgeAppWindow(s, app) }
     }
 
@@ -233,15 +239,63 @@ class ScreenBridge(
         synchronized(launchLock) { if (!ended.compareAndSet(false, true)) return }
         synchronized(lock) { runCatching { client?.close(1001) } }
         runCatching { listener?.close() }
+        // If we powered the panel off, power it back on through the still-open scrcpy control socket *before* closing,
+        // so the display is never left stuck off (PowerManager still thinks it's on; only this poke turned it off).
+        if (poweredOff) runCatching { session?.writeControl(byteArrayOf(CONTROL_SET_DISPLAY_POWER, 1)) }
         runCatching { session?.close() }
-        Log.i(TAG, "[$sessionId] ended")
-        // A session someone was actually watching leaves the screen lit; put it to sleep. Sessions that
-        // never got a viewer (failed start, attach timeout) must not touch the screen.
+        unregisterScreenOffReceiver()
+        // A session someone was actually watching leaves the screen on; put it to sleep so the phone locks. For a
+        // screen-off mirror, restore the screen-off timeout we raised. Sessions that never got a viewer (failed start,
+        // attach timeout) must not touch the screen.
         if (viewerAttached && !options.isAppWindow) ScreenOff.sleep()
+        if (poweredOff) ScreenOffGuard.restore(context)
+        Log.i(TAG, "[$sessionId] ended")
         onEnded()
     }
 
     override fun close() = end()
+
+    /**
+     * Screen-off mirroring: turns the phone's own panel truly off (black AMOLED) while the mirror keeps running at full
+     * frame rate — the O+-Connect-style experience.
+     *
+     * The panel is powered off with scrcpy's `SET_DISPLAY_POWER` ([CONTROL_SET_DISPLAY_POWER]), which goes through the
+     * legacy `SurfaceControl.setDisplayPowerMode` path: the panel goes dark but PowerManager is **not** told the screen
+     * slept, so the device stays Awake and SurfaceFlinger composites at full speed (measured: ~60 fps while scrolling).
+     * The catch is that, left alone, the device Dozes once the screen-off *timeout* fires, and ColorOS then throttles
+     * rendering to a stutter (~6 fps). A wake lock can't prevent that (ColorOS drops this app's screen wake locks), so
+     * [ScreenOffGuard] raises `screen_off_timeout` for the duration instead — and always restores it (see that class).
+     * On teardown [end] powers the panel back on through the still-open control socket, sleeps it (locking the phone)
+     * and restores the timeout.
+     */
+    private fun panelOff(s: ScrcpyServerSession) {
+        if (ended.get()) return
+        ScreenOffGuard.keepAwake(context)
+        poweredOff = true
+        s.writeControl(byteArrayOf(CONTROL_SET_DISPLAY_POWER, 0))
+        registerScreenOffReceiver() // a power-button press should end the mirror (and restore the timeout), not just blank it
+        Log.i(TAG, "[$sessionId] panel powered off for screen-off mirroring")
+    }
+
+    /** Ends the session if the user turns the screen off with the power button during a screen-off mirror (the raised
+     *  timeout stops the auto-sleep, but not a manual press). [end] then restores the timeout. */
+    private fun registerScreenOffReceiver() {
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: android.content.Intent) {
+                Log.i(TAG, "[$sessionId] screen turned off during mirror; ending")
+                Thread { end() }.start()
+            }
+        }
+        runCatching {
+            context.registerReceiver(r, android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF))
+            screenOffReceiver = r
+        }.onFailure { Log.w(TAG, "[$sessionId] couldn't register screen-off receiver: ${it.message}") }
+    }
+
+    private fun unregisterScreenOffReceiver() {
+        screenOffReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
+        screenOffReceiver = null
+    }
 
     /**
      * A cold-starting app can finish drawing before the virtual display is fully attached, or have its first launch land
@@ -293,6 +347,8 @@ class ScreenBridge(
         private const val FLAG_CONFIG = 1L shl 62
         private const val CONTROL_RESET_VIDEO: Byte = 17
         private const val CONTROL_START_APP: Byte = 16
+        /** scrcpy `SET_DISPLAY_POWER` (type 10): u8 1 = on, 0 = off. */
+        private const val CONTROL_SET_DISPLAY_POWER: Byte = 10
         const val ATTACH_TIMEOUT_MS = 30_000L
         private const val AUTH_TIMEOUT_MS = 10_000
         private const val MAX_AUTHENTICATING = 4

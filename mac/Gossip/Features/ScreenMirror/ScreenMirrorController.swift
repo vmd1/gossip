@@ -122,6 +122,8 @@ final class ScreenMirrorController: ObservableObject {
     }
 
     private var sessions: [String: Session] = [:]
+    /// "Unlocking… / Connecting…" while a whole-screen mirror is being set up.
+    private let hud = MirrorProgressHUD()
     private var routerRegistered = false
     private var resizeWork: [String: DispatchWorkItem] = [:]
 
@@ -172,7 +174,7 @@ final class ScreenMirrorController: ObservableObject {
         registerRouterIfNeeded(s.transport)
         sessions[s.id] = s
         windowsVersion += 1
-        if !s.isApp { state = .starting; mirroringDeviceId = s.deviceId }
+        if !s.isApp { state = .starting; mirroringDeviceId = s.deviceId; hud.show("Connecting to \(s.deviceName)…") }
         sendStart(s)
         s.retryTimer = Timer.scheduledTimer(withTimeInterval: Self.retryInterval, repeats: true) { [weak self, weak s] timer in
             guard let self, let s, self.sessions[s.id] === s else { return timer.invalidate() }
@@ -250,6 +252,9 @@ final class ScreenMirrorController: ObservableObject {
             }
             iconsByDevice[envelope.senderId] = icons.filter { key, _ in apps.contains { $0.package == key } }
             return
+        case "screen.unlock_result":
+            handleUnlockResult(envelope)
+            return
         case "screen.app_icons":
             var table = iconsByDevice[envelope.senderId] ?? [:]
             for item in envelope.payload["icons"]?.arrayValue ?? [] {
@@ -279,6 +284,7 @@ final class ScreenMirrorController: ObservableObject {
             connect(s, host: host, port: UInt16(clamping: Int(port)), secret: secret)
         case "screen.error":
             let reason = envelope.payload["reason"]?.stringValue ?? "unknown"
+            if reason == "locked" { return unlockThenRestart(s) }
             fail(s, Self.message(forErrorReason: reason, deviceName: s.deviceName, app: s.appLabel))
         default:
             break
@@ -320,6 +326,103 @@ final class ScreenMirrorController: ObservableObject {
             recipientId: s.deviceId, ttl: 0, payload: .object(payload)
         )
         try? s.transport.send(envelope: envelope)
+    }
+
+    // MARK: - Unlocking a locked phone (screen-off mirroring)
+
+    /// An outstanding `screen.unlock`. Re-sent with the same `requestId` until answered: the phone types a given
+    /// request at most once, so a retry can never become a second (counted) attempt.
+    private final class PendingUnlock {
+        let requestId = UUID().uuidString
+        let deviceId: String
+        let deviceName: String
+        let transport: TransportManager
+        let secret: String
+        let remember: Bool
+        let fromKeychain: Bool
+        let app: PhoneApp?
+        let startedAt = Date()
+        var retryTimer: Timer?
+        init(deviceId: String, deviceName: String, transport: TransportManager, secret: String, remember: Bool, fromKeychain: Bool, app: PhoneApp?) {
+            self.deviceId = deviceId; self.deviceName = deviceName; self.transport = transport
+            self.secret = secret; self.remember = remember; self.fromKeychain = fromKeychain; self.app = app
+        }
+    }
+
+    private var pendingUnlocks: [String: PendingUnlock] = [:]
+    private static let unlockTimeout: TimeInterval = 25
+
+    /// The phone refused `screen.start` with `locked` (screen-off mirroring is on there): unlock it with the remembered
+    /// credential, or one typed into the Mac's prompt, then start a fresh session.
+    private func unlockThenRestart(_ s: Session) {
+        let app = s.app.map { PhoneApp(package: $0, label: s.appLabel ?? $0) }
+        send(type: "screen.stop", for: s)
+        teardown(s)
+        requestUnlock(deviceId: s.deviceId, deviceName: s.deviceName, transport: s.transport, app: app, retry: false)
+    }
+
+    private func requestUnlock(deviceId: String, deviceName: String, transport: TransportManager, app: PhoneApp?, retry: Bool) {
+        guard !pendingUnlocks.values.contains(where: { $0.deviceId == deviceId }) else { return }
+        let stored = retry ? nil : RemoteUnlockStore.secret(for: deviceId)
+        let secret: String, remember: Bool
+        if let stored {
+            secret = stored; remember = true
+        } else {
+            guard let answer = RemoteUnlockPrompt.ask(deviceName: deviceName, retry: retry) else { return }
+            secret = answer.secret; remember = answer.remember
+        }
+        let u = PendingUnlock(deviceId: deviceId, deviceName: deviceName, transport: transport, secret: secret,
+                              remember: remember, fromKeychain: stored != nil, app: app)
+        pendingUnlocks[u.requestId] = u
+        hud.show("Unlocking \(deviceName)…")
+        sendUnlock(u)
+        u.retryTimer = Timer.scheduledTimer(withTimeInterval: Self.retryInterval, repeats: true) { [weak self, weak u] timer in
+            guard let self, let u, self.pendingUnlocks[u.requestId] === u else { return timer.invalidate() }
+            if Date().timeIntervalSince(u.startedAt) > Self.unlockTimeout {
+                self.finishUnlock(u)
+                self.hud.hide()
+                self.lastError = "\(u.deviceName) didn't answer the unlock request."
+            } else {
+                self.sendUnlock(u)
+            }
+        }
+    }
+
+    private func sendUnlock(_ u: PendingUnlock) {
+        let envelope = Envelope(
+            type: "screen.unlock", senderId: IdentityKeyStore.shared.deviceId, recipientId: u.deviceId, ttl: 0,
+            payload: .object(["requestId": .string(u.requestId), "secret": .string(u.secret)])
+        )
+        try? u.transport.send(envelope: envelope)
+    }
+
+    private func finishUnlock(_ u: PendingUnlock) {
+        u.retryTimer?.invalidate()
+        pendingUnlocks[u.requestId] = nil
+    }
+
+    private func handleUnlockResult(_ envelope: Envelope) {
+        guard let id = envelope.payload["requestId"]?.stringValue, let u = pendingUnlocks[id], envelope.senderId == u.deviceId else { return }
+        finishUnlock(u)
+        let result = envelope.payload["result"]?.stringValue ?? "failed"
+        if result != "ok" { hud.hide() }
+        switch result {
+        case "ok":
+            if u.remember && !u.fromKeychain { RemoteUnlockStore.save(u.secret, for: u.deviceId) }
+            hud.hide() // a whole-screen start shows it again; an early refusal must not leave it up
+            start(deviceId: u.deviceId, deviceName: u.deviceName, transport: u.transport, app: u.app)
+        case "wrong":
+            if u.fromKeychain { RemoteUnlockStore.forget(u.deviceId) }
+            requestUnlock(deviceId: u.deviceId, deviceName: u.deviceName, transport: u.transport, app: u.app, retry: true)
+        case "no_bouncer":
+            lastError = "Couldn't bring up \(u.deviceName)'s lock screen, so nothing was typed. Try again."
+        case "feature_disabled":
+            lastError = "Screen-off mirroring is turned off on \(u.deviceName)."
+        case "shizuku_unavailable":
+            lastError = Self.message(forErrorReason: "shizuku_unavailable", deviceName: u.deviceName, app: nil)
+        default:
+            lastError = "\(u.deviceName) couldn't be unlocked."
+        }
     }
 
     // MARK: - Bridge connection
@@ -374,7 +477,7 @@ final class ScreenMirrorController: ObservableObject {
                         s.audioPlayer = audioPlayer
                     }
                     s.retryTimer?.invalidate(); s.retryTimer = nil
-                    if !s.isApp { self.state = .mirroring }
+                    if !s.isApp { self.state = .mirroring; self.hud.hide() }
                     NSApp.activate(ignoringOtherApps: true)
                     window.makeKeyAndOrderFront(nil)
                 }
@@ -404,6 +507,7 @@ final class ScreenMirrorController: ObservableObject {
 
     private func fail(_ s: Session, _ message: String) {
         gossipError("Gossip: screen mirroring failed: \(message)")
+        hud.hide()
         send(type: "screen.stop", for: s)
         teardown(s)
         lastError = message
@@ -426,6 +530,7 @@ final class ScreenMirrorController: ObservableObject {
         if !s.isApp {
             state = .idle
             mirroringDeviceId = nil
+            if pendingUnlocks.isEmpty { hud.hide() }
         }
     }
 }
