@@ -105,6 +105,8 @@ ol.steps p, ol.steps ul { margin: var(--s1) 0 0; color: var(--muted); }
 footer { border-top: 1px solid var(--border); padding: var(--s4) 0 40px; color: var(--muted); font-size: 0.95rem; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); justify-content: space-between; }
 footer ul { list-style: none; display: flex; flex-wrap: wrap; gap: var(--s3); margin: 0; padding: 0; }
+.badge { display: inline-block; line-height: 0; margin-top: var(--s3); }
+.badge img { height: auto; max-width: 100%; background: #fff; padding: 6px; border-radius: 8px; box-sizing: content-box; }
 
 @media (max-width: 720px) {
   .wrap { padding: 0 var(--s3); }
