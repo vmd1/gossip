@@ -1,1 +1,0 @@
-Scanning the pairing QR no longer needs Google ML Kit, and the scrcpy server is built from source. Releases are signed with a new key, so uninstall the old app once before updating.
