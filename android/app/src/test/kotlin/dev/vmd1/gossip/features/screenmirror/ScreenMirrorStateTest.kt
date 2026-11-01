@@ -32,6 +32,7 @@ class ScreenMirrorStateTest {
     private var shizuku = true
     private var failStart = false
     private var screenEnabled = true
+    private var screenOffEnabled = false
 
     private val prepared = CopyOnWriteArrayList<String>()
     private val capturedOptions = CopyOnWriteArrayList<ScrcpyServerSession.Options>()
@@ -48,6 +49,7 @@ class ScreenMirrorStateTest {
         prepareApp = { pkg -> prepared.add(pkg); if (pkg == "com.example.stuck") "app_enable_failed" else null },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
+        screenOffEnabled = { screenOffEnabled },
     )
 
     private fun env(type: String, sessionId: String? = null) = Envelope(
@@ -177,6 +179,18 @@ class ScreenMirrorStateTest {
         s.onScreenStart(env(MessageType.SCREEN_START, "a"))
         awaitSent(2)
         assertEquals(MessageType.SCREEN_READY, sent[1].type)
+    }
+
+    @Test fun screenOffSettingIsPassedToTheSessionAndReadPerStart() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "a"))
+        awaitSent(1)
+        assertFalse(capturedOptions[0].screenOff) // off by default
+
+        screenOffEnabled = true // read at each start, not cached
+        s.onScreenStart(env(MessageType.SCREEN_START, "b"))
+        awaitSent(2)
+        assertTrue(capturedOptions[1].screenOff)
     }
 
     @Test fun onDeviceStopEndsTheSessionAndClearsTheIndicatorState() {
