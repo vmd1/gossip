@@ -139,7 +139,8 @@ class SyncForegroundService : Service() {
                 }.getOrNull()
             },
             logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
-            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) },
+            screenOffEnabled = { dev.vmd1.gossip.features.screenmirror.ScreenOffMirrorSettings.getInstance(applicationContext).enabled.value },
         )
         screenMirrorState.register(messageRouter)
         controlSessionState = dev.vmd1.gossip.features.universalcontrol.ControlSessionState(
@@ -197,6 +198,9 @@ class SyncForegroundService : Service() {
         serviceScope.launch {
             shizukuManager?.state?.first { it == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED }
             dev.vmd1.gossip.features.screenmirror.ScrcpyServerSession.killAllStale()
+            // A screen-off mirror that was killed mid-session could have left screen_off_timeout raised (a persisted
+            // setting that survives a reboot); no mirror can be live yet, so put it back now that Shizuku is up.
+            dev.vmd1.gossip.features.screenmirror.ScreenOffGuard.recoverIfOrphaned(applicationContext)
         }
         clipboardSyncManager = ClipboardSyncManager(
             context = applicationContext,

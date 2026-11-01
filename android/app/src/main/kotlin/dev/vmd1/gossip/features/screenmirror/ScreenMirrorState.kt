@@ -53,6 +53,8 @@ class ScreenMirrorState(
     private val appLister: () -> List<AppInfo> = { emptyList() },
     /** Screen mirroring turned off on this device: refuse with `screen.error feature_disabled`. */
     private val isEnabled: () -> Boolean = { true },
+    /** Screen-off mirroring is on ([ScreenOffMirrorSettings]): whole-screen mirrors run with the phone's panel off. */
+    private val screenOffEnabled: () -> Boolean = { false },
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
 ) {
     /** A launchable app: its package, label and `lastUpdateTime` (a version stamp: a changed value means a new icon may exist). */
@@ -91,7 +93,7 @@ class ScreenMirrorState(
             )
             return
         }
-        val options = parseOptions(envelope.payload)
+        val options = parseOptions(envelope.payload).copy(screenOff = screenOffEnabled())
         options.startApp?.let { app ->
             appProblem(app)?.let { reason ->
                 send(Envelope(type = MessageType.SCREEN_ERROR, senderId = selfId, recipientId = envelope.senderId, ttl = 0,
