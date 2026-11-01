@@ -61,7 +61,7 @@ Every feature has its own per-device switch in Settings. How this compares with 
 
 ## Install
 
-**Requirements:** macOS 14+ (the prebuilt app is Apple Silicon only) · Android 10+ · both devices on the same network to pair.
+**Requirements:** macOS 14+ (Apple Silicon and Intel; Intel is untested) · Android 10+ · both devices on the same network to pair.
 
 <table>
 <tr>
@@ -69,7 +69,7 @@ Every feature has its own per-device switch in Settings. How this compares with 
 
 **1. Mac**
 
-Download `Gossip-Mac-AppleSilicon.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest), unzip, and move `Gossip.app` to `/Applications`.
+Download `Gossip-Mac.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest), unzip, and move `Gossip.app` to `/Applications`.
 
 The app isn't notarized: on first launch choose **System Settings → Privacy & Security → Open Anyway**.
 

@@ -4,7 +4,7 @@ Everything you need to go from nothing to a working Mac ↔ Android setup.
 
 ## Before you start
 
-- **Mac:** macOS 14 or newer. The prebuilt app is Apple Silicon only; on an Intel Mac you can try [building from source](building-and-signing.md), which is untested
+- **Mac:** macOS 14 or newer. The prebuilt app runs on Apple Silicon and Intel Macs; it has not been tested on an Intel Mac yet
 - **Android:** Android 10 or newer
 - **Network:** put both devices on the same Wi-Fi or LAN
   - Gossip discovers devices over the local network (Bonjour/mDNS) and talks to them directly
@@ -13,7 +13,7 @@ Everything you need to go from nothing to a working Mac ↔ Android setup.
 
 ## 1. Install the Mac app
 
-- download `Gossip-Mac-AppleSilicon.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest)
+- download `Gossip-Mac.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest)
 - unzip it and move `Gossip.app` into `/Applications` (or `~/Applications`)
 - open it
   - macOS blocks the first launch because the app is not notarized (that needs a paid Apple Developer ID)
