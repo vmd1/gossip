@@ -54,6 +54,7 @@ class ShizukuManager(context: Context) {
      *  binder lifecycle. There is no matching `stop()` — these listeners are meant to live
      *  for the process's lifetime, same as `Shizuku`'s own static registration API. */
     fun start() {
+        current = this
         Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         Shizuku.addBinderDeadListener(binderDeadListener)
         Shizuku.addRequestPermissionResultListener(permissionListener)
@@ -86,5 +87,8 @@ class ShizukuManager(context: Context) {
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 24601
+
+        /** The running instance (set by [start]) so the Settings UI can show Shizuku's state without owning the service. */
+        @Volatile var current: ShizukuManager? = null
     }
 }

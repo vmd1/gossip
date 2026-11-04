@@ -53,6 +53,7 @@
          WRITE_SETTINGS despite the exception message listing both as alternatives. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Special-access grant (not a runtime dialog) required to read/set Do Not Disturb
          state via NotificationManager; see features/dnd/DndSyncManager.kt. Requested by
          deep-linking to Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS. -->
@@ -162,6 +163,7 @@
             android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 

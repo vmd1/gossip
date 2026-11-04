@@ -122,6 +122,51 @@ fun SettingsMenuRow(title: String, subtitle: String, onClick: () -> Unit) {
     }
 }
 
+/** Why a background sync can stop, with the fix for each: battery optimisation (and Samsung's own sleeping-apps list) and
+ *  Shizuku not running. Shown at the top of Settings → Features. */
+@Composable
+fun ColumnScope.BackgroundHealthContent() {
+    val context = LocalContext.current
+    val lifecycle = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    var exempt by remember { mutableStateOf(BackgroundHealth.isBatteryExempt(context)) }
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) exempt = BackgroundHealth.isBatteryExempt(context)
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
+    val shizuku = remember { dev.vmd1.gossip.features.hotspot.ShizukuManager.current }
+    val shizukuState = shizuku?.state?.collectAsState()?.value
+    Text("Keeping Gossip running", style = MaterialTheme.typography.titleMedium)
+    Text(
+        if (exempt) "Battery optimisation is off for Gossip, so Android won't put it to sleep."
+        else "Android may put Gossip to sleep to save battery, which stops syncing until you open it again.",
+        style = MaterialTheme.typography.bodySmall
+    )
+    if (!exempt) {
+        TextButton(onClick = { BackgroundHealth.requestBatteryExemption(context) }) { Text("Allow Gossip to run in the background") }
+    }
+    if (BackgroundHealth.isSamsung()) {
+        Text(
+            "Samsung also has its own list: Settings → Battery → Background usage limits. Make sure Gossip is not under \"Sleeping apps\" or \"Deep sleeping apps\".",
+            style = MaterialTheme.typography.bodySmall
+        )
+        TextButton(onClick = { BackgroundHealth.openBatterySettings(context) }) { Text("Open battery settings") }
+    }
+    val shizukuText = when (shizukuState) {
+        dev.vmd1.gossip.features.hotspot.ShizukuManager.State.CONNECTED -> "Shizuku is running and Gossip is allowed to use it."
+        dev.vmd1.gossip.features.hotspot.ShizukuManager.State.NOT_CONNECTED -> "Shizuku is running, but Gossip hasn't been allowed to use it yet."
+        dev.vmd1.gossip.features.hotspot.ShizukuManager.State.NOT_RUNNING -> "Shizuku isn't running. Start it (it needs starting again after every reboot); screen mirroring and Universal Control need it."
+        dev.vmd1.gossip.features.hotspot.ShizukuManager.State.NOT_AVAILABLE -> "Shizuku isn't installed. Screen mirroring and Universal Control need it."
+        null -> "Shizuku status isn't available until Gossip's sync service is running."
+    }
+    Text(shizukuText, style = MaterialTheme.typography.bodySmall)
+    if (shizukuState == dev.vmd1.gossip.features.hotspot.ShizukuManager.State.NOT_CONNECTED) {
+        TextButton(onClick = { shizuku?.requestPermission() }) { Text("Allow Shizuku access") }
+    }
+}
+
 /** Settings → Features: one on/off switch per feature for *this* device (all on by default). Turning
  *  one off makes this device stop sending and receiving it entirely — see [FeatureSettings]. */
 @Composable
@@ -136,6 +181,7 @@ fun ColumnScope.FeatureTogglesContent(
     val messagesOn by messages.enabled.collectAsState()
     val history = remember { ClipboardHistoryStore.getInstance(context) }
     val historyOn by history.enabled.collectAsState()
+    BackgroundHealthContent()
     Text(
         "Turning a feature off stops this device from sending or receiving it at all. " +
             "Your other devices keep their own settings. The ⋮ button opens a feature's own settings.",
