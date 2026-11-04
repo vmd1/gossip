@@ -315,7 +315,7 @@ private fun AppIcon(packageName: String) {
 
 /** Settings → Clipboard history: the on/off switch, search, copy back, pin, delete and clear. Device-local only. */
 @Composable
-fun ColumnScope.ClipboardHistoryContent(onCopy: (String) -> Unit) {
+fun ColumnScope.ClipboardHistoryContent(onCopy: (dev.vmd1.gossip.features.clipboard.ClipboardHistoryEntry) -> Unit) {
     val store = ClipboardHistoryStore.getInstance(LocalContext.current)
     val enabled by store.enabled.collectAsState()
     val entries by store.entries.collectAsState()
@@ -335,8 +335,15 @@ fun ColumnScope.ClipboardHistoryContent(onCopy: (String) -> Unit) {
     LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
         items(shown, key = { it.id }) { entry ->
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f).clickable { onCopy(entry.text) }) {
-                    Text(entry.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                Column(modifier = Modifier.weight(1f).clickable { onCopy(entry) }) {
+                    val thumb = remember(entry.id) {
+                        if (entry.isImage) store.imageBytes(entry)?.let { runCatching { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 })?.asImageBitmap() }.getOrNull() } else null
+                    }
+                    if (thumb != null) {
+                        Image(bitmap = thumb, contentDescription = entry.text, modifier = Modifier.size(width = 160.dp, height = 90.dp))
+                    } else {
+                        Text(entry.text, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
                     Text(
                         (if (entry.remote) "From another device · " else "") +
                             android.text.format.DateUtils.getRelativeTimeSpanString(entry.date),

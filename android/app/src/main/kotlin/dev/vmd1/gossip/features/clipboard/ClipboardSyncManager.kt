@@ -142,13 +142,20 @@ class ClipboardSyncManager(
         val text = currentClipText()
         // The history is its own feature: it records local copies whether or not clipboard sync is on.
         if (text != null) history.record(text, remote = false)
-        if (!isEnabled()) return
         if (text != null) {
-            handleObservedText(text)
+            if (isEnabled()) handleObservedText(text)
             return
         }
         val imageBytes = currentClipImagePng() ?: return
+        recordImageInHistory(imageBytes, remote = false)
+        if (!isEnabled()) return
         sendImage(imageBytes)
+    }
+
+    private fun recordImageInHistory(png: ByteArray, remote: Boolean) {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(png, 0, png.size, bounds)
+        history.recordImage(png, bounds.outWidth, bounds.outHeight, remote)
     }
 
     /** Periodically reads the clipboard via [ShizukuClipboardReader] while [shizukuManager] is connected — the
@@ -219,16 +226,9 @@ class ClipboardSyncManager(
         if (!ClipboardPolicy.imageDimensionsAllowed(bounds.outWidth, bounds.outHeight)) return
         if (runCatching { guardLogic.incomingImage(envelope.payload.toString(), data) }.getOrNull() != true) return
 
-        runCatching {
-            val dir = File(context.cacheDir, "clipboard").apply { mkdirs() }
-            val file = File(dir, "clip_${System.currentTimeMillis()}.png")
-            file.writeBytes(data)
-            ClipboardPolicy.pruneCache(dir, keep = file) // only the image now on the clipboard is needed
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.clipboardprovider", file)
-            context.grantUriPermission(context.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            val clip = ClipData.newUri(context.contentResolver, "Gossip", uri)
-            clipboardManager.setPrimaryClip(clip)
-        }.onFailure { Log.w(TAG, "Failed to write received clipboard image: ${it.message}") }
+        recordImageInHistory(data, remote = true) // before the write: the write fires our own clip listener, which would record it as local
+        putPngOnClipboard(context, clipboardManager, data)
+            .onFailure { Log.w(TAG, "Failed to write received clipboard image: ${it.message}") }
     }
 
     private fun currentClipText(): String? {
@@ -264,6 +264,17 @@ class ClipboardSyncManager(
     }
 
     companion object {
+        /** Puts PNG bytes on the clipboard as a `content://` image (the system clipboard's image items must be Uri-backed). */
+        fun putPngOnClipboard(context: Context, clipboardManager: ClipboardManager, data: ByteArray): Result<Unit> = runCatching {
+            val dir = File(context.cacheDir, "clipboard").apply { mkdirs() }
+            val file = File(dir, "clip_${System.currentTimeMillis()}.png")
+            file.writeBytes(data)
+            ClipboardPolicy.pruneCache(dir, keep = file) // only the image now on the clipboard is needed
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.clipboardprovider", file)
+            context.grantUriPermission(context.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipboardManager.setPrimaryClip(ClipData.newUri(context.contentResolver, "Gossip", uri))
+        }
+
         /** How often [runBackgroundPollLoop] re-reads the clipboard via Shizuku. Short enough that a background copy feels
          *  responsive, cheap enough (a single Binder round-trip) that polling this often isn't a real cost. */
         private const val SHIZUKU_POLL_INTERVAL_MS = 2_000L
