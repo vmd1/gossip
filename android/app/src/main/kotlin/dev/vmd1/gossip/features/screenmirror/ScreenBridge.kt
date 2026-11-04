@@ -241,14 +241,21 @@ class ScreenBridge(
         runCatching { listener?.close() }
         // If we powered the panel off, power it back on through the still-open scrcpy control socket *before* closing,
         // so the display is never left stuck off (PowerManager still thinks it's on; only this poke turned it off).
-        if (poweredOff) runCatching { session?.writeControl(byteArrayOf(CONTROL_SET_DISPLAY_POWER, 1)) }
+        // Only the last screen-off session does that: when a new whole-screen mirror replaced this one, the new one owns the
+        // panel and the raised timeout, and powering the panel on here would undo them.
+        val lastScreenOff = poweredOff && ScreenOffGuard.release(sessionId)
+        if (lastScreenOff) {
+            runCatching { session?.writeControl(byteArrayOf(CONTROL_SET_DISPLAY_POWER, 1)) }
+            // The write goes through the relay process, which close() kills; give it a moment to reach the server first.
+            runCatching { Thread.sleep(PANEL_ON_FLUSH_MS) }
+        }
         runCatching { session?.close() }
         unregisterScreenOffReceiver()
         // A session someone was actually watching leaves the screen on; put it to sleep so the phone locks. For a
         // screen-off mirror, restore the screen-off timeout we raised. Sessions that never got a viewer (failed start,
         // attach timeout) must not touch the screen.
-        if (viewerAttached && !options.isAppWindow) ScreenOff.sleep()
-        if (poweredOff) ScreenOffGuard.restore(context)
+        if (viewerAttached && !options.isAppWindow && (!poweredOff || lastScreenOff)) ScreenOff.sleep()
+        if (lastScreenOff) ScreenOffGuard.restore(context)
         Log.i(TAG, "[$sessionId] ended")
         onEnded()
     }
@@ -270,7 +277,7 @@ class ScreenBridge(
      */
     private fun panelOff(s: ScrcpyServerSession) {
         if (ended.get()) return
-        ScreenOffGuard.keepAwake(context)
+        ScreenOffGuard.keepAwake(context, sessionId)
         poweredOff = true
         s.writeControl(byteArrayOf(CONTROL_SET_DISPLAY_POWER, 0))
         registerScreenOffReceiver() // a power-button press should end the mirror (and restore the timeout), not just blank it
@@ -350,6 +357,7 @@ class ScreenBridge(
         /** scrcpy `SET_DISPLAY_POWER` (type 10): u8 1 = on, 0 = off. */
         private const val CONTROL_SET_DISPLAY_POWER: Byte = 10
         const val ATTACH_TIMEOUT_MS = 30_000L
+        private const val PANEL_ON_FLUSH_MS = 150L
         private const val AUTH_TIMEOUT_MS = 10_000
         private const val MAX_AUTHENTICATING = 4
         private const val KIND_TEXT: Byte = 0x00
