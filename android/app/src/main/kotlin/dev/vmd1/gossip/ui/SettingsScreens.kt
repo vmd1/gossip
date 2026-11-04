@@ -168,6 +168,12 @@ fun ColumnScope.FeatureTogglesContent(
         )
     }
     if (isPhone) {
+        val whileLocked by settings.appWindowsWhileLocked.collectAsState()
+        FeatureRow(
+            "Mirror apps while locked",
+            "Let paired devices open this phone's apps as windows even while it is locked. Off keeps a locked phone closed.",
+            whileLocked, { settings.setAppWindowsWhileLocked(it) }, null
+        )
         FeatureRow(
             "Messages", "Let your paired Mac read and send this phone's text messages (SMS).",
             messagesOn, { messages.setEnabled(it) }, SettingsPage.MESSAGES

@@ -59,6 +59,17 @@ class FeatureSettings internal constructor(private val prefs: SharedPreferences)
 
     fun isEnabled(feature: Feature): Boolean = feature !in _disabled.value
 
+    private val _appWindowsWhileLocked = MutableStateFlow(prefs.getBoolean(KEY_APP_WINDOWS_WHILE_LOCKED, false))
+
+    /** Whether paired devices may open app windows while this phone is locked. Off by default: a locked phone opens none. */
+    val appWindowsWhileLocked: StateFlow<Boolean> = _appWindowsWhileLocked
+
+    @Synchronized
+    fun setAppWindowsWhileLocked(allowed: Boolean) {
+        prefs.edit().putBoolean(KEY_APP_WINDOWS_WHILE_LOCKED, allowed).apply()
+        _appWindowsWhileLocked.value = allowed
+    }
+
     @Synchronized
     fun setEnabled(feature: Feature, enabled: Boolean) {
         prefs.edit().putBoolean(key(feature), enabled).apply()
@@ -71,6 +82,7 @@ class FeatureSettings internal constructor(private val prefs: SharedPreferences)
 
     companion object {
         private const val PREFS_NAME = "feature_settings"
+        private const val KEY_APP_WINDOWS_WHILE_LOCKED = "screen_app_windows_while_locked"
 
         private fun key(feature: Feature) = "feature_${feature.name.lowercase()}_enabled"
 
