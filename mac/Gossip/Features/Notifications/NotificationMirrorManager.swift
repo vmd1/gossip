@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 import GossipCoreKit
@@ -15,6 +16,9 @@ import ImageIO
 final class NotificationMirrorManager: NSObject, ObservableObject {
     static let replyCategoryIdentifier = "dev.vmd1.gossip.notification.reply"
     static let replyActionIdentifier = "dev.vmd1.gossip.notification.replyAction"
+    static let codeCategoryIdentifier = "dev.vmd1.gossip.notification.code"
+    static let replyCodeCategoryIdentifier = "dev.vmd1.gossip.notification.replyCode"
+    static let copyCodeActionIdentifier = "dev.vmd1.gossip.notification.copyCode"
 
     /// Prefix applied to the source device ID + Android-supplied notification `id` to
     /// form the local `UNNotificationRequest` identifier, so `notification.removed` (and
@@ -79,14 +83,14 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Message"
         )
-        let category = UNNotificationCategory(
-            identifier: Self.replyCategoryIdentifier,
-            actions: [replyAction],
-            intentIdentifiers: [],
-            options: []
-        )
+        let copyAction = UNNotificationAction(identifier: Self.copyCodeActionIdentifier, title: "Copy code", options: [])
+        let categories = [
+            UNNotificationCategory(identifier: Self.replyCategoryIdentifier, actions: [replyAction], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: Self.codeCategoryIdentifier, actions: [copyAction], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: Self.replyCodeCategoryIdentifier, actions: [copyAction, replyAction], intentIdentifiers: [], options: []),
+        ]
         notificationCenter.getNotificationCategories { existing in
-            self.notificationCenter.setNotificationCategories(existing.union([category]))
+            self.notificationCenter.setNotificationCategories(existing.union(categories))
         }
     }
 
@@ -137,8 +141,15 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         content.subtitle = String(posted.title.prefix(200))
         content.body = String(posted.body.prefix(2000))
         content.userInfo = ["androidNotificationId": posted.id, "sourceDeviceId": envelope.senderId]
-        if posted.hasReplyAction {
-            content.categoryIdentifier = Self.replyCategoryIdentifier
+        // A login code in the text gets a "Copy code" button. The code is found here, on the text this Mac already has;
+        // it is never auto-pasted, and the notification shows it as usual.
+        let code = OneTimeCode.detect(title: posted.title, body: posted.body)
+        if let code { content.userInfo["oneTimeCode"] = code }
+        switch (posted.hasReplyAction, code != nil) {
+        case (true, true): content.categoryIdentifier = Self.replyCodeCategoryIdentifier
+        case (true, false): content.categoryIdentifier = Self.replyCategoryIdentifier
+        case (false, true): content.categoryIdentifier = Self.codeCategoryIdentifier
+        case (false, false): break
         }
 
         attachIcon(base64: posted.iconBase64, to: content) { [weak self] contentWithIcon in
@@ -349,6 +360,11 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
         guard let (sourceDeviceId, androidId) = decodeLocalIdentifier(response.notification.request.identifier) else { return }
 
         switch response.actionIdentifier {
+        case Self.copyCodeActionIdentifier:
+            if let code = response.notification.request.content.userInfo["oneTimeCode"] as? String {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+            }
         case Self.replyActionIdentifier:
             guard let textResponse = response as? UNTextInputNotificationResponse else { return }
             sendReply(id: androidId, text: textResponse.userText, to: sourceDeviceId)
