@@ -42,4 +42,41 @@ class ClipboardHistoryStoreTest {
         s.setEnabled(false)
         assertTrue(s.entries.value.isEmpty())
     }
+
+    private fun imageStore(): Pair<ClipboardHistoryStore, java.io.File> {
+        val dir = java.nio.file.Files.createTempDirectory("hist-img").toFile()
+        return ClipboardHistoryStore(FakeSharedPreferences(), dir).also { it.setEnabled(true) } to dir
+    }
+
+    @Test
+    fun `an image is stored and the same image moves to the top`() {
+        val (s, dir) = imageStore()
+        val a = byteArrayOf(1, 2, 3); val b = byteArrayOf(4, 5, 6)
+        s.recordImage(a, 10, 20, false); s.recordImage(b, 1, 1, true); s.recordImage(a, 10, 20, false)
+        assertEquals(2, s.entries.value.size)
+        assertEquals("Image 10×20", s.entries.value[0].text)
+        assertTrue(a.contentEquals(s.imageBytes(s.entries.value[0])))
+        assertEquals(2, dir.listFiles()!!.size)
+    }
+
+    @Test
+    fun `removing clearing and trimming delete image files`() {
+        val (s, dir) = imageStore()
+        repeat(ClipboardHistoryStore.MAX_UNPINNED + 3) { s.recordImage(byteArrayOf((it % 250).toByte(), (it / 250).toByte(), 9), 1, 1, false) }
+        assertEquals(ClipboardHistoryStore.MAX_UNPINNED, dir.listFiles()!!.size)
+        s.remove(s.entries.value[0].id)
+        assertEquals(ClipboardHistoryStore.MAX_UNPINNED - 1, dir.listFiles()!!.size)
+        s.clear()
+        assertTrue(dir.listFiles()!!.isEmpty())
+    }
+
+    @Test
+    fun `oversized images and a store without a folder skip images`() {
+        val (s, dir) = imageStore()
+        s.recordImage(ByteArray(ClipboardHistoryStore.MAX_IMAGE_BYTES + 1), 1, 1, false)
+        assertTrue(s.entries.value.isEmpty() && dir.listFiles().orEmpty().isEmpty())
+        val noDir = ClipboardHistoryStore(FakeSharedPreferences()).also { it.setEnabled(true) }
+        noDir.recordImage(byteArrayOf(1), 1, 1, false)
+        assertTrue(noDir.entries.value.isEmpty())
+    }
 }
