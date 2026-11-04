@@ -250,16 +250,17 @@ jobs:
           echo "Designated requirement (this must stay the same release to release):"
           codesign -d -r- "$APP" 2>&1 | grep designated
 
-      # macos-15 runners are Apple Silicon (arm64) only — no Intel build is produced.
+      # The app is a universal binary (arm64 + x86_64): the Rust core is built for both Mac targets above, and the Release
+      # configuration builds both slices even though the runner is Apple Silicon.
       - name: Zip app bundle
         run: |
           cd build/Build/Products/Release
-          zip -r ../../../../Gossip-Mac-AppleSilicon.zip Gossip.app
+          zip -r ../../../../Gossip-Mac.zip Gossip.app
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mac-zip
-          path: mac/Gossip-Mac-AppleSilicon.zip
+          path: mac/Gossip-Mac.zip
 
       - name: Remove signing keychain
         if: always()
