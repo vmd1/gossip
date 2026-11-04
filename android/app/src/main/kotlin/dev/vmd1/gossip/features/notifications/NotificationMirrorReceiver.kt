@@ -30,6 +30,7 @@ private const val CHANNEL_ID = "connect_notification_mirror"
 private const val MIRROR_NOTIFICATION_ID = 3001
 private const val EXTRA_SOURCE_DEVICE_ID = "dev.vmd1.gossip.app.sourceDeviceId"
 private const val EXTRA_ORIGINAL_ID = "dev.vmd1.gossip.app.originalNotificationId"
+private const val EXTRA_CODE = "dev.vmd1.gossip.app.oneTimeCode"
 private const val REPLY_RESULT_KEY = "dev.vmd1.gossip.app.notificationReplyText"
 
 /**
@@ -164,6 +165,17 @@ class NotificationMirrorReceiver(
             builder.addAction(replyAction)
         }
 
+        // A login code in the text gets a "Copy code" button (never auto-pasted).
+        OneTimeCode.detect(payload.title, payload.body)?.let { code ->
+            val copy = Intent(context, NotificationMirrorCopyCodeReceiver::class.java).putExtra(EXTRA_CODE, code)
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    android.R.drawable.ic_menu_edit, "Copy code",
+                    PendingIntent.getBroadcast(context, ("code|" + tag).hashCode(), copy, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                ).build()
+            )
+        }
+
         // The removal may have arrived while the icon was being decoded.
         if (book.isStale(tag, payload.timestamp)) return
         runCatching {
@@ -263,5 +275,19 @@ class NotificationMirrorReplyReceiver : BroadcastReceiver() {
         val originalId = intent.getStringExtra(EXTRA_ORIGINAL_ID) ?: return
         val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(REPLY_RESULT_KEY)?.toString() ?: return
         NotificationMirrorReceiver.instance?.sendReply(sourceDeviceId, originalId, text)
+    }
+}
+
+/** Fired by a mirrored notification's "Copy code" action: puts the one-time code on the clipboard (marked sensitive so
+ *  the keyboard and clipboard UI don't show it). */
+class NotificationMirrorCopyCodeReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val code = intent.getStringExtra(EXTRA_CODE) ?: return
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val clip = android.content.ClipData.newPlainText("Login code", code)
+        clip.description.extras = android.os.PersistableBundle().apply {
+            putBoolean("android.content.extra.IS_SENSITIVE", true)
+        }
+        cm.setPrimaryClip(clip)
     }
 }
