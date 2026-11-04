@@ -303,11 +303,14 @@ class ScreenMirrorStateTest {
     @Test fun lockingThePhoneEndsAppWindowsOnly() {
         val s = state()
         s.onScreenStart(env(MessageType.SCREEN_START, "full"))
+        awaitSent(1) // starts run on their own threads: finish one before the next so sessions[] is in order
         s.onScreenStart(appStart("a1", "com.example.one"))
         awaitSent(2)
         s.onDeviceLocked()
         s.onDeviceLocked() // idempotent
-        Thread.sleep(100)
+        val end = System.currentTimeMillis() + 5000
+        while (sessions[1].closed == 0 && System.currentTimeMillis() < end) Thread.sleep(10)
+        Thread.sleep(50)
         assertEquals(0, sessions[0].closed)
         assertEquals(1, sessions[1].closed)
     }
