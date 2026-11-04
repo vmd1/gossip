@@ -179,6 +179,12 @@
         <receiver
             android:name=".features.notifications.NotificationMirrorCopyCodeReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".features.notifications.NotificationMirrorActionReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".features.notifications.NotificationMirrorSmartReplyReceiver"
+            android:exported="false" />
 
         <!-- Backs a content:// Uri for a received clipboard image — the system
              clipboard's image items must be Uri-backed, not raw bytes. See
