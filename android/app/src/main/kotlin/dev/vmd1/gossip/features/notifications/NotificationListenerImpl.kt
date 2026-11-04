@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
 private const val TAG = "NotificationListener"
 private const val APP_ICON_SIZE_PX = 96
 private const val APP_ICON_CACHE_LIMIT = 128
+private const val PICTURE_MAX_EDGE = 512
 
 /**
  * Bridges the Android [NotificationListenerService] special-access API into the
@@ -58,6 +59,10 @@ class NotificationListenerImpl : NotificationListenerService() {
     private data class ReplyTarget(val pendingIntent: PendingIntent, val remoteInputs: Array<RemoteInput>)
 
     private val replyTargets = ConcurrentHashMap<String, ReplyTarget>()
+
+    /** The source notification's other buttons, by the index sent in `notification.posted`'s `actions`. */
+    private val actionTargets = ConcurrentHashMap<String, Map<Int, PendingIntent>>()
+    private val recentActionAttempts = RecentAttempts()
     private var scope: CoroutineScope? = null
 
     /** Acts on each `notification.reply` attempt once. A duplicate delivery (retry, relay race, mesh dedupe-cache eviction —
@@ -103,6 +108,7 @@ class NotificationListenerImpl : NotificationListenerService() {
 
     private val replyEnvelopeHandler = EnvelopeHandler { envelope -> handleReply(envelope.payload) }
     private val dismissEnvelopeHandler = EnvelopeHandler { envelope -> handleDismiss(envelope.payload) }
+    private val actionEnvelopeHandler = EnvelopeHandler { envelope -> handleAction(envelope.payload) }
     private var registeredRouter: MessageRouter? = null
 
     /**
@@ -121,9 +127,11 @@ class NotificationListenerImpl : NotificationListenerService() {
         registeredRouter?.let { old ->
             old.unregister(replyEnvelopeHandler)
             old.unregister(dismissEnvelopeHandler)
+            old.unregister(actionEnvelopeHandler)
         }
         router.register(MessageType.NOTIFICATION_REPLY, replyEnvelopeHandler)
         router.register(MessageType.NOTIFICATION_DISMISS, dismissEnvelopeHandler)
+        router.register(MessageType.NOTIFICATION_ACTION, actionEnvelopeHandler)
         registeredRouter = router
     }
 
@@ -136,12 +144,14 @@ class NotificationListenerImpl : NotificationListenerService() {
         registeredRouter?.let { router ->
             router.unregister(replyEnvelopeHandler)
             router.unregister(dismissEnvelopeHandler)
+            router.unregister(actionEnvelopeHandler)
         }
         registeredRouter = null
         if (active === this) active = null
         scope?.cancel()
         scope = null
         replyTargets.clear()
+        actionTargets.clear()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -164,6 +174,9 @@ class NotificationListenerImpl : NotificationListenerService() {
             replyTargets.remove(id)
         }
 
+        val buttons = otherActions(notification)
+        if (buttons.isEmpty()) actionTargets.remove(id) else actionTargets[id] = buttons.associate { it.first.index to it.second }
+
         val payload = NotificationPostedPayload(
             id = id,
             appPackage = sbn.packageName,
@@ -172,7 +185,12 @@ class NotificationListenerImpl : NotificationListenerService() {
             body = body,
             iconBase64 = appIconBase64(sbn.packageName),
             hasReplyAction = replyAction != null,
-            timestamp = sbn.postTime
+            timestamp = sbn.postTime,
+            avatarBase64 = avatarBase64(notification),
+            pictureBase64 = pictureBase64(extras),
+            actions = buttons.map { it.first }.takeIf { it.isNotEmpty() },
+            smartReplies = replyAction?.let { smartReplies(it) }?.takeIf { it.isNotEmpty() },
+            live = liveInfo(notification)
         )
         send(payload.toEnvelope(senderId = deviceId()))
     }
@@ -189,7 +207,8 @@ class NotificationListenerImpl : NotificationListenerService() {
         // Never re-mirror a notification this app itself posted to mirror some OTHER device's notification, see
         // EXTRA_IS_MIRROR's doc for why this must be a content-based check, not a package/id exclusion.
         if (sbn.notification.extras.getBoolean(EXTRA_IS_MIRROR, false)) return false
-        if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return false
+        // An ongoing notification is skipped unless it is a live one (progress, timer, call), which is shown as it updates.
+        if (!sbn.isClearable && sbn.notification.flags and Notification.FLAG_ONGOING_EVENT != 0 && liveInfo(sbn.notification) == null) return false
         // Media playback notifications are already covered end to end by the dedicated media.nowplaying and
         // media.command pipeline, so a mirrored copy would just be redundant clutter.
         if (sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) return false
@@ -222,6 +241,7 @@ class NotificationListenerImpl : NotificationListenerService() {
         if (!isPhone) return
         if (!NotificationForwardSettings.getInstance(applicationContext).isAllowed(sbn.packageName)) return
         replyTargets.remove(sbn.key)
+        actionTargets.remove(sbn.key)
         val payload = NotificationRemovedPayload(id = sbn.key)
         send(payload.toEnvelope(senderId = deviceId()))
         publishActive()
@@ -275,7 +295,75 @@ class NotificationListenerImpl : NotificationListenerService() {
         }
     }
 
+    // MARK: - notification.action (any device -> android)
+
+    private fun handleAction(payload: JsonObject) {
+        val action = try {
+            NotificationActionPayload.fromPayload(payload)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to decode notification.action payload", e)
+            return
+        }
+        // A duplicate delivery must not press the button twice (it can answer a call or archive a message).
+        if (!recentActionAttempts.firstTime(action.attemptId)) {
+            Log.i(TAG, "Dropping a duplicate notification.action")
+            return
+        }
+        val pending = actionTargets[action.id]?.get(action.index) ?: run {
+            Log.w(TAG, "No action ${action.index} cached for notification ${action.id}")
+            return
+        }
+        try {
+            pending.send()
+        } catch (e: PendingIntent.CanceledException) {
+            Log.w(TAG, "Action PendingIntent was canceled for notification ${action.id}", e)
+        }
+    }
+
     // MARK: - Helpers
+
+    /** The buttons other than the reply action that can be pressed remotely, with their intents. */
+    private fun otherActions(notification: Notification): List<Pair<NotificationActionInfo, PendingIntent>> =
+        notification.actions?.toList().orEmpty().mapIndexedNotNull { index, a ->
+            val title = a.title?.toString()?.trim().orEmpty()
+            val intent = a.actionIntent
+            if (title.isEmpty() || intent == null || !a.remoteInputs.isNullOrEmpty()) null
+            else NotificationActionInfo(index, title.take(40)) to intent
+        }.take(NotificationPostedPayload.MAX_ACTIONS)
+
+    private fun smartReplies(action: Notification.Action): List<String> =
+        action.remoteInputs.orEmpty().flatMap { it.choices?.toList().orEmpty() }
+            .map { it.toString().trim().take(100) }.filter { it.isNotEmpty() }.distinct()
+            .take(NotificationPostedPayload.MAX_SMART_REPLIES)
+
+    private fun liveInfo(n: Notification): NotificationLive? {
+        val e = n.extras
+        if (n.category == Notification.CATEGORY_CALL) {
+            return NotificationLive("call", chronometerBase = if (e.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)) n.`when` else null)
+        }
+        val max = e.getInt(Notification.EXTRA_PROGRESS_MAX, 0)
+        val indeterminate = e.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false)
+        if (max > 0 || indeterminate) {
+            return NotificationLive("progress", progress = e.getInt(Notification.EXTRA_PROGRESS, 0), max = max, indeterminate = indeterminate)
+        }
+        if (e.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)) return NotificationLive("timer", chronometerBase = n.`when`)
+        return null
+    }
+
+    private fun avatarBase64(n: Notification): String? = runCatching {
+        val icon = n.getLargeIcon()?.loadDrawable(applicationContext) ?: return null
+        Base64.encodeToString(drawableToPngBytes(icon, APP_ICON_SIZE_PX), Base64.NO_WRAP)
+    }.getOrNull()
+
+    @Suppress("DEPRECATION")
+    private fun pictureBase64(extras: Bundle): String? = runCatching {
+        val bmp = (extras.get(Notification.EXTRA_PICTURE) as? Bitmap) ?: return null
+        val scale = PICTURE_MAX_EDGE.toFloat() / maxOf(bmp.width, bmp.height)
+        val scaled = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true) else bmp
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, 75, out)
+        Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP).takeIf { it.length <= NotificationPostedPayload.MAX_PICTURE_BASE64_CHARS }
+    }.getOrNull()
 
     private fun findReplyAction(notification: Notification): Notification.Action? =
         notification.actions?.toList().orEmpty().let { actions ->
