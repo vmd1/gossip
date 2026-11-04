@@ -13,14 +13,15 @@ What Gossip is working on, roughly in order. What already ships is described in 
 3. **Hardware testing.** Multi-display on a real multi-monitor Mac, Android → Android mirroring between two real devices, and the app-window fixes (black first launch, enabling disabled apps).
 4. **Finish Android → Android mirroring.** Rotation, keyboard input and a "being mirrored" indicator on the source.
 5. **Clipboard history for images,** and the phone as a microphone for the Mac.
-6. **Messages: RCS.** The Google Messages bridge on the phone (after a spike on account risk and session lifetime), then an Android Messages UI.
-7. **Richer notifications.** Avatars, pictures, action buttons, smart replies and live notifications (calls, progress, timers), as optional fields older peers ignore, plus a targeted `notification.action` message (deduped like `notification.reply`) and `media.volume`. From the proposal in #111.
-8. **Screen-off mirroring.** Mirror the phone with its own panel truly dark, off by default and needs Shizuku, with a per-device toggle. The display-power and timeout behaviour is OEM-sensitive, so it needs testing across devices. From #112; unlocking the phone from the Mac is a separate question (see Later).
-9. **Mac release signing.** A stable team identity so updates stop asking for the Keychain password.
-10. **Homebrew cask.** A `vmd1/homebrew-apps` tap with a `gossip` cask (`brew install --cask vmd1/apps/gossip`) that installs the release's `Gossip-Mac.zip`, checks its SHA-256 and clears the quarantine flag, with the version and checksum updated automatically on each release. Waits for the first release that ships `Gossip-Mac.zip` (2.5). The official Homebrew cask repo needs a notarized app, so it depends on release signing above.
+6. **Richer notifications.** Avatars, pictures, action buttons, smart replies and live notifications (calls, progress, timers), as optional fields older peers ignore, plus a targeted `notification.action` message (deduped like `notification.reply`) and `media.volume`. From the proposal in #111.
+7. **Screen-off mirroring.** Mirror the phone with its own panel truly dark, off by default and needs Shizuku, with a per-device toggle. The display-power and timeout behaviour is OEM-sensitive, so it needs testing across devices. From #112; unlocking the phone from the Mac is a separate question (see Later).
+8. **Homebrew cask.** A `vmd1/homebrew-apps` tap with a `gossip` cask (`brew install --cask vmd1/apps/gossip`) that installs the release's `Gossip-Mac.zip`, checks its SHA-256 and clears the quarantine flag, with the version and checksum updated automatically on each release. Waits for the first release that ships `Gossip-Mac.zip` (2.5). The official Homebrew cask repo needs a notarized app, so it depends on Mac release signing (see Later).
 
 ## Later
 
+- **Messages: RCS.** The Google Messages bridge on the phone (after a spike on account risk and session lifetime), then an Android Messages UI.
+- **Mac release signing.** A stable team identity so updates stop asking for the Keychain password.
+- **File transfer** (AirDrop-style). Tried and removed before; NearDrop covers it for now.
 - **Third-party app integration:** a local, off-by-default API so other Mac apps (such as the Droppy notch shelf in #111) can show notifications, reply, and control media, with the user approving each client. Comes after the richer notification data, and needs a design decision between a Droppy-specific client and a generic approval flow.
 - **Unlock the phone from the Mac** during screen-off mirroring. Typing a credential from another device is a security risk, so it needs its own design and review.
 - **Sidecar,** Mac → Android tablet first (needs a spike on the private `CGVirtualDisplay` API).
@@ -35,7 +36,6 @@ What Gossip is working on, roughly in order. What already ships is described in 
 
 ## Not planned
 
-- File transfer (AirDrop-style): tried and removed; NearDrop covers it.
 - Handoff, Continuity Markup and Sketch, Keychain handoff, Apple Watch features.
 - Files and styled text in the clipboard: text and PNG is the scope.
 - Automatic hotspot on connection loss: built, then removed. Instant Hotspot is manual.
