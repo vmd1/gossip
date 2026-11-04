@@ -181,6 +181,8 @@ fun ColumnScope.FeatureTogglesContent(
     val messagesOn by messages.enabled.collectAsState()
     val history = remember { ClipboardHistoryStore.getInstance(context) }
     val historyOn by history.enabled.collectAsState()
+    val screenOff = remember { dev.vmd1.gossip.features.screenmirror.ScreenOffMirrorSettings.getInstance(context) }
+    val screenOffOn by screenOff.enabled.collectAsState()
     BackgroundHealthContent()
     Text(
         "Turning a feature off stops this device from sending or receiving it at all. " +
@@ -213,6 +215,11 @@ fun ColumnScope.FeatureTogglesContent(
             if (feature == Feature.HOTSPOT) SettingsPage.HOTSPOT else null
         )
     }
+    FeatureRow(
+        "Screen-off mirroring",
+        "Keep this screen dark while it's mirrored (needs Shizuku). It sleeps and locks again when mirroring ends.",
+        screenOffOn, { screenOff.setEnabled(it) }, null
+    )
     if (isPhone) {
         val whileLocked by settings.appWindowsWhileLocked.collectAsState()
         FeatureRow(

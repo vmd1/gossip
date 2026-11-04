@@ -53,6 +53,8 @@ class ScreenMirrorState(
     private val appLister: () -> List<AppInfo> = { emptyList() },
     /** Screen mirroring turned off on this device: refuse with `screen.error feature_disabled`. */
     private val isEnabled: () -> Boolean = { true },
+    /** Screen-off mirroring is on ([ScreenOffMirrorSettings]): whole-screen mirrors run with the phone's panel off. */
+    private val screenOffEnabled: () -> Boolean = { false },
     /** The phone is locked behind a secure keyguard: app windows are refused with `screen.error locked`. */
     private val isLocked: () -> Boolean = { false },
     private val warn: (String, Throwable) -> Unit = { m, t -> Log.w(TAG, m, t) },
@@ -93,7 +95,7 @@ class ScreenMirrorState(
             )
             return
         }
-        val options = parseOptions(envelope.payload)
+        val options = parseOptions(envelope.payload).copy(screenOff = screenOffEnabled())
         // A locked phone opens no app windows. A duplicate for a window already running still gets its re-ack
         // (the window ends on its own when the phone locks, see [onDeviceLocked]).
         if (options.isAppWindow && isLocked() && synchronized(lock) { sessionId !in actives }) {
