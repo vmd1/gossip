@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 import GossipCoreKit
@@ -15,6 +16,11 @@ import ImageIO
 final class NotificationMirrorManager: NSObject, ObservableObject {
     static let replyCategoryIdentifier = "dev.vmd1.gossip.notification.reply"
     static let replyActionIdentifier = "dev.vmd1.gossip.notification.replyAction"
+    static let codeCategoryIdentifier = "dev.vmd1.gossip.notification.code"
+    static let replyCodeCategoryIdentifier = "dev.vmd1.gossip.notification.replyCode"
+    static let buttonActionPrefix = "dev.vmd1.gossip.notification.button."
+    static let smartReplyActionPrefix = "dev.vmd1.gossip.notification.smart."
+    static let copyCodeActionIdentifier = "dev.vmd1.gossip.notification.copyCode"
 
     /// Prefix applied to the source device ID + Android-supplied notification `id` to
     /// form the local `UNNotificationRequest` identifier, so `notification.removed` (and
@@ -79,14 +85,14 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Message"
         )
-        let category = UNNotificationCategory(
-            identifier: Self.replyCategoryIdentifier,
-            actions: [replyAction],
-            intentIdentifiers: [],
-            options: []
-        )
+        let copyAction = UNNotificationAction(identifier: Self.copyCodeActionIdentifier, title: "Copy code", options: [])
+        let categories = [
+            UNNotificationCategory(identifier: Self.replyCategoryIdentifier, actions: [replyAction], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: Self.codeCategoryIdentifier, actions: [copyAction], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: Self.replyCodeCategoryIdentifier, actions: [copyAction, replyAction], intentIdentifiers: [], options: []),
+        ]
         notificationCenter.getNotificationCategories { existing in
-            self.notificationCenter.setNotificationCategories(existing.union([category]))
+            self.notificationCenter.setNotificationCategories(existing.union(categories))
         }
     }
 
@@ -136,28 +142,92 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         content.title = String(posted.appName.prefix(80))
         content.subtitle = String(posted.title.prefix(200))
         content.body = String(posted.body.prefix(2000))
+        if let progress = Self.progressLine(posted.live) {
+            content.body = content.body.isEmpty ? progress : "\(content.body)\n\(progress)"
+            content.interruptionLevel = .passive // an update to a running progress shouldn't ping every time
+        }
         content.userInfo = ["androidNotificationId": posted.id, "sourceDeviceId": envelope.senderId]
-        if posted.hasReplyAction {
-            content.categoryIdentifier = Self.replyCategoryIdentifier
+        // A login code in the text gets a "Copy code" button. The code is found here, on the text this Mac already has;
+        // it is never auto-pasted, and the notification shows it as usual.
+        let code = OneTimeCode.detect(title: posted.title, body: posted.body)
+        if let code { content.userInfo["oneTimeCode"] = code }
+        let buttons = Array((posted.actions ?? []).prefix(3))
+        let smart = posted.hasReplyAction ? Array((posted.smartReplies ?? []).prefix(3)) : []
+        if !smart.isEmpty { content.userInfo["smartReplies"] = smart }
+        let category = Self.category(hasReply: posted.hasReplyAction, code: code != nil, actions: buttons, smartReplies: smart)
+        if let category {
+            content.categoryIdentifier = category.identifier
+        } else {
+            switch (posted.hasReplyAction, code != nil) {
+            case (true, true): content.categoryIdentifier = Self.replyCodeCategoryIdentifier
+            case (true, false): content.categoryIdentifier = Self.replyCategoryIdentifier
+            case (false, true): content.categoryIdentifier = Self.codeCategoryIdentifier
+            case (false, false): break
+            }
         }
 
-        attachIcon(base64: posted.iconBase64, to: content) { [weak self] contentWithIcon in
+        // The conversation's own picture, when sent, replaces the app's launcher icon; a notification picture comes second.
+        let images: [(String?, String)] = [(posted.avatarBase64 ?? posted.iconBase64, "png"), (posted.pictureBase64, "jpg")]
+        attachImages(images, to: content) { [weak self] contentWithImages in
             guard let self else { return }
-            // The removal may have arrived while the icon was being decoded.
+            // The removal may have arrived while the images were being decoded.
             if self.book.isStale(postedIdentifier, postedAt: posted.timestamp) { return }
             let request = UNNotificationRequest(
                 identifier: postedIdentifier,
-                content: contentWithIcon,
+                content: contentWithImages,
                 trigger: nil
             )
-            self.notificationCenter.add(request) { [weak self] error in
-                if let error {
-                    gossipError("Gossip: failed to post mirrored notification: \(error)")
-                } else {
-                    self?.book.recordShown(request.identifier)
+            let post = {
+                self.notificationCenter.add(request) { [weak self] error in
+                    if let error {
+                        gossipError("Gossip: failed to post mirrored notification: \(error)")
+                    } else {
+                        self?.book.recordShown(request.identifier)
+                    }
                 }
             }
+            if let category {
+                // The category has to exist before a notification that uses it is delivered.
+                self.notificationCenter.getNotificationCategories { existing in
+                    self.notificationCenter.setNotificationCategories(existing.union([category]))
+                    post()
+                }
+            } else {
+                post()
+            }
         }
+    }
+
+    /// The button set for one notification's layout: Copy code, suggested replies, the notification's own buttons, Reply.
+    /// The identifier is derived from the layout, so notifications that look alike share one category.
+    static func category(hasReply: Bool, code: Bool, actions: [NotificationActionInfo], smartReplies: [String]) -> UNNotificationCategory? {
+        if actions.isEmpty && smartReplies.isEmpty { return nil } // the fixed reply / code / reply+code categories cover these
+        var list: [UNNotificationAction] = []
+        if code { list.append(UNNotificationAction(identifier: copyCodeActionIdentifier, title: "Copy code", options: [])) }
+        for (i, text) in smartReplies.enumerated() {
+            list.append(UNNotificationAction(identifier: "\(smartReplyActionPrefix)\(i)", title: text, options: []))
+        }
+        for a in actions {
+            list.append(UNNotificationAction(identifier: "\(buttonActionPrefix)\(a.index)", title: a.title, options: []))
+        }
+        if hasReply {
+            list.append(UNTextInputNotificationAction(identifier: replyActionIdentifier, title: "Reply", options: [],
+                                                      textInputButtonTitle: "Send", textInputPlaceholder: "Message"))
+        }
+        var key = "\(hasReply)|\(code)"
+        for a in list { key += "|\(a.identifier)=\(a.title)" }
+        var h: UInt64 = 5381
+        for b in key.utf8 { h = (h &* 33) &+ UInt64(b) }
+        return UNNotificationCategory(identifier: "dev.vmd1.gossip.notification.dyn.\(String(h, radix: 16))", actions: list,
+                                      intentIdentifiers: [], options: [])
+    }
+
+    /// "Progress: 40%" for a determinate progress notification; nothing for other kinds (macOS banners have no bar).
+    static func progressLine(_ live: NotificationLive?) -> String? {
+        guard let live, live.kind == "progress" else { return nil }
+        if live.indeterminate == true || (live.max ?? 0) <= 0 { return "In progress…" }
+        let pct = min(100, max(0, (live.progress ?? 0) * 100 / (live.max ?? 1)))
+        return "Progress: \(pct)%"
     }
 
     private func handleRemoved(_ envelope: Envelope) {
@@ -220,21 +290,21 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
         }
     }
 
-    private func attachIcon(base64: String?, to content: UNMutableNotificationContent, completion: @escaping (UNMutableNotificationContent) -> Void) {
-        guard let base64, base64.utf8.count <= Self.maxIconBase64Chars, let data = Data(base64Encoded: base64),
-              Self.isReasonableIcon(data) else {
-            completion(content)
-            return
+    private func attachImages(_ images: [(String?, String)], to content: UNMutableNotificationContent, completion: @escaping (UNMutableNotificationContent) -> Void) {
+        var attachments: [UNNotificationAttachment] = []
+        for (base64, ext) in images {
+            guard let base64, base64.utf8.count <= Self.maxIconBase64Chars, let data = Data(base64Encoded: base64),
+                  Self.isReasonableIcon(data) else { continue }
+            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + ext)
+            do {
+                try data.write(to: tmpURL)
+                attachments.append(try UNNotificationAttachment(identifier: UUID().uuidString, url: tmpURL, options: nil))
+            } catch {
+                gossipError("Gossip: failed to attach notification image: \(error)")
+                try? FileManager.default.removeItem(at: tmpURL) // a rejected attachment isn't moved, so don't leave it behind
+            }
         }
-        let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".png")
-        do {
-            try data.write(to: tmpURL)
-            let attachment = try UNNotificationAttachment(identifier: UUID().uuidString, url: tmpURL, options: nil)
-            content.attachments = [attachment]
-        } catch {
-            gossipError("Gossip: failed to attach notification icon: \(error)")
-            try? FileManager.default.removeItem(at: tmpURL) // a rejected attachment isn't moved, so don't leave it behind
-        }
+        if !attachments.isEmpty { content.attachments = attachments }
         completion(content)
     }
 
@@ -272,6 +342,22 @@ final class NotificationMirrorManager: NSObject, ObservableObject {
             try transportManager.send(envelope: envelope)
         } catch {
             gossipError("Gossip: failed to send notification.reply: \(error)")
+        }
+    }
+
+    // MARK: - Outbound: notification.action
+
+    /// Presses one of the source notification's own buttons. Targeted like `sendReply`, with a fresh `attemptId` per press
+    /// that the phone de-duplicates on (pressing a button can have effects outside the app).
+    func sendAction(id: String, index: Int, to sourceDeviceId: String) {
+        guard let transportManager else { return }
+        do {
+            let payloadData = try JSONEncoder().encode(NotificationActionPayload(id: id, index: index, attemptId: UUID().uuidString))
+            let payloadJSON = try JSONDecoder().decode(JSONValue.self, from: payloadData)
+            let envelope = Envelope(type: "notification.action", senderId: identity.deviceId, recipientId: sourceDeviceId, payload: payloadJSON)
+            try transportManager.send(envelope: envelope)
+        } catch {
+            gossipError("Gossip: failed to send notification.action: \(error)")
         }
     }
 
@@ -349,6 +435,18 @@ extension NotificationMirrorManager: UNUserNotificationCenterDelegate {
         guard let (sourceDeviceId, androidId) = decodeLocalIdentifier(response.notification.request.identifier) else { return }
 
         switch response.actionIdentifier {
+        case Self.copyCodeActionIdentifier:
+            if let code = response.notification.request.content.userInfo["oneTimeCode"] as? String {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+            }
+        case let id where id.hasPrefix(Self.buttonActionPrefix):
+            if let index = Int(id.dropFirst(Self.buttonActionPrefix.count)) { sendAction(id: androidId, index: index, to: sourceDeviceId) }
+        case let id where id.hasPrefix(Self.smartReplyActionPrefix):
+            let replies = response.notification.request.content.userInfo["smartReplies"] as? [String] ?? []
+            if let i = Int(id.dropFirst(Self.smartReplyActionPrefix.count)), replies.indices.contains(i) {
+                sendReply(id: androidId, text: replies[i], to: sourceDeviceId)
+            }
         case Self.replyActionIdentifier:
             guard let textResponse = response as? UNTextInputNotificationResponse else { return }
             sendReply(id: androidId, text: textResponse.userText, to: sourceDeviceId)
@@ -375,6 +473,31 @@ struct NotificationPostedPayload: Codable {
     let iconBase64: String?
     let hasReplyAction: Bool
     let timestamp: Int64
+    // Richer content (all optional; an older phone sends none of it).
+    let avatarBase64: String?
+    let pictureBase64: String?
+    let actions: [NotificationActionInfo]?
+    let smartReplies: [String]?
+    let live: NotificationLive?
+}
+
+struct NotificationActionInfo: Codable {
+    let index: Int
+    let title: String
+}
+
+struct NotificationLive: Codable {
+    let kind: String
+    let progress: Int?
+    let max: Int?
+    let indeterminate: Bool?
+    let chronometerBase: Int64?
+}
+
+struct NotificationActionPayload: Codable {
+    let id: String
+    let index: Int
+    let attemptId: String
 }
 
 struct NotificationRemovedPayload: Codable {

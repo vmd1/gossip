@@ -19,6 +19,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -34,6 +36,10 @@ object MediaMessageType {
     /** The synchronised state slot a phone keeps its now-playing state in. */
     const val NOWPLAYING_SLOT = "media.nowplaying"
     const val COMMAND = "media.command"
+    const val VOLUME = "media.volume"
+
+    /** The music-stream volume index for a 0-100 [level] on a stream whose maximum index is [max]. */
+    fun volumeIndex(level: Int, max: Int): Int = Math.round(level.coerceIn(0, 100) / 100f * max).coerceIn(0, max)
 }
 
 /** Lets the notification listener tell [MediaControlBridge] that notification access is now available, so the bridge never
@@ -106,6 +112,7 @@ class MediaControlBridge(
         MediaSessionManager.OnActiveSessionsChangedListener { controllers -> refreshActiveSessions(controllers) }
 
     private val commandHandler = EnvelopeHandler { envelope -> handleCommand(envelope) }
+    private val volumeHandler = EnvelopeHandler { envelope -> handleVolume(envelope) }
 
     /** Acts on each `media.command` `commandId` once. `skipToNext()`/`skipToPrevious()` are not idempotent, so a duplicate delivery
      *  (retry, relay race, dedupe-cache eviction) must not skip twice; the bounded recently-handled cache and the validation
@@ -117,6 +124,7 @@ class MediaControlBridge(
      *  granted (or the system reconnects it), which tries again. */
     fun start() {
         messageRouter.register(MediaMessageType.COMMAND, commandHandler)
+        messageRouter.register(MediaMessageType.VOLUME, volumeHandler)
         MediaListenerAccess.onConnected = { handler.post { tryListen() } }
         tryListen()
     }
@@ -139,6 +147,7 @@ class MediaControlBridge(
         handler.removeCallbacksAndMessages(null)
         listening = false
         messageRouter.unregister(commandHandler)
+        messageRouter.unregister(volumeHandler)
         runCatching { mediaSessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener) }
         activeController?.unregisterCallback(controllerCallback)
         activeController = null
@@ -159,6 +168,16 @@ class MediaControlBridge(
             chosen?.registerCallback(controllerCallback)
         }
         publishNowPlaying()
+    }
+
+    /** `media.volume`: sets the music volume to an absolute `level` (0-100). Setting a value is idempotent, so a duplicate
+     *  or a periodic repeat ends in the same state and needs no dedupe key. */
+    private fun handleVolume(envelope: Envelope) {
+        val level = envelope.payload["level"]?.jsonPrimitive?.intOrNull ?: return
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val index = MediaMessageType.volumeIndex(level, audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC))
+        runCatching { audio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, index, 0) }
+            .onFailure { Log.w(TAG, "setStreamVolume failed: ${it.message}") }
     }
 
     private fun handleCommand(envelope: Envelope) {

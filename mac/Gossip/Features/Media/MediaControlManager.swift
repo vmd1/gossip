@@ -7,6 +7,7 @@ enum MediaMessageType {
     /// The synchronised state slot a phone keeps its now-playing state in.
     static let nowPlayingSlot = "media.nowplaying"
     static let command = "media.command"
+    static let volume = "media.volume"
 }
 
 /// Playback commands understood by the phone's `media.command` handler.
@@ -155,6 +156,22 @@ final class MediaControlManager: ObservableObject {
             payload: Self.commandPayload(action: action, seekMs: seekMs)
         )
         try? transportManager.send(envelope: envelope)
+    }
+
+    /// Sets the phone's music volume to an absolute `level` (0-100). Absolute, so repeating it is harmless.
+    func sendVolume(_ level: Int) {
+        guard let transportManager, let deviceId = effectiveSelectedDeviceId else { return }
+        let envelope = Envelope(
+            type: MediaMessageType.volume,
+            senderId: identity.deviceId,
+            recipientId: deviceId,
+            payload: Self.volumePayload(level: level)
+        )
+        try? transportManager.send(envelope: envelope)
+    }
+
+    static func volumePayload(level: Int) -> JSONValue {
+        .object(["level": .number(Double(min(100, max(0, level))))])
     }
 
     func play() { sendCommand(.play) }

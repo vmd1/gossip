@@ -97,7 +97,9 @@ struct MenuBarView: View {
                         .help("Messages…")
                 }
                 Button {
-                    ClipboardHistoryWindow.show { [clipboardSync] text in clipboardSync.copyFromHistory(text) }
+                    ClipboardHistoryWindow.show { [clipboardSync] entry in
+                        if entry.isImage { clipboardSync.copyImageFromHistory(entry) } else { clipboardSync.copyFromHistory(entry.text) }
+                    }
                 } label: {
                     Image(systemName: "list.clipboard")
                 }

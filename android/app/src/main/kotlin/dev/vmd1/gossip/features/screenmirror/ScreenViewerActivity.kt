@@ -49,6 +49,69 @@ class ScreenViewerActivity : Activity(), ScreenViewerSession.Listener, SurfaceHo
     private lateinit var frame: FrameLayout
     private lateinit var status: TextView
 
+    /** An invisible one-pixel field that takes the soft keyboard; what is typed into it is sent on as text or key presses. */
+    private val keyboardInput by lazy {
+        android.widget.EditText(this).apply {
+            alpha = 0f
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or android.view.inputmethod.EditorInfo.IME_ACTION_SEND
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(e: android.text.Editable?) {
+                    val typed = e?.toString().orEmpty()
+                    if (typed.isEmpty()) return
+                    ScrcpyControl.text(typed)?.let { session?.sendControl(it) }
+                    e?.clear()
+                }
+            })
+            setOnEditorActionListener { _, _, _ -> session?.sendControl(ScrcpyControl.keyPress(ScrcpyControl.KEY_ENTER)); true }
+            setOnKeyListener { _, code, ev ->
+                // An empty field gets Backspace and Enter as key events; everything else arrives through the text watcher.
+                if (ev.action == android.view.KeyEvent.ACTION_DOWN && (code == android.view.KeyEvent.KEYCODE_DEL || code == android.view.KeyEvent.KEYCODE_ENTER)) {
+                    session?.sendControl(ScrcpyControl.keyPress(code)); true
+                } else false
+            }
+        }
+    }
+
+    private fun toggleKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        if (keyboardShown) {
+            imm.hideSoftInputFromWindow(keyboardInput.windowToken, 0)
+        } else {
+            keyboardInput.requestFocus()
+            imm.showSoftInput(keyboardInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+        keyboardShown = !keyboardShown
+    }
+    private var keyboardShown = false
+
+    /** A hardware keyboard types straight into the mirrored device (Back still closes this screen). */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        val code = event.keyCode
+        if (event.source and android.view.InputDevice.SOURCE_KEYBOARD == android.view.InputDevice.SOURCE_KEYBOARD &&
+            event.device?.isVirtual == false && code != android.view.KeyEvent.KEYCODE_BACK && event.action != android.view.KeyEvent.ACTION_MULTIPLE) {
+            session?.sendControl(ScrcpyControl.keycode(code, event.action == android.view.KeyEvent.ACTION_DOWN, event.metaState))
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** Re-fits the picture when this device rotates (the activity handles the change itself, so the session survives it). */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val w: Int; val h: Int
+        synchronized(lock) { w = videoWidth; h = videoHeight }
+        fit(w, h)
+    }
+
+    /** Follows the mirrored screen's orientation: a phone that turns landscape turns this viewer landscape too. */
+    private fun followSourceOrientation(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        requestedOrientation = if (w > h) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+    }
+
     private val lock = Any()
     private var surface: Surface? = null
     private var codec: MediaCodec? = null
@@ -72,6 +135,7 @@ class ScreenViewerActivity : Activity(), ScreenViewerSession.Listener, SurfaceHo
             setBackgroundColor(Color.BLACK)
             addView(surfaceView, FrameLayout.LayoutParams(1, 1, Gravity.CENTER))
             addView(status, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+            addView(keyboardInput, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
         }
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -83,6 +147,10 @@ class ScreenViewerActivity : Activity(), ScreenViewerSession.Listener, SurfaceHo
                     setOnClickListener { session?.sendControl(ScrcpyControl.keyPress(key)) }
                 }, LinearLayout.LayoutParams(0, -2, 1f))
             }
+            addView(Button(context).apply {
+                text = "⌨"; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT); contentDescription = "Keyboard"
+                setOnClickListener { toggleKeyboard() }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(Button(context).apply {
                 text = "✕"; setTextColor(Color.WHITE); setBackgroundColor(Color.TRANSPARENT); contentDescription = "Stop mirroring"
                 setOnClickListener { finish() }
@@ -130,6 +198,7 @@ class ScreenViewerActivity : Activity(), ScreenViewerSession.Listener, SurfaceHo
     override fun onHeader(header: BridgeStreamHeader) {
         runOnUiThread {
             status.visibility = View.GONE
+            followSourceOrientation(header.width, header.height)
             fit(header.width, header.height)
         }
         if (header.audioSampleRate != null && header.audioChannels != null) startAudio(header.audioSampleRate, header.audioChannels)
@@ -141,7 +210,7 @@ class ScreenViewerActivity : Activity(), ScreenViewerSession.Listener, SurfaceHo
             is BridgeMessage.Video -> onVideo(message)
             is BridgeMessage.Size -> {
                 synchronized(lock) { videoWidth = message.width; videoHeight = message.height }
-                runOnUiThread { fit(message.width, message.height) }
+                runOnUiThread { followSourceOrientation(message.width, message.height); fit(message.width, message.height) }
                 // The encoder restarted at the new size: rebuild the decoder, then ask for config + a key frame.
                 releaseCodec()
                 session?.sendControl(ScrcpyControl.RESET_VIDEO)

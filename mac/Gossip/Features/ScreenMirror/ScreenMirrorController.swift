@@ -291,6 +291,8 @@ final class ScreenMirrorController: ObservableObject {
             return "Shizuku isn't running on \(deviceName). Start it (it needs re-activating after every reboot) and allow Gossip."
         case "feature_disabled":
             return "Screen mirroring is turned off on \(deviceName). Turn it on in Gossip's settings there."
+        case "locked":
+            return "\(deviceName) is locked. Unlock it to open its apps."
         case "capture_failed":
             return "\(deviceName) couldn't start screen capture. Check Shizuku and try again."
         case "app_enable_failed":
