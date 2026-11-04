@@ -2,20 +2,14 @@
 
 What Gossip is working on, roughly in order. What already ships is described in the [README](README.md) and `schema/message-types.md`.
 
-## Urgent
-
-- **Locked phones should not open app windows.** Refuse `screen.start` for an app window while the keyguard is locked (`KeyguardManager.isKeyguardLocked` and `isDeviceSecure`), with a new `screen.error` reason such as `locked`. Both viewers (`ScreenMirrorController` on the Mac, `ScreenViewerSession` on Android) show "Unlock to open its apps", and the reason is added to `schema/message-types.md`. Also consider ending running app windows when the phone locks (`ACTION_SCREEN_OFF` or keyguard shown), so a window left open on the Mac doesn't stay usable; what happens to an open app window today when the phone locks hasn't been checked. A setting to keep the current behaviour is optional, but the default should be that a locked phone means no app windows.
-
 ## Next
 
-1. **Android reliability.** Keep Gossip alive in the background (a battery-optimisation exemption prompt and Samsung's per-app sleep limits), restart the sync service after an app update, show a clear "Shizuku isn't running" state, and harden the relay (keepalive tuning, NAT idle timeout, battery cost of a held connection).
-2. **2FA code autofill.** Detect one-time codes in mirrored SMS and app notifications on the phone and offer them on the Mac, without sending notification text anywhere new and without auto-pasting.
-3. **Hardware testing.** Multi-display on a real multi-monitor Mac, Android → Android mirroring between two real devices, and the app-window fixes (black first launch, enabling disabled apps).
-4. **Finish Android → Android mirroring.** Rotation, keyboard input and a "being mirrored" indicator on the source.
-5. **Clipboard history for images,** and the phone as a microphone for the Mac.
-6. **Richer notifications.** Avatars, pictures, action buttons, smart replies and live notifications (calls, progress, timers), as optional fields older peers ignore, plus a targeted `notification.action` message (deduped like `notification.reply`) and `media.volume`. From the proposal in #111.
-7. **Screen-off mirroring.** Mirror the phone with its own panel truly dark, off by default and needs Shizuku, with a per-device toggle. The display-power and timeout behaviour is OEM-sensitive, so it needs testing across devices. From #112; unlocking the phone from the Mac is a separate question (see Later).
-8. **Homebrew cask.** A `vmd1/homebrew-apps` tap with a `gossip` cask (`brew install --cask vmd1/apps/gossip`) that installs the release's `Gossip-Mac.zip`, checks its SHA-256 and clears the quarantine flag, with the version and checksum updated automatically on each release. Waits for the first release that ships `Gossip-Mac.zip` (2.5). The official Homebrew cask repo needs a notarized app, so it depends on Mac release signing (see Later).
+Most of the previous list shipped in 2.5 (locked-phone protection, login-code copy, richer notifications, image clipboard history, screen-off mirroring, Android viewer keyboard and rotation, background reliability, `media.volume`). What is left:
+
+1. **Hardware testing.** Multi-display on a real multi-monitor Mac, Android → Android mirroring between two real devices, screen-off mirroring on more than one OEM, and the app-window fixes (black first launch, enabling disabled apps). See `docs/hardware-testing.md`.
+2. **Relay hardening.** Measure the keepalive (30 s pings now) and the battery cost of a held connection on real phones.
+3. **Phone as a microphone.** Android 14 only lets a microphone foreground service start while the app is visible, so the realistic route is scrcpy's `audio_source=mic` at shell UID through Shizuku (a mic-only mode in `ScrcpyServerSession` and `ShellRelay`), then a Mac player that routes to a chosen output device. Appearing as a real input device on the Mac needs an audio driver.
+4. **Homebrew cask.** The `vmd1/homebrew-apps` tap and cask are ready and tested; the repo still has to be created and the `HOMEBREW_TAP_TOKEN` secret added so releases update it. The official Homebrew cask repo needs a notarized app, so it depends on Mac release signing (see Later).
 
 ## Later
 

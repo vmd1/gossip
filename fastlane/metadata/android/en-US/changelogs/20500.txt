@@ -1,0 +1,1 @@
+Locked phones no longer open app windows (a setting allows it), login codes get a Copy code button, notifications can show pictures, buttons and suggested replies, copied images join the clipboard history, and screen-off mirroring.
