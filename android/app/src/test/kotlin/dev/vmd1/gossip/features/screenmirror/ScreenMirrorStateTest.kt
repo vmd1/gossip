@@ -275,8 +275,11 @@ class ScreenMirrorStateTest {
 
     @Test fun theOldestAppWindowMakesRoomPastTheLimit() {
         val s = state()
-        repeat(ScreenMirrorState.MAX_APP_WINDOWS + 1) { s.onScreenStart(appStart("a$it", "com.example.app$it")) }
-        awaitSent(ScreenMirrorState.MAX_APP_WINDOWS + 1)
+        // one at a time: starts run on their own threads, so "oldest" is only defined if each has finished
+        repeat(ScreenMirrorState.MAX_APP_WINDOWS + 1) {
+            s.onScreenStart(appStart("a$it", "com.example.app$it"))
+            awaitSent(it + 1)
+        }
         val end = System.currentTimeMillis() + 5000
         while (sessions.sumOf { it.closed } == 0 && System.currentTimeMillis() < end) Thread.sleep(10)
         assertEquals(1, sessions[0].closed)
