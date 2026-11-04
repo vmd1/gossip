@@ -69,7 +69,7 @@ Every feature has its own per-device switch in Settings. How this compares with 
 
 **1. Mac**
 
-Download `Gossip-Mac.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest), unzip, and move `Gossip.app` to `/Applications`.
+Download `Gossip-Mac.zip` from the [latest release](https://github.com/vmd1/gossip/releases/latest), unzip, and move `Gossip.app` to `/Applications`. Or with Homebrew: `brew install --cask vmd1/apps/gossip` (it also clears the quarantine flag, so there is no "Open Anyway" step).
 
 The app isn't notarized: on first launch choose **System Settings → Privacy & Security → Open Anyway**.
 
