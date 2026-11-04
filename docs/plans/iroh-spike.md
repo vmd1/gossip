@@ -1,4 +1,6 @@
-# Iroh transport spike (Phase 1, #1)
+# Iroh transport spike (scrapped)
+
+**Status: scrapped (2026-10-31).** The Iroh evaluation is no longer planned; the relay stays the off-LAN transport and its launch hardening and keepalive tuning are part of the resilience pass in `ROADMAP.md`. Kept for reference only.
 
 **Status: plan only, nothing measured yet.** The question this spike answers is whether [Iroh](https://www.iroh.computer/)
 (QUIC, hole punching, a fallback relay, Ed25519 device identities) should replace the custom relay as the off-LAN
