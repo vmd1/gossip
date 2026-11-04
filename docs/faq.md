@@ -9,7 +9,7 @@
 - **Is it free and open source?**
   - yes, under the [Apache 2.0 license](../LICENSE); issues and pull requests are welcome
 - **Which devices does it support?**
-  - Mac: macOS 14 or newer (the prebuilt app is Apple Silicon only; on Intel you can try [building from source](building-and-signing.md), which is untested)
+  - Mac: macOS 14 or newer (the prebuilt app is universal, for Apple Silicon and Intel; Intel has not been tested yet)
   - Android: Android 10 or newer, phones and tablets
   - there is no Windows, Linux or iOS version yet
 - **Is it on the App Store or Google Play?**
@@ -42,7 +42,7 @@
   - it is a side-loaded build signed with the project's own key, not a Play Store release
   - allow "install unknown apps" for the app you opened it with
 - **Does it work on an Intel Mac?**
-  - the prebuilt download is Apple Silicon only; on Intel you can try building from source, but that is untested
+  - it should: the prebuilt download is a universal build with an Intel slice, but it has not been tested on an Intel Mac yet. If you try it, please [report how it went](https://github.com/vmd1/gossip/issues)
 - **Do I need to root my phone?**
   - no
 

@@ -32,6 +32,7 @@ class ScreenMirrorStateTest {
     private var shizuku = true
     private var failStart = false
     private var screenEnabled = true
+    private var locked = false
 
     private val prepared = CopyOnWriteArrayList<String>()
     private val capturedOptions = CopyOnWriteArrayList<ScrcpyServerSession.Options>()
@@ -48,6 +49,7 @@ class ScreenMirrorStateTest {
         prepareApp = { pkg -> prepared.add(pkg); if (pkg == "com.example.stuck") "app_enable_failed" else null },
         warn = { _, _ -> },
         isEnabled = { screenEnabled },
+        isLocked = { locked },
     )
 
     private fun env(type: String, sessionId: String? = null) = Envelope(
@@ -273,11 +275,41 @@ class ScreenMirrorStateTest {
 
     @Test fun theOldestAppWindowMakesRoomPastTheLimit() {
         val s = state()
-        repeat(ScreenMirrorState.MAX_APP_WINDOWS + 1) { s.onScreenStart(appStart("a$it", "com.example.app$it")) }
-        awaitSent(ScreenMirrorState.MAX_APP_WINDOWS + 1)
-        Thread.sleep(100)
+        // one at a time: starts run on their own threads, so "oldest" is only defined if each has finished
+        repeat(ScreenMirrorState.MAX_APP_WINDOWS + 1) {
+            s.onScreenStart(appStart("a$it", "com.example.app$it"))
+            awaitSent(it + 1)
+        }
+        val end = System.currentTimeMillis() + 5000
+        while (sessions.sumOf { it.closed } == 0 && System.currentTimeMillis() < end) Thread.sleep(10)
         assertEquals(1, sessions[0].closed)
         assertEquals(0, sessions[1].closed)
+    }
+
+    @Test fun aLockedPhoneRefusesAppWindowsButStillMirrorsTheWholeScreen() {
+        locked = true
+        val s = state()
+        s.onScreenStart(appStart("a", "com.example.one"))
+        awaitSent(1)
+        assertEquals(MessageType.SCREEN_ERROR, sent[0].type)
+        assertEquals("locked", sent[0].payload["reason"]!!.jsonPrimitive.content)
+        assertEquals(0, sessions.size)
+        assertTrue(prepared.isEmpty())
+        s.onScreenStart(env(MessageType.SCREEN_START, "full"))
+        awaitSent(2)
+        assertEquals(MessageType.SCREEN_READY, sent[1].type)
+    }
+
+    @Test fun lockingThePhoneEndsAppWindowsOnly() {
+        val s = state()
+        s.onScreenStart(env(MessageType.SCREEN_START, "full"))
+        s.onScreenStart(appStart("a1", "com.example.one"))
+        awaitSent(2)
+        s.onDeviceLocked()
+        s.onDeviceLocked() // idempotent
+        Thread.sleep(100)
+        assertEquals(0, sessions[0].closed)
+        assertEquals(1, sessions[1].closed)
     }
 
     @Test fun anUninstalledAppIsRefusedWithAReasonAndStartsNothing() {
