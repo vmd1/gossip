@@ -140,7 +140,7 @@ class SyncForegroundService : Service() {
             },
             logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
             isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) },
-            isLocked = { isPhoneLocked() }
+            isLocked = { isPhoneLocked() && !featureSettings.appWindowsWhileLocked.value }
         )
         screenMirrorState.register(messageRouter)
         // A phone that locks takes its app windows with it. A secure lock can land a moment after the screen goes off
@@ -148,8 +148,8 @@ class SyncForegroundService : Service() {
         registerReceiver(
             object : android.content.BroadcastReceiver() {
                 override fun onReceive(ctx: android.content.Context, intent: Intent) {
-                    if (isPhoneLocked()) screenMirrorState.onDeviceLocked()
-                    else serviceScope.launch { kotlinx.coroutines.delay(2_000); if (isPhoneLocked()) screenMirrorState.onDeviceLocked() }
+                    if (isPhoneLocked() && !featureSettings.appWindowsWhileLocked.value) screenMirrorState.onDeviceLocked()
+                    else serviceScope.launch { kotlinx.coroutines.delay(2_000); if (isPhoneLocked() && !featureSettings.appWindowsWhileLocked.value) screenMirrorState.onDeviceLocked() }
                 }
             },
             IntentFilter(Intent.ACTION_SCREEN_OFF),
