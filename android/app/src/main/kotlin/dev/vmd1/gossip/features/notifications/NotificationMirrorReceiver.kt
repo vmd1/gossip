@@ -30,6 +30,9 @@ private const val CHANNEL_ID = "connect_notification_mirror"
 private const val MIRROR_NOTIFICATION_ID = 3001
 private const val EXTRA_SOURCE_DEVICE_ID = "dev.vmd1.gossip.app.sourceDeviceId"
 private const val EXTRA_ORIGINAL_ID = "dev.vmd1.gossip.app.originalNotificationId"
+private const val EXTRA_CODE = "dev.vmd1.gossip.app.oneTimeCode"
+private const val EXTRA_ACTION_INDEX = "dev.vmd1.gossip.app.actionIndex"
+private const val EXTRA_SMART_REPLY = "dev.vmd1.gossip.app.smartReply"
 private const val REPLY_RESULT_KEY = "dev.vmd1.gossip.app.notificationReplyText"
 
 /**
@@ -152,7 +155,41 @@ class NotificationMirrorReceiver(
             }.getOrNull()?.let { builder.setLargeIcon(it) }
         }
 
+        // The conversation's own picture, when the phone sent one, is a better large icon than the app's launcher icon.
+        payload.avatarBase64?.let { decodeSmallBitmap(it) }?.let { builder.setLargeIcon(it) }
+        // A picture the notification carries replaces the text style (the text stays as the summary).
+        payload.pictureBase64?.takeIf { it.length <= NotificationPostedPayload.MAX_PICTURE_BASE64_CHARS }?.let { decodeSmallBitmap(it, maxPixels = 2_000_000L) }?.let { pic ->
+            builder.setStyle(NotificationCompat.BigPictureStyle().bigPicture(pic).setSummaryText(payload.body.take(2000)))
+        }
+        // Live notifications: a progress bar or a running timer instead of a static line.
+        payload.live?.let { live ->
+            when (live.kind) {
+                "progress" -> builder.setProgress(live.max ?: 0, live.progress ?: 0, live.indeterminate == true).setOnlyAlertOnce(true)
+                "timer", "call" -> live.chronometerBase?.let { builder.setWhen(it).setUsesChronometer(true).setOnlyAlertOnce(true) }
+            }
+        }
+
         builder.setDeleteIntent(dismissPendingIntent(sourceDeviceId, payload.id, tag))
+
+        payload.actions.orEmpty().take(NotificationPostedPayload.MAX_ACTIONS).forEach { a ->
+            val intent = Intent(context, NotificationMirrorActionReceiver::class.java)
+                .putExtra(EXTRA_SOURCE_DEVICE_ID, sourceDeviceId).putExtra(EXTRA_ORIGINAL_ID, payload.id).putExtra(EXTRA_ACTION_INDEX, a.index)
+            builder.addAction(NotificationCompat.Action.Builder(
+                android.R.drawable.ic_menu_manage, a.title.take(40),
+                PendingIntent.getBroadcast(context, ("act|$tag|${a.index}").hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            ).build())
+        }
+        if (payload.hasReplyAction) {
+            // A suggested reply is one tap instead of typing; it sends the same notification.reply as a typed one.
+            payload.smartReplies.orEmpty().take(NotificationPostedPayload.MAX_SMART_REPLIES).forEachIndexed { i, text ->
+                val intent = Intent(context, NotificationMirrorSmartReplyReceiver::class.java)
+                    .putExtra(EXTRA_SOURCE_DEVICE_ID, sourceDeviceId).putExtra(EXTRA_ORIGINAL_ID, payload.id).putExtra(EXTRA_SMART_REPLY, text)
+                builder.addAction(NotificationCompat.Action.Builder(
+                    android.R.drawable.ic_menu_send, text.take(30),
+                    PendingIntent.getBroadcast(context, ("sr|$tag|$i").hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                ).build())
+            }
+        }
 
         if (payload.hasReplyAction) {
             val remoteInput = RemoteInput.Builder(REPLY_RESULT_KEY).setLabel("Reply").build()
@@ -164,6 +201,17 @@ class NotificationMirrorReceiver(
             builder.addAction(replyAction)
         }
 
+        // A login code in the text gets a "Copy code" button (never auto-pasted).
+        OneTimeCode.detect(payload.title, payload.body)?.let { code ->
+            val copy = Intent(context, NotificationMirrorCopyCodeReceiver::class.java).putExtra(EXTRA_CODE, code)
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    android.R.drawable.ic_menu_edit, "Copy code",
+                    PendingIntent.getBroadcast(context, ("code|" + tag).hashCode(), copy, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                ).build()
+            )
+        }
+
         // The removal may have arrived while the icon was being decoded.
         if (book.isStale(tag, payload.timestamp)) return
         runCatching {
@@ -171,6 +219,16 @@ class NotificationMirrorReceiver(
             book.recordShown(tag, System.currentTimeMillis())
         }.onFailure { Log.w(TAG, "Failed to post mirrored notification: ${it.message}") }
     }
+
+    /** Decodes a base64 image, refusing one whose declared size could exhaust memory. */
+    private fun decodeSmallBitmap(base64: String, maxPixels: Long = MAX_ICON_PIXELS): android.graphics.Bitmap? = runCatching {
+        val bytes = Base64.decode(base64, Base64.NO_WRAP)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bytes.size > MAX_PICTURE_BYTES || bounds.outWidth <= 0 || bounds.outHeight <= 0 ||
+            bounds.outWidth.toLong() * bounds.outHeight > maxPixels) null
+        else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    }.getOrNull()
 
     private fun dismissPendingIntent(sourceDeviceId: String, originalId: String, tag: String): PendingIntent {
         val intent = Intent(context, NotificationMirrorDismissReceiver::class.java)
@@ -216,6 +274,20 @@ class NotificationMirrorReceiver(
         }
     }
 
+    /** `notification.action`: press the source notification's button [index]. The attempt id is minted here, once per press. */
+    internal fun sendAction(sourceDeviceId: String, originalId: String, index: Int) {
+        val envelope = Envelope(
+            type = MessageType.NOTIFICATION_ACTION,
+            senderId = identityKeyStore.deviceId,
+            recipientId = sourceDeviceId,
+            payload = Json.encodeToJsonElement(NotificationActionPayload.serializer(), NotificationActionPayload(originalId, index, UUID.randomUUID().toString())).jsonObject
+        )
+        scope.launch {
+            runCatching { transportManager.send(envelope) }
+                .onFailure { Log.w(TAG, "Failed to send notification.action: ${it.message}") }
+        }
+    }
+
     internal fun sendDismiss(sourceDeviceId: String, originalId: String) {
         val envelope = Envelope(
             type = MessageType.NOTIFICATION_DISMISS,
@@ -233,6 +305,7 @@ class NotificationMirrorReceiver(
         const val MAX_ICON_BASE64_CHARS = 400_000
         const val MAX_ICON_BYTES = 256 * 1024
         const val MAX_ICON_PIXELS = 4_000_000L
+        const val MAX_PICTURE_BYTES = 512 * 1024
 
         /** Set once by [dev.vmd1.gossip.service.SyncForegroundService] so the two
          *  [BroadcastReceiver]s below (instantiated fresh by the system on each
@@ -262,6 +335,40 @@ class NotificationMirrorReplyReceiver : BroadcastReceiver() {
         val sourceDeviceId = intent.getStringExtra(EXTRA_SOURCE_DEVICE_ID) ?: return
         val originalId = intent.getStringExtra(EXTRA_ORIGINAL_ID) ?: return
         val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(REPLY_RESULT_KEY)?.toString() ?: return
+        NotificationMirrorReceiver.instance?.sendReply(sourceDeviceId, originalId, text)
+    }
+}
+
+/** Fired by a mirrored notification's "Copy code" action: puts the one-time code on the clipboard (marked sensitive so
+ *  the keyboard and clipboard UI don't show it). */
+class NotificationMirrorCopyCodeReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val code = intent.getStringExtra(EXTRA_CODE) ?: return
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        val clip = android.content.ClipData.newPlainText("Login code", code)
+        clip.description.extras = android.os.PersistableBundle().apply {
+            putBoolean("android.content.extra.IS_SENSITIVE", true)
+        }
+        cm.setPrimaryClip(clip)
+    }
+}
+
+/** A mirrored notification's own button pressed: forwards `notification.action` to the device that posted it. */
+class NotificationMirrorActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val sourceDeviceId = intent.getStringExtra(EXTRA_SOURCE_DEVICE_ID) ?: return
+        val originalId = intent.getStringExtra(EXTRA_ORIGINAL_ID) ?: return
+        val index = intent.getIntExtra(EXTRA_ACTION_INDEX, -1).takeIf { it >= 0 } ?: return
+        NotificationMirrorReceiver.instance?.sendAction(sourceDeviceId, originalId, index)
+    }
+}
+
+/** A suggested reply tapped: sends it as a `notification.reply`. */
+class NotificationMirrorSmartReplyReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val sourceDeviceId = intent.getStringExtra(EXTRA_SOURCE_DEVICE_ID) ?: return
+        val originalId = intent.getStringExtra(EXTRA_ORIGINAL_ID) ?: return
+        val text = intent.getStringExtra(EXTRA_SMART_REPLY) ?: return
         NotificationMirrorReceiver.instance?.sendReply(sourceDeviceId, originalId, text)
     }
 }

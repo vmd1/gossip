@@ -139,9 +139,22 @@ class SyncForegroundService : Service() {
                 }.getOrNull()
             },
             logReadyToken = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
-            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) }
+            isEnabled = { featureSettings.isEnabled(dev.vmd1.gossip.features.settings.Feature.SCREEN_MIRRORING) },
+            isLocked = { isPhoneLocked() && !featureSettings.appWindowsWhileLocked.value }
         )
         screenMirrorState.register(messageRouter)
+        // A phone that locks takes its app windows with it. A secure lock can land a moment after the screen goes off
+        // (lock-after-timeout), so the keyguard is checked again shortly after.
+        registerReceiver(
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(ctx: android.content.Context, intent: Intent) {
+                    if (isPhoneLocked() && !featureSettings.appWindowsWhileLocked.value) screenMirrorState.onDeviceLocked()
+                    else serviceScope.launch { kotlinx.coroutines.delay(2_000); if (isPhoneLocked() && !featureSettings.appWindowsWhileLocked.value) screenMirrorState.onDeviceLocked() }
+                }
+            },
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            android.content.Context.RECEIVER_NOT_EXPORTED
+        )
         controlSessionState = dev.vmd1.gossip.features.universalcontrol.ControlSessionState(
             selfId = identity.deviceId,
             scope = serviceScope,
@@ -714,6 +727,12 @@ class SyncForegroundService : Service() {
      *  during this handoff's Phase 3 parity audit (`HANDOFF_ONBOARDING_AND_POLISH.md`) —
      *  the state was tracked correctly the whole time, just never surfaced anywhere. */
     fun screenMirrorState(): ScreenMirrorState = screenMirrorState
+
+    /** Locked behind a PIN, pattern or password. A swipe-only lock screen doesn't count: it protects nothing. */
+    private fun isPhoneLocked(): Boolean {
+        val km = getSystemService(android.content.Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+        return km.isKeyguardLocked && km.isDeviceSecure
+    }
 
     /** Null until Shizuku's binder lifecycle initializes it in [onCreate] — practically
      *  always non-null by the time a bound client reads this, since binding itself is

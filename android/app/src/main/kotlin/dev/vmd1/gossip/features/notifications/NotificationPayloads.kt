@@ -19,6 +19,22 @@ import kotlinx.serialization.json.jsonObject
  *  re-mirrored. */
 const val EXTRA_IS_MIRROR = "dev.vmd1.gossip.app.isMirroredNotification"
 
+/** A button on the source notification (not its reply action), pressed from another device with `notification.action`. */
+@Serializable
+data class NotificationActionInfo(val index: Int, val title: String)
+
+/** A live notification (progress, timer, call): what receivers draw instead of static text. */
+@Serializable
+data class NotificationLive(
+    /** `"progress"`, `"timer"` or `"call"`. */
+    val kind: String,
+    val progress: Int? = null,
+    val max: Int? = null,
+    val indeterminate: Boolean? = null,
+    /** Epoch ms the chronometer counts from, for `timer` and `call`. */
+    val chronometerBase: Long? = null
+)
+
 /** `notification.posted` payload (android -> mac). See `schema/message-types.md`. */
 @Serializable
 data class NotificationPostedPayload(
@@ -29,7 +45,16 @@ data class NotificationPostedPayload(
     val body: String,
     val iconBase64: String? = null,
     val hasReplyAction: Boolean,
-    val timestamp: Long
+    val timestamp: Long,
+    /** The sender's or conversation's picture (the notification's large icon), 96x96 PNG. Optional; older peers ignore it. */
+    val avatarBase64: String? = null,
+    /** A big picture the notification carries (`BigPictureStyle`), JPEG at most 512 px on the long edge. */
+    val pictureBase64: String? = null,
+    /** The notification's own buttons other than reply, at most [MAX_ACTIONS]. */
+    val actions: List<NotificationActionInfo>? = null,
+    /** The reply action's suggested replies, at most [MAX_SMART_REPLIES]. */
+    val smartReplies: List<String>? = null,
+    val live: NotificationLive? = null
 ) {
     /** Broadcast (not targeted): every other trusted device in the mesh — Macs *and*
      *  other Android devices (phones/tablets) — should mirror this notification, not
@@ -42,7 +67,10 @@ data class NotificationPostedPayload(
     )
 
     companion object {
-        private val json = Json { encodeDefaults = true }
+        private val json = Json { encodeDefaults = true; explicitNulls = false }
+        const val MAX_ACTIONS = 3
+        const val MAX_SMART_REPLIES = 3
+        const val MAX_PICTURE_BASE64_CHARS = 400_000
     }
 }
 
@@ -85,5 +113,33 @@ data class NotificationDismissPayload(val id: String) {
 
         fun fromPayload(payload: JsonObject): NotificationDismissPayload =
             json.decodeFromJsonElement(serializer(), payload)
+    }
+}
+
+/** `notification.action` payload (any device -> the phone that posted the notification, targeted): press the button at
+ *  [index] of the source notification's actions. [attemptId] (a UUID per press) is the de-duplication key, because
+ *  pressing a button can have effects outside the app (answer a call, archive an email), so a duplicate delivery must
+ *  not press it twice. */
+@Serializable
+data class NotificationActionPayload(val id: String, val index: Int, val attemptId: String) {
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true }
+
+        fun fromPayload(payload: JsonObject): NotificationActionPayload =
+            json.decodeFromJsonElement(serializer(), payload)
+    }
+}
+
+/** Remembers the last [limit] attempt ids so a repeated one is acted on once: a bounded recently-handled cache, the same
+ *  pattern as `media.command`'s `commandId` and `notification.reply`'s `attemptId`. */
+class RecentAttempts(private val limit: Int = 128) {
+    private val seen = LinkedHashSet<String>()
+
+    /** `true` the first time [attemptId] is offered, `false` for every repeat. */
+    @Synchronized
+    fun firstTime(attemptId: String): Boolean {
+        if (!seen.add(attemptId)) return false
+        while (seen.size > limit) seen.remove(seen.first())
+        return true
     }
 }

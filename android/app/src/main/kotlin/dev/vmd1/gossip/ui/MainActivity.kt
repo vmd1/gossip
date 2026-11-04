@@ -531,9 +531,11 @@ fun ConnectHomeScreen(
             SettingsPage.CLIPBOARD_HISTORY, SettingsPage.CLIPBOARD_HOME -> {
                 val clipContext = androidx.compose.ui.platform.LocalContext.current
                 SettingsPageScaffold("Clipboard history", onBack = { settingsPage = page.parent }, scroll = false) {
-                    ClipboardHistoryContent { text ->
+                    ClipboardHistoryContent { entry ->
                         val cm = clipContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Gossip", text))
+                        val png = if (entry.isImage) dev.vmd1.gossip.features.clipboard.ClipboardHistoryStore.getInstance(clipContext).imageBytes(entry) else null
+                        if (png != null) dev.vmd1.gossip.features.clipboard.ClipboardSyncManager.putPngOnClipboard(clipContext, cm, png)
+                        else cm.setPrimaryClip(android.content.ClipData.newPlainText("Gossip", entry.text))
                     }
                 }
             }

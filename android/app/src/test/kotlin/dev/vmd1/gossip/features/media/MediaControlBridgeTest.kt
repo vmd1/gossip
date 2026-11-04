@@ -122,3 +122,13 @@ class SelectMostRelevantTest {
         assertNull(chosen)
     }
 }
+
+class MediaVolumeTest {
+    @org.junit.Test fun levelMapsOntoTheStreamIndexRange() {
+        org.junit.Assert.assertEquals(0, MediaMessageType.volumeIndex(0, 15))
+        org.junit.Assert.assertEquals(15, MediaMessageType.volumeIndex(100, 15))
+        org.junit.Assert.assertEquals(8, MediaMessageType.volumeIndex(50, 15))
+        org.junit.Assert.assertEquals(15, MediaMessageType.volumeIndex(500, 15))
+        org.junit.Assert.assertEquals(0, MediaMessageType.volumeIndex(-3, 15))
+    }
+}
