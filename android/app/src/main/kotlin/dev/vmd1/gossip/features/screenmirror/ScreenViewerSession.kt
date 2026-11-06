@@ -97,6 +97,7 @@ class ScreenViewerSession(
                 when (envelope.payload["reason"]?.jsonPrimitive?.contentOrNull) {
                     "shizuku_unavailable" -> "Shizuku isn't running on $deviceName. Start it (it needs re-activating after every reboot) and allow Gossip."
                     "feature_disabled" -> "Screen mirroring is turned off on $deviceName. Turn it on in Gossip's settings there."
+                    "locked" -> "$deviceName is locked. Unlock it to open its apps."
                     "capture_failed" -> "$deviceName couldn't start screen capture. Check Shizuku and try again."
                     else -> "$deviceName couldn't start mirroring."
                 }

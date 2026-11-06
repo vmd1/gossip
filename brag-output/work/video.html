@@ -1,0 +1,301 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  :root { --bg:#0b0b0d; --text:#f5f5f7; --muted:#b0b0b6; --accent:#0a84ff; --accent2:#5eb0ff; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { width:1920px; height:1080px; overflow:hidden; background:var(--bg); }
+  body { font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,Arial,sans-serif; color:var(--text); -webkit-font-smoothing:antialiased; }
+  .abs { position:absolute; }
+  #glow { left:0; top:0; width:1920px; height:1080px; }
+  .h1 { font-weight:800; letter-spacing:-0.035em; white-space:nowrap; }
+  .center { left:0; width:1920px; text-align:center; }
+
+  /* Mac */
+  #mac { left:140px; top:96px; width:1120px; height:740px; transform-origin:560px 370px; }
+  #macScreen { left:0; top:0; width:1120px; height:704px; border-radius:24px; background:#1a1a1d; padding:14px; box-shadow:0 0 0 2px #2c2c31, 0 40px 90px rgba(0,0,0,.55); }
+  #desk { position:relative; width:100%; height:100%; border-radius:12px; overflow:hidden;
+    background: radial-gradient(1000px 620px at 20% 110%, #2b4fae 0%, rgba(43,79,174,0) 60%),
+                radial-gradient(900px 600px at 95% -10%, #6a3fb0 0%, rgba(106,63,176,0) 55%),
+                linear-gradient(160deg,#141a33,#0d1022); }
+  #menubar { left:0; top:0; width:100%; height:32px; background:rgba(20,20,26,.55); backdrop-filter:blur(20px); display:flex; align-items:center; padding:0 16px; font-size:15px; font-weight:500; color:#e9e9ee; gap:22px; }
+  #menubar b { font-weight:700; }
+  #menubar .right { margin-left:auto; display:flex; gap:18px; align-items:center; }
+  #mbIcon { width:26px; height:22px; border-radius:5px; display:flex; align-items:center; justify-content:center; }
+  #macBase { left:-60px; top:704px; width:1240px; height:22px; border-radius:2px 2px 18px 18px; background:linear-gradient(#3a3a40,#232327); }
+  #macNotch { left:500px; top:704px; width:120px; height:8px; border-radius:0 0 8px 8px; background:#18181b; }
+  #menuShot { width:519px; right:6px; top:30px; transform-origin:85% 0; }
+  #edgeGlow { right:0; top:0; width:6px; height:100%; background:linear-gradient(transparent,#0a84ff,transparent); box-shadow:0 0 30px 8px rgba(10,132,255,.6); }
+
+  /* banner */
+  #banner { right:16px; top:46px; width:420px; border-radius:18px; background:rgba(44,44,52,.82); backdrop-filter:blur(30px); box-shadow:0 0 0 1px rgba(255,255,255,.08), 0 20px 50px rgba(0,0,0,.45); padding:14px 16px; color:#f2f2f6; overflow:hidden; }
+  #banner .row { display:flex; gap:12px; align-items:flex-start; }
+  #banner img { width:40px; height:40px; border-radius:10px; }
+  #banner .t { font-size:16px; font-weight:700; }
+  #banner .s { font-size:13px; color:#a6a6b0; font-weight:500; margin-left:6px; }
+  #banner .m { font-size:16px; margin-top:2px; }
+  #reply { margin-top:12px; display:flex; gap:8px; align-items:center; }
+  #replyField { flex:1; height:36px; border-radius:10px; background:rgba(255,255,255,.08); box-shadow:inset 0 0 0 1px rgba(255,255,255,.12); padding:0 12px; display:flex; align-items:center; font-size:16px; }
+  #caret { width:2px; height:20px; background:#5eb0ff; margin-left:1px; }
+  #sendBtn { height:36px; padding:0 16px; border-radius:10px; background:#0a84ff; font-size:15px; font-weight:600; display:flex; align-items:center; }
+  #sent { left:0; top:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; gap:10px; font-size:18px; font-weight:600; background:rgba(44,44,52,.98); }
+
+  /* Phone */
+  #phone { left:1452px; top:96px; width:360px; height:771px; border-radius:48px; background:#1a1a1d; padding:12px; box-shadow:0 0 0 2px #2c2c31, 0 40px 90px rgba(0,0,0,.55); transform-origin:180px 385px; }
+  #pscreen { position:relative; width:336px; height:747px; border-radius:38px; overflow:hidden; background:#000; }
+  #home { left:0; top:0; width:100%; height:100%;
+    background: radial-gradient(420px 520px at 10% 100%, #1f6fe0 0%, rgba(31,111,224,0) 65%), radial-gradient(400px 400px at 100% 0%, #7b4fd0 0%, rgba(123,79,208,0) 60%), linear-gradient(170deg,#121630,#0b0d1c); }
+  #pstatus { left:0; top:0; width:100%; height:34px; display:flex; align-items:center; padding:0 26px; font-size:13px; font-weight:600; color:#fff; }
+  #pclock { left:0; width:100%; top:250px; text-align:center; color:#fff; font-size:86px; font-weight:300; letter-spacing:-2px; }
+  #pdate { left:0; width:100%; top:358px; text-align:center; color:#dfe3f5; font-size:17px; font-weight:500; }
+  #pnotif { left:12px; top:44px; width:312px; border-radius:22px; background:#eef0fb; color:#1b1b22; padding:14px 16px; box-shadow:0 12px 30px rgba(0,0,0,.35); }
+  #pnotif .app { font-size:12px; color:#555a6e; font-weight:600; display:flex; align-items:center; gap:6px; }
+  #pnotif .dot { width:18px; height:18px; border-radius:50%; background:#2f9e5a; }
+  #pnotif .t { font-size:16px; font-weight:700; margin-top:6px; }
+  #pnotif .m { font-size:15px; margin-top:2px; }
+  #pnotif .you { font-size:14px; margin-top:8px; color:#0a60c8; font-weight:600; }
+  #feat { left:0; top:0; width:336px; height:747px; }
+  #toggleOff { width:42px; height:26px; }
+  #fly { width:300px; border-radius:18px; box-shadow:0 0 40px 6px rgba(10,132,255,.55); background:#eef0fb; color:#1b1b22; padding:12px 16px; font-size:15px; }
+
+  #cursor { left:0; top:0; width:34px; height:46px; transform-origin:4px 3px; }
+
+  .caption { left:0; width:1920px; top:922px; text-align:center; font-size:46px; font-weight:700; letter-spacing:-0.02em; white-space:nowrap; }
+  .caption em { font-style:normal; color:var(--accent2); }
+
+  #chips { left:210px; width:1500px; top:420px; display:flex; flex-wrap:wrap; justify-content:center; gap:20px 18px; }
+  .chip { font-size:34px; font-weight:600; padding:16px 28px; border-radius:999px; background:#1c1c22; box-shadow:inset 0 0 0 1.5px #34343c; white-space:nowrap; }
+  .chip span { margin-right:12px; }
+
+  .pill { display:inline-block; font-size:44px; font-weight:700; color:#fff; background:#0a84ff; border-radius:999px; padding:14px 40px; }
+</style></head>
+<body>
+<canvas id="glow" class="abs" width="1920" height="1080"></canvas>
+
+<!-- Scene 1: hook -->
+<div id="s1a" class="abs center h1" style="top:170px;font-size:120px;">Apple Continuity.</div>
+<div id="s1b" class="abs center h1" style="top:315px;font-size:120px;color:var(--accent2)">Without the iPhone.</div>
+<svg id="link" class="abs" style="left:0;top:0" width="1920" height="1080"><line id="linkLine" x1="0" y1="0" x2="0" y2="0" stroke="#0a84ff" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 18"/></svg>
+
+<!-- Scene 2/6: logo -->
+<svg id="logo" class="abs" viewBox="0 0 512 512" width="230" height="230" style="left:845px;top:190px">
+  <rect id="tile" x="0" y="0" width="512" height="512" rx="114" fill="#0a84ff"/>
+  <g id="edges" stroke="#fff" stroke-width="9" stroke-linecap="round"></g>
+  <g id="nodes" fill="#fff"></g>
+</svg>
+<div id="word" class="abs center h1" style="top:455px;font-size:150px;">Gossip</div>
+<div id="tag" class="abs center" style="top:655px;font-size:50px;font-weight:600;color:var(--muted);letter-spacing:-0.01em">Your Mac and your Android devices, working as one.</div>
+
+<!-- Devices -->
+<div id="mac" class="abs">
+  <div id="macScreen" class="abs"><div id="desk">
+    <div id="menubar" class="abs"><b>Finder</b><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Window</span>
+      <div class="right"><div id="mbIcon"><svg viewBox="0 0 512 512" width="22" height="22"><g stroke="#fff" stroke-width="30" stroke-linecap="round"><line x1="247" y1="157" x2="157" y2="221"/><line x1="247" y1="157" x2="356" y2="218"/><line x1="157" y1="221" x2="356" y2="218"/><line x1="157" y1="221" x2="180" y2="346"/><line x1="157" y1="221" x2="321" y2="337"/><line x1="180" y1="346" x2="321" y2="337"/><line x1="356" y1="218" x2="321" y2="337"/></g><g fill="#fff"><circle cx="247" cy="157" r="40"/><circle cx="157" cy="221" r="40"/><circle cx="356" cy="218" r="40"/><circle cx="180" cy="346" r="40"/><circle cx="321" cy="337" r="40"/></g></svg></div>
+      <svg width="20" height="16" viewBox="0 0 20 16"><path d="M10 15l3-3.6a4.6 4.6 0 0 0-6 0zM10 3a12 12 0 0 1 9 4l-2 2.3A9 9 0 0 0 10 6.3 9 9 0 0 0 3 9.3L1 7a12 12 0 0 1 9-4z" fill="#e9e9ee"/></svg>
+      <span>Fri 9:41</span></div></div>
+    <div class="abs" style="left:50%;bottom:10px;transform:translateX(-50%);height:62px;padding:8px 10px;border-radius:20px;background:rgba(255,255,255,.12);backdrop-filter:blur(20px);box-shadow:inset 0 0 0 1px rgba(255,255,255,.15);display:flex;gap:10px">
+      <div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(#5ac8fa,#0a84ff)"></div><div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(#ffffff,#d8d8de)"></div><div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(#ffd60a,#ff9f0a)"></div><div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(#30d158,#248a3d)"></div><div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(#ff6482,#ff375f)"></div><div style="width:46px;height:46px;border-radius:12px;background:linear-gradient(#bf5af2,#7d3cc8)"></div><img src="icon.png" style="width:46px;height:46px;border-radius:12px">
+    </div>
+    <img id="menuShot" class="abs" src="mac-menu.png">
+    <div id="banner" class="abs">
+      <div class="row"><img src="icon.png"><div style="flex:1"><div class="t">Maya<span class="s">via SM-S711B</span></div><div class="m">Dinner at 8?</div></div><div style="font-size:13px;color:#a6a6b0">now</div></div>
+      <div id="reply"><div id="replyField"><span id="typed"></span><div id="caret"></div></div><div id="sendBtn">Reply</div></div>
+      <div id="sent" class="abs"><svg width="26" height="26" viewBox="0 0 26 26"><circle cx="13" cy="13" r="13" fill="#30d158"/><path d="M7.5 13.5l3.6 3.6 7.4-8" stroke="#fff" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Reply sent from your phone</div>
+    </div>
+    <div id="edgeGlow" class="abs"></div>
+  </div></div>
+  <div id="macBase" class="abs"></div><div id="macNotch" class="abs"></div>
+</div>
+
+<div id="phone" class="abs"><div id="pscreen">
+  <div id="home" class="abs">
+    <div id="pstatus" class="abs"><span>9:41</span><span style="margin-left:auto">▾ ▴ ▮</span></div>
+    <div id="pclock" class="abs">9:41</div>
+    <div id="pdate" class="abs">Friday, 23 October</div>
+    <div id="pnotif" class="abs"><div class="app"><div class="dot"></div>Messages · now</div><div class="t">Maya</div><div class="m">Dinner at 8?</div><div id="pyou" class="you">You: On my way!</div></div>
+  </div>
+  <img id="feat" class="abs" src="features-android.png">
+  <svg id="toggleOff" class="abs" viewBox="0 0 42 26"><rect id="tgTrack" x="1" y="1" width="40" height="24" rx="12" fill="#fef7ff" stroke="#79747e" stroke-width="2"/><circle id="tgThumb" cx="13" cy="13" r="6.5" fill="#79747e"/></svg>
+</div></div>
+<div id="fly" class="abs"><b>Maya</b><br>Dinner at 8?</div>
+
+<svg id="cursor" class="abs" viewBox="0 0 34 46"><path d="M3 2 L3 36 L11 28.5 L16.5 41 L22.5 38.4 L17 26.3 L28 26.3 Z" fill="#111" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/></svg>
+
+<div id="cap3" class="abs caption">Phone notifications on your Mac. <em>Reply inline.</em></div>
+<div id="cap4" class="abs caption">Push your cursor off the Mac. <em>Keep going on Android.</em></div>
+
+<!-- Scene 5 -->
+<div id="s5t" class="abs center h1" style="top:240px;font-size:76px;">And 14 more things your devices <span style="color:var(--accent2)">gossip about.</span></div>
+<div id="chips" class="abs"></div>
+
+<!-- Scene 6 -->
+<div id="s6a" class="abs center" style="top:640px;font-size:56px;font-weight:700;letter-spacing:-0.02em">No account. No cloud. Free and open source.</div>
+<div id="s6b" class="abs center" style="top:760px"><span class="pill">gossip.vmd1.dev</span></div>
+
+<script>
+const $ = id => document.getElementById(id);
+// ?web: the cut embedded on the website, without the lines the page's hero already says
+const WEB = new URLSearchParams(location.search).has('web');
+const clamp = (x,a=0,b=1) => Math.min(b, Math.max(a, x));
+const lin = (t,a,b) => clamp((t-a)/(b-a));
+const eOut = x => 1 - Math.pow(1-x, 3);
+const eInOut = x => x<.5 ? 4*x*x*x : 1 - Math.pow(-2*x+2,3)/2;
+const eBack = x => { const c1=1.70158, c3=c1+1; return 1 + c3*Math.pow(x-1,3) + c1*Math.pow(x-1,2); };
+const ph = (t,a,b,e=eOut) => e(lin(t,a,b));
+const mix = (a,b,k) => a + (b-a)*k;
+// visible window with fade in/out
+const win = (t,a,b,c,d) => Math.min(ph(t,a,b), 1 - ph(t,c,d,eInOut));
+function set(el, o, tf) { el.style.opacity = o; if (tf !== undefined) el.style.transform = tf; el.style.visibility = o <= 0.001 ? 'hidden' : 'visible'; }
+
+// icon geometry (from site/icon.png)
+const N = [[247,157],[157,221],[356,218],[180,346],[321,337]];
+const E = [[0,1],[0,2],[1,2],[1,3],[1,4],[3,4],[2,4]];
+const ns = 'http://www.w3.org/2000/svg';
+const edgeEls = E.map(([a,b]) => { const l = document.createElementNS(ns,'line'); l.setAttribute('x1',N[a][0]); l.setAttribute('y1',N[a][1]); l.setAttribute('x2',N[b][0]); l.setAttribute('y2',N[b][1]); $('edges').appendChild(l); return {l, len: Math.hypot(N[b][0]-N[a][0], N[b][1]-N[a][1])}; });
+const nodeEls = N.map(([x,y]) => { const c = document.createElementNS(ns,'circle'); c.setAttribute('cx',x); c.setAttribute('cy',y); c.setAttribute('r',23); $('nodes').appendChild(c); return c; });
+
+const CHIPS = [['📱','Screen mirroring'],['📋','Clipboard sync'],['🌙','Do Not Disturb sync'],['▶️','Media remote'],['📶','Instant Hotspot'],['🔒','Lock on leave'],['📍','Find my device'],['🔋','Battery sync'],['💬','Messages'],['🪟','Android apps as Mac windows'],['⌨️','Phone as trackpad'],['🕘','Clipboard history'],['🔁','Android to Android mirroring'],['🛡️','Multi-device trust']];
+const chipEls = CHIPS.map(([e,s]) => { const d = document.createElement('div'); d.className='chip'; d.innerHTML = `<span>${e}</span>${s}`; $('chips').appendChild(d); return d; });
+
+// background glow
+const g = $('glow').getContext('2d');
+function drawGlow(t) {
+  g.clearRect(0,0,1920,1080);
+  g.fillStyle = '#0b0b0d'; g.fillRect(0,0,1920,1080);
+  const blobs = [[960+380*Math.sin(t*0.35), 300+120*Math.cos(t*0.27), 900, 'rgba(10,132,255,0.16)'], [960-420*Math.cos(t*0.22), 820+80*Math.sin(t*0.31), 800, 'rgba(110,70,210,0.12)']];
+  for (const [x,y,r,c] of blobs) { const gr = g.createRadialGradient(x,y,0,x,y,r); gr.addColorStop(0,c); gr.addColorStop(1,'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(0,0,1920,1080); }
+}
+
+const PHONE_SCR = {x:1464, y:108};          // phone screen origin on stage (full size)
+const TOGGLE = {x:300.5, y:524};            // Find my device toggle center within screen
+const REPLY = 'On my way!';
+
+function cursorPath(t) {
+  // keyframes [t, x, y] on stage
+  const K = [[11.6,700,520],[12.55,1268,470],[12.75,1464,500],[13.45,PHONE_SCR.x+TOGGLE.x+2,PHONE_SCR.y+TOGGLE.y-2],[15,PHONE_SCR.x+TOGGLE.x+2,PHONE_SCR.y+TOGGLE.y-2]];
+  if (t <= K[0][0]) return [K[0][1],K[0][2]];
+  for (let i=0;i<K.length-1;i++) { const [a,x1,y1]=K[i], [b,x2,y2]=K[i+1]; if (t<=b) { const k = i===1 ? lin(t,a,b) : eInOut(lin(t,a,b)); return [mix(x1,x2,k), mix(y1,y2,k)]; } }
+  return [K[K.length-1][1],K[K.length-1][2]];
+}
+
+window.render = function(t) {
+  drawGlow(t);
+
+  // ---- Scene 1
+  const s1out = 1 - ph(t,2.75,3.05,eInOut);
+  set($('s1a'), Math.min(ph(t,0.0,0.45), s1out), `translateY(${(1-ph(t,0,0.6))*40}px)`);
+  set($('s1b'), Math.min(ph(t,0.55,1.0), s1out), `translateY(${(1-ph(t,0.55,1.15))*40}px)`);
+
+  // ---- devices: transforms per scene
+  // scene1: small, far apart, low. scene3/4: full size. otherwise hidden.
+  const inS1 = t < 3.1, inS34 = t >= 6.9 && t < 15.2;
+  let macO=0, phO=0, macTf='', phTf='';
+  if (inS1) {
+    const k = ph(t,0.1,1.0);
+    const sc = 0.46;
+    // mac center (700,466) -> target (560,770); phone center (1632,481) -> (1360,770)
+    const mdx = 560-700 - (1-k)*500, phx = 1360-1632 + (1-k)*500;
+    macTf = `translate(${mdx}px, ${770-466}px) scale(${sc})`;
+    phTf = `translate(${phx}px, ${770-481}px) scale(${sc})`;
+    macO = phO = Math.min(k, s1out);
+    const lk = ph(t,1.7,2.4,eInOut);
+    const x1 = 560+1120*sc/2+10, x2 = 1360-360*sc/2-10;
+    $('linkLine').setAttribute('x1', x1); $('linkLine').setAttribute('y1', 770);
+    $('linkLine').setAttribute('x2', mix(x1,x2,lk)); $('linkLine').setAttribute('y2', 770);
+    set($('link'), lk>0 ? s1out : 0);
+  } else set($('link'), 0);
+  if (inS34) {
+    const kin = ph(t,7.0,7.6);
+    const kout = ph(t,14.75,15.15,eInOut);
+    macO = Math.min(kin, 1-kout); phO = macO;
+    macTf = `translate(${(1-kin)*-60 - kout*80}px, ${(1-kin)*30}px)`;
+    phTf = `translate(${(1-kin)*60 + kout*80}px, ${(1-kin)*30}px)`;
+  }
+  set($('mac'), macO, macTf); set($('phone'), phO, phTf);
+
+  // ---- Scene 2 logo + scene 6 logo
+  const s2out = 1 - ph(t,6.6,6.95,eInOut);
+  const inS2 = t >= 3.0 && t < 7.0, inS6 = t >= 17.9;
+  if (inS2 || inS6) {
+    const t0 = inS2 ? 3.1 : 18.05;
+    const tileK = ph(t,t0,t0+0.4,eBack);
+    $('tile').setAttribute('transform', `translate(256 256) scale(${tileK}) translate(-256 -256)`);
+    nodeEls.forEach((c,i) => { const k = ph(t,t0+0.25+i*0.07,t0+0.55+i*0.07,eBack); c.setAttribute('r', 23*k); });
+    edgeEls.forEach((e,i) => { const k = ph(t,t0+0.45+i*0.05,t0+0.8+i*0.05); e.l.setAttribute('stroke-dasharray', `${e.len*k} ${e.len}`); });
+    if (inS2) {
+      set($('logo'), s2out, `translate(0px,0px) scale(${1+0.04*ph(t,6.6,6.95)})`);
+      $('logo').style.left='845px'; $('logo').style.top='170px'; $('logo').setAttribute('width',230); $('logo').setAttribute('height',230);
+      set($('word'), Math.min(ph(t,3.7,4.1), s2out), `translateY(${(1-ph(t,3.7,4.2))*30}px)`);
+      $('word').style.top='430px'; $('word').style.fontSize='150px'; $('word').style.left='0px'; $('word').style.width='1920px'; $('word').style.textAlign='center';
+      set($('tag'), Math.min(ph(t,3.95,4.35), s2out), `translateY(${(1-ph(t,3.95,4.45))*24}px)`);
+    } else {
+      set($('logo'), ph(t,18.05,18.3), '');
+      $('logo').style.left='600px'; $('logo').style.top='290px'; $('logo').setAttribute('width',200); $('logo').setAttribute('height',200);
+      set($('word'), ph(t,18.35,18.75), `translateX(${(1-ph(t,18.35,18.85))*-30}px)`);
+      $('word').style.top='280px'; $('word').style.fontSize='170px'; $('word').style.left='830px'; $('word').style.width='auto'; $('word').style.textAlign='left';
+      set($('tag'), 0);
+    }
+  } else { set($('logo'),0); set($('word'),0); set($('tag'),0); }
+
+  // ---- Scene 3: notifications
+  set($('cap3'), win(t,7.35,7.75,11.25,11.5), `translateY(${(1-ph(t,7.35,7.85))*20}px)`);
+  const menuK = win(t,7.6,7.8,8.35,8.55);
+  set($('menuShot'), menuK, `scale(${mix(0.94,1,ph(t,7.6,7.85))})`);
+  $('mbIcon').style.background = menuK > 0.05 ? `rgba(255,255,255,${0.22*menuK})` : 'transparent';
+  // phone notification
+  const pn = ph(t,8.4,8.75,eBack);
+  set($('pnotif'), t < 11.5 ? clamp(pn*1.5) : 1 - ph(t,11.5,11.8), `translateY(${(1-pn)*-140}px)`);
+  set($('pyou'), ph(t,10.7,10.95), `translateY(${(1-ph(t,10.7,11))*6}px)`);
+  // flying card phone -> mac banner
+  const fk = ph(t,8.95,9.4,eInOut);
+  const flyOn = t > 8.95 && t < 9.42;
+  const fx = mix(1464+18, 140+14+1120-28-16-420, fk), fy = mix(108+44, 96+14+46, fk);
+  set($('fly'), flyOn ? 1 : 0, `translate(${fx}px, ${fy}px) scale(${mix(1,1.15,fk)})`); $('fly').style.left='0px'; $('fly').style.top='0px';
+  // mac banner
+  const bk = ph(t,9.35,9.6);
+  const bOut = ph(t,11.15,11.45,eInOut);
+  set($('banner'), Math.min(bk, 1-bOut), `translateX(${(1-bk)*30 + bOut*460}px)`);
+  const rk = ph(t,9.55,9.85);
+  $('reply').style.height = `${36*rk}px`; $('reply').style.marginTop = `${12*rk}px`; $('reply').style.opacity = rk;
+  const nChars = Math.floor(clamp(lin(t,9.9,10.45))*REPLY.length);
+  $('typed').textContent = REPLY.slice(0,nChars);
+  $('caret').style.opacity = (t < 10.5 && Math.floor(t*3)%2===0) || (t>=9.9 && t<10.5) ? 1 : 0;
+  const press = win(t,10.5,10.56,10.6,10.7);
+  $('sendBtn').style.transform = `scale(${1-0.08*press})`; $('sendBtn').style.background = press>0.1 ? '#3b9bff' : '#0a84ff';
+  set($('sent'), ph(t,10.62,10.82));
+
+  // ---- Scene 4: universal control
+  set($('cap4'), win(t,11.6,12.0,14.75,15.05), `translateY(${(1-ph(t,11.6,12.1))*20}px)`);
+  const featK = ph(t,11.5,11.85);
+  set($('feat'), featK); set($('home'), 1-featK);
+  const tg = ph(t,13.5,13.68,eInOut);
+  set($('toggleOff'), featK, ''); $('toggleOff').style.left = `${TOGGLE.x-21}px`; $('toggleOff').style.top = `${TOGGLE.y-13}px`;
+  $('tgTrack').setAttribute('fill', tg>0.5 ? '#0b6bea' : '#fef7ff');
+  $('tgTrack').setAttribute('stroke', tg>0.5 ? '#0b6bea' : '#79747e');
+  $('tgThumb').setAttribute('cx', mix(13,29,tg)); $('tgThumb').setAttribute('r', mix(6.5,9,tg)); $('tgThumb').setAttribute('fill', tg>0.5 ? '#fff' : '#79747e');
+  const [cx,cy] = cursorPath(t);
+  const inGap = cx > 1262 && cx < 1462;
+  const curO = Math.min(ph(t,11.6,11.8), 1-ph(t,14.75,15.0)) * (inGap ? 0 : 1);
+  const click = win(t,13.42,13.47,13.52,13.62);
+  set($('cursor'), curO, `translate(${cx-4}px, ${cy-3}px) scale(${1-0.15*click})`);
+  set($('edgeGlow'), win(t,12.4,12.55,12.7,13.0));
+
+  // ---- Scene 5
+  const s5out = 1 - ph(t,17.75,18.05,eInOut);
+  set($('s5t'), Math.min(ph(t,15.05,15.45), s5out), `translateY(${(1-ph(t,15.05,15.55))*30}px)`);
+  chipEls.forEach((c,i) => { const a = 15.45 + i*0.075; const k = ph(t,a,a+0.35,eBack); set(c, Math.min(clamp(ph(t,a,a+0.2)), s5out), `translateY(${(1-k)*40 + (1-s5out)*-20}px) scale(${mix(0.85,1,k)})`); });
+
+  // ---- Scene 6
+  set($('s6a'), ph(t,18.6,19.0), `translateY(${(1-ph(t,18.6,19.1))*24}px)`);
+  set($('s6b'), ph(t,18.85,19.25,eBack), `scale(${mix(0.8,1,ph(t,18.85,19.3,eBack))})`);
+
+  if (WEB) {
+    set($('tag'),0); set($('s6a'),0); set($('s6b'),0);
+    if (t >= 3.0 && t < 7.0) { $('logo').style.top='290px'; $('word').style.top='550px'; }
+    if (t >= 17.9) { $('logo').style.top='440px'; $('word').style.top='430px'; }
+  }
+};
+
+window.ready = Promise.all([document.fonts.ready, ...[...document.images].map(i => i.complete ? 0 : new Promise(r => { i.onload = r; i.onerror = r; }))]);
+render(0);
+</script>
+</body></html>

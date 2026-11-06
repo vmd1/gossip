@@ -4,7 +4,7 @@ import AppKit
 /// The clipboard history window: search, click to copy back, pin, delete, clear, and the on/off toggle.
 struct ClipboardHistoryView: View {
     @ObservedObject var store: ClipboardHistoryStore
-    var onCopy: (String) -> Void
+    var onCopy: (ClipboardHistoryEntry) -> Void
     @State private var query = ""
     @State private var confirmClear = false
 
@@ -17,9 +17,15 @@ struct ClipboardHistoryView: View {
                 TextField("Search", text: $query).textFieldStyle(.roundedBorder)
                 List(store.filtered(query)) { entry in
                     HStack {
-                        Button { onCopy(entry.text) } label: {
+                        Button { onCopy(entry) } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.text).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                                if entry.isImage, let data = store.imageData(for: entry), let image = NSImage(data: data) {
+                                    Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 90, alignment: .leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .accessibilityLabel(entry.text)
+                                } else {
+                                    Text(entry.text).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                                }
                                 Text("\(entry.remote ? "From another device · " : "")\(entry.date.formatted(.relative(presentation: .named)))")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
@@ -50,7 +56,7 @@ struct ClipboardHistoryView: View {
 final class ClipboardHistoryWindow: NSWindow {
     private static var shared: ClipboardHistoryWindow?
 
-    static func show(onCopy: @escaping (String) -> Void) {
+    static func show(onCopy: @escaping (ClipboardHistoryEntry) -> Void) {
         if shared == nil {
             let w = ClipboardHistoryWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
                                            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)

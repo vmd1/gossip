@@ -91,6 +91,7 @@ object ScrcpyControl {
     const val KEY_HOME = 3
     const val KEY_BACK = 4
     const val KEY_APP_SWITCH = 187
+    const val KEY_ENTER = 66
 
     /** `INJECT_TOUCH_EVENT` (type 2): action, pointerId u64, position (x,y u32 + screen w,h u16), pressure u16, buttons. */
     fun touch(action: Int, pointerId: Long, x: Int, y: Int, width: Int, height: Int): ByteArray =

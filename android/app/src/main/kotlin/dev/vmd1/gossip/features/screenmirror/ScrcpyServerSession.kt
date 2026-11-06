@@ -117,6 +117,9 @@ class ScrcpyServerSession private constructor(
         val newDisplay: String? = null,
         /** Package to launch on that virtual display once it exists. Sent as a control message, never put in a shell. */
         val startApp: String? = null,
+        /** Whole-screen mirror with the panel off: wake first, then keep the device awake and power the display down
+         *  while a viewer is attached (see [ScreenOffMirrorSettings]). Ignored for app windows. */
+        val screenOff: Boolean = false,
     ) {
         /** An app window: the phone's own screen is untouched, so it is not put to sleep when the session ends. */
         val isAppWindow: Boolean get() = newDisplay != null

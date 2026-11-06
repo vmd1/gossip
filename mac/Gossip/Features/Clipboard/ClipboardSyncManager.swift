@@ -44,6 +44,20 @@ final class ClipboardSyncManager: ObservableObject {
 
     /// Writes a history entry back to the pasteboard. Records the new `changeCount` so the poll doesn't treat it as a
     /// fresh copy; it is already in the history (and moves to the top via `record`).
+    /// Writes an image entry back to the pasteboard as PNG (and sends it on, like a fresh copy).
+    func copyImageFromHistory(_ entry: ClipboardHistoryEntry) {
+        guard let png = ClipboardHistoryStore.shared.imageData(for: entry), Self.isReasonableImage(png) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(png, forType: .png)
+        lastChangeCount = pasteboard.changeCount
+        ClipboardHistoryStore.shared.recordImage(png, width: 0, height: 0, remote: false) // moves the existing entry to the top
+        if FeatureSettings.shared.isEnabled(.clipboard),
+           let outgoing = guardLogic.outgoingImage(me: identity.deviceId, png: png, sensitive: false) {
+            sendClipboardImage(outgoing: outgoing, data: png)
+        }
+    }
+
     func copyFromHistory(_ text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -92,8 +106,13 @@ final class ClipboardSyncManager: ObservableObject {
 
     private func recordLocalCopyInHistory() {
         let pasteboard = NSPasteboard.general
-        guard !Self.isSensitive(types: pasteboard.types), let text = pasteboard.string(forType: .string) else { return }
-        ClipboardHistoryStore.shared.record(text, remote: false)
+        guard !Self.isSensitive(types: pasteboard.types) else { return }
+        if let text = pasteboard.string(forType: .string) {
+            ClipboardHistoryStore.shared.record(text, remote: false)
+        } else if let png = Self.imagePNGData(from: pasteboard), Self.isReasonableImage(png) {
+            let size = Self.pixelSize(png)
+            ClipboardHistoryStore.shared.recordImage(png, width: size.width, height: size.height, remote: false)
+        }
     }
 
     /// Publishes whatever is currently on the pasteboard (if anything, and if it isn't just the echo of a remote update we
@@ -152,11 +171,18 @@ final class ClipboardSyncManager: ObservableObject {
               let json = try? JSONEncoder().encode(envelope.payload),
               (try? guardLogic.incomingImage(payloadJson: String(decoding: json, as: UTF8.self), png: data)) == true else { return }
 
+        let size = Self.pixelSize(data)
+        ClipboardHistoryStore.shared.recordImage(data, width: size.width, height: size.height, remote: true)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setData(data, forType: .png)
 
         lastChangeCount = pasteboard.changeCount
+    }
+
+    static func pixelSize(_ png: Data) -> (width: Int, height: Int) {
+        guard let rep = NSBitmapImageRep(data: png) else { return (0, 0) }
+        return (rep.pixelsWide, rep.pixelsHigh)
     }
 
     // MARK: - Content policy (the core's, shared with every platform)
