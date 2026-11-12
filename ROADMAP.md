@@ -14,6 +14,7 @@ Most of the previous list shipped in 2.5 (locked-phone protection, login-code co
 6. **Messages: RCS.** The Google Messages bridge on the phone (after a spike on account risk and session lifetime), then an Android Messages UI.
 7. **File transfer** (AirDrop-style). Tried and removed before; NearDrop covers it for now.
 8. **Continuity Camera:** the phone as a Mac webcam.
+9. **Messages on every device.** SMS and RCS read and sent from any computer, not just the Mac. Builds on the RCS item and needs more than one computer client, so it follows the Windows beta.
 
 ## Later
 
@@ -25,7 +26,6 @@ Most of the previous list shipped in 2.5 (locked-phone protection, login-code co
 - **iMessage on Android** through OpenBubbles' method (rustpush), after a risk spike.
 - **Computer ↔ computer:** Mac ↔ Mac first, to settle the protocol before other desktops.
 - **Chrome extension,** and **send tab to phone** on top of it.
-- **Messages on every device,** once there is more than one computer client.
 - **Phone call relay:** call signalling is easy, real call audio over Bluetooth HFP is hard and not possible on the Mac.
 
 ## Not planned
