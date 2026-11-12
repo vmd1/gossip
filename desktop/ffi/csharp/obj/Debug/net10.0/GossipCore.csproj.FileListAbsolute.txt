@@ -1,0 +1,15 @@
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/bin/Debug/net10.0/Gossip.Core.deps.json
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/bin/Debug/net10.0/Gossip.Core.dll
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/bin/Debug/net10.0/Gossip.Core.pdb
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/GossipCore.GeneratedMSBuildEditorConfig.editorconfig
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/GossipCore.AssemblyInfoInputs.cache
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/GossipCore.AssemblyInfo.cs
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/GossipCore.csproj.CoreCompileInputs.cache
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/GossipCore.sourcelink.json
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/Gossip.Core.dll
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/refint/Gossip.Core.dll
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/Gossip.Core.pdb
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/ref/Gossip.Core.dll
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/bin/Debug/net10.0/Gossip.Core
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/bin/Debug/net10.0/Gossip.Core.runtimeconfig.json
+/Users/vivaan/Projects/coding/connect/desktop/ffi/csharp/obj/Debug/net10.0/GossipCore.genruntimeconfig.cache
