@@ -37,7 +37,7 @@ final class ClipboardSyncManager: ObservableObject {
             guard change.slot == GossipCoreKit.clipboardTextSlot(), let json = change.valueJSON else { return }
             self?.handleIncomingText(valueJSON: json)
         }
-        transportManager.onRawFrameReceived = { [weak self] envelope, data in
+        transportManager.setRawHandler(for: "clipboard.update") { [weak self] envelope, data in
             self?.handleIncomingImage(envelope, data)
         }
     }

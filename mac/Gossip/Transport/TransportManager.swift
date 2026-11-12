@@ -98,6 +98,14 @@ final class TransportManager: ObservableObject {
     /// `docs/wire-protocol.md`'s "Large binary payloads" section.
     var onRawFrameReceived: ((Envelope, Data) -> Void)?
 
+    /// Raw follow-up handlers keyed by envelope `type` (`clipboard.update`, `file.chunk`), so several features can each
+    /// consume their own raw frames. Main-thread only. Passing `nil` removes the handler.
+    private var rawHandlers: [String: (Envelope, Data) -> Void] = [:]
+
+    func setRawHandler(for type: String, _ handler: ((Envelope, Data) -> Void)?) {
+        rawHandlers[type] = handler
+    }
+
     /// Fired when a Noise handshake completes with a peer that is not yet in
     /// `TrustedDevicesStore`. `PairingViewModel` uses this to prompt the user
     /// to confirm + trust the new device. Returning `true` from the completion
@@ -895,7 +903,10 @@ final class TransportManager: ObservableObject {
                 router.route(envelope)
                 DispatchQueue.main.async { [weak self] in
                     self?.onReceive?(envelope)
-                    if let raw { self?.onRawFrameReceived?(envelope, raw) }
+                    if let raw {
+                        self?.onRawFrameReceived?(envelope, raw)
+                        self?.rawHandlers[envelope.type]?(envelope, raw)
+                    }
                 }
 
             case .heard(let deviceId):
