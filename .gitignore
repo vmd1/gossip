@@ -30,3 +30,7 @@ mac/Config/Signing.local.xcconfig
 # Local security audit reports (never commit)
 .security/
 mac/Config/Signing.local.xcconfig.bak
+
+# C# binding build output (desktop/ffi/csharp)
+desktop/ffi/csharp/bin/
+desktop/ffi/csharp/obj/
