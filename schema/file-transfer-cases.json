@@ -1,0 +1,35 @@
+{
+  "sanitize": [
+    {"raw": "report.pdf", "name": "report.pdf"},
+    {"raw": "../../etc/passwd", "name": "passwd"},
+    {"raw": "C:\\Users\\me\\notes.txt", "name": "notes.txt"},
+    {"raw": "/tmp/a/b/photo.jpg", "name": "photo.jpg"},
+    {"raw": ".hidden", "name": "hidden"},
+    {"raw": "...", "name": "file"},
+    {"raw": "  spaced name .txt  ", "name": "spaced name .txt"},
+    {"raw": "tab\tand\nnewline.txt", "name": "tabandnewline.txt"},
+    {"raw": "", "name": "file"},
+    {"raw": "dir/", "name": "file"},
+    {"raw": "trailing.dot.", "name": "trailing.dot"}
+  ],
+  "unique": [
+    {"name": "a.txt", "taken": [], "result": "a.txt"},
+    {"name": "a.txt", "taken": ["a.txt"], "result": "a (2).txt"},
+    {"name": "a.txt", "taken": ["a.txt", "a (2).txt"], "result": "a (3).txt"},
+    {"name": "noext", "taken": ["noext"], "result": "noext (2)"},
+    {"name": "archive.tar.gz", "taken": ["archive.tar.gz"], "result": "archive.tar (2).gz"}
+  ],
+  "chunks": [
+    {"size": 0, "chunkSize": 1048576, "count": 0, "lastLength": 0},
+    {"size": 1, "chunkSize": 1048576, "count": 1, "lastLength": 1},
+    {"size": 1048576, "chunkSize": 1048576, "count": 1, "lastLength": 1048576},
+    {"size": 1048577, "chunkSize": 1048576, "count": 2, "lastLength": 1},
+    {"size": 5242880, "chunkSize": 1048576, "count": 5, "lastLength": 1048576}
+  ],
+  "resume": [
+    {"received": [], "next": 0},
+    {"received": [0, 1, 2], "next": 3},
+    {"received": [0, 2, 3], "next": 1},
+    {"received": [1, 2], "next": 0}
+  ]
+}
