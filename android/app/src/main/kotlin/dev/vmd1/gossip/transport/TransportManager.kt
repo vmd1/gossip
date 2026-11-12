@@ -189,6 +189,14 @@ class TransportManager(
      *  section. Single-subscriber, like [onUntrustedHandshake]/[onNewDevicePaired]. */
     var onRawFrameReceived: ((Envelope, ByteArray) -> Unit)? = null
 
+    private val rawHandlers = java.util.concurrent.ConcurrentHashMap<String, (Envelope, ByteArray) -> Unit>()
+
+    /** Raw follow-up handlers keyed by envelope `type` (`clipboard.update`, `file.chunk`), so several features can each
+     *  consume their own raw frames. Pass `null` to remove one. */
+    fun setRawHandler(type: String, handler: ((Envelope, ByteArray) -> Unit)?) {
+        if (handler == null) rawHandlers.remove(type) else rawHandlers[type] = handler
+    }
+
     val discovery = NsdDiscovery(context, identityKeyStore.deviceId, identityKeyStore.publicKeyFingerprint())
 
     // ---- The engine ---------------------------------------------------------------------------------------------
@@ -335,7 +343,10 @@ class TransportManager(
             is CoreBridge.BridgeAction.Deliver -> {
                 _incoming.emit(event.envelope)
                 messageRouter.dispatch(event.envelope)
-                event.raw?.let { onRawFrameReceived?.invoke(event.envelope, it) }
+                event.raw?.let {
+                    onRawFrameReceived?.invoke(event.envelope, it)
+                    rawHandlers[event.envelope.type]?.invoke(event.envelope, it)
+                }
             }
             is CoreBridge.BridgeAction.Heard -> {
                 val first = lastHeard.put(event.deviceId, System.currentTimeMillis()) == null
