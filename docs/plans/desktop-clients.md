@@ -33,7 +33,7 @@ Not in the core: sockets, mDNS, BLE, reading and writing the clipboard, posting 
 ### Binding strategy
 
 - **Linux:** a normal crate dependency.
-- **Windows:** two options to spike before committing. (a) UniFFI C# bindings (`uniffi-bindgen-cs`, third-party). (b) A small hand-written C ABI plus P/Invoke. Decision criteria: callback ergonomics, async handling, and build and packaging complexity in the WinUI 3 project.
+- **Windows:** UniFFI C# bindings (`uniffi-bindgen-cs`, third-party). Spiked on 2026-11-12: the tag matching UniFFI 0.32 generates the whole API surface, compiles without warnings and calls into the native core (`desktop/ffi/csharp`), so the hand-written C ABI alternative is not needed.
 - **Later:** UniFFI Swift and Kotlin for Mac and Android; `wasm-bindgen` for the Chrome extension.
 
 ## Phase 0: protocol generalization and conformance (ships as 2.0)

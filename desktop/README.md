@@ -27,6 +27,15 @@ The core never opens a socket, reads a clock or draws randomness. The shell feed
 the `Action`s it returns; clock and randomness come from the `Env` trait (`TestEnv` makes everything reproducible).
 Sockets, mDNS, BLE, storage, OS integration and UI stay in each platform's shell.
 
+## C# binding (Windows)
+
+`ffi/csharp` is the C# project for the Windows app. `scripts/build-csharp-bindings.sh` builds the FFI library,
+generates `gossip_ffi.cs` with [`uniffi-bindgen-cs`](https://github.com/NordSecurity/uniffi-bindgen-cs) and runs a smoke
+test that calls into the native core. The tag of `uniffi-bindgen-cs` must carry the same UniFFI version as
+`ffi/Cargo.toml` (`v0.12.0+v0.32.0` for UniFFI 0.32); install it with `--locked` (see the script header). Chosen over a
+hand-written C ABI because the generated code covers the whole API surface (about 17,000 lines, compiles with no
+warnings on .NET 10) including the callback interfaces.
+
 ## Relay (off-LAN)
 
 The core can join a topic on a relay (`relay/`, [`docs/plans/relay.md`](../docs/plans/relay.md), wire details in
