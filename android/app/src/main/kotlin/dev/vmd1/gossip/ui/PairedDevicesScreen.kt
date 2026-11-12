@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -66,6 +67,7 @@ private val DeviceType.icon: ImageVector
         DeviceType.MAC -> Icons.Default.Laptop
         DeviceType.ANDROID_PHONE -> Icons.Default.PhoneAndroid
         DeviceType.ANDROID_TABLET -> Icons.Default.TabletMac
+        DeviceType.WINDOWS, DeviceType.LINUX -> Icons.Default.Computer
     }
 
 private const val HOTSPOT_OVERRIDE_MS = 30_000L
@@ -197,7 +199,9 @@ fun PairedDevicesScreen(
                             }
                         }
                         // Android → Android mirroring: open another Android device's screen here (same network only).
-                        if (device.deviceType != DeviceType.MAC && device.deviceId in directDeviceIds) {
+                        if ((device.deviceType == DeviceType.ANDROID_PHONE || device.deviceType == DeviceType.ANDROID_TABLET) &&
+                            device.deviceId in directDeviceIds
+                        ) {
                             IconButton(onClick = { onMirror(device.deviceId, device.deviceName) }) {
                                 Icon(
                                     Icons.Default.Cast,
@@ -245,7 +249,7 @@ fun PairedDevicesScreen(
                             device = device,
                             onForget = onForget,
                             onSetFallbackHost = onSetFallbackHost,
-                            showLockOnLeaveToggle = myDeviceType == DeviceType.ANDROID_PHONE && device.deviceType != DeviceType.ANDROID_PHONE,
+                            showLockOnLeaveToggle = myDeviceType == DeviceType.ANDROID_PHONE && device.deviceType == DeviceType.MAC,
                             onSetLockOnLeave = onSetLockOnLeave
                         )
                     }

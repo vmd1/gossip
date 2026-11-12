@@ -102,7 +102,9 @@ object MessageType {
 enum class DeviceType(val wireValue: String) {
     MAC("mac"),
     ANDROID_PHONE("android-phone"),
-    ANDROID_TABLET("android-tablet");
+    ANDROID_TABLET("android-tablet"),
+    WINDOWS("windows"),
+    LINUX("linux");
 
     companion object {
         fun fromWire(value: String): DeviceType = entries.firstOrNull { it.wireValue == value } ?: ANDROID_PHONE
