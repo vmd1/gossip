@@ -16,7 +16,7 @@ enum DeviceMirroringRows {
     /// connected ones first, then by name.
     static func rows(devices: [TrustedDevice], connectedIds: Set<String>, meshIds: Set<String> = [], relayedIds: Set<String> = [], batteries: [String: BatteryState]) -> [MirrorRow] {
         devices
-            .filter { $0.deviceType != .mac }
+            .filter { $0.deviceType.isAndroid }
             .map { MirrorRow(id: $0.deviceId, name: $0.deviceName, deviceType: $0.deviceType,
                              connectivity: DeviceConnectivity.classify($0.deviceId, directIds: connectedIds, meshIds: meshIds, relayedIds: relayedIds),
                              battery: batteries[$0.deviceId]) }

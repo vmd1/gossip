@@ -4,6 +4,11 @@ enum DeviceType: String, Codable {
     case mac
     case androidPhone = "android-phone"
     case androidTablet = "android-tablet"
+    case windows
+    case linux
+
+    /// Phones and tablets: the devices that can be screen-mirrored and driven by Universal Control today.
+    var isAndroid: Bool { self == .androidPhone || self == .androidTablet }
 
     /// SF Symbol shown in place of the old plain-text device-type subtitle in `MenuBarView`.
     var symbolName: String {
@@ -11,6 +16,7 @@ enum DeviceType: String, Codable {
         case .mac: return "laptopcomputer"
         case .androidPhone: return "iphone"
         case .androidTablet: return "ipad"
+        case .windows, .linux: return "desktopcomputer"
         }
     }
 }

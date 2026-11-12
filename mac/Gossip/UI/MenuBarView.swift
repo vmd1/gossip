@@ -202,7 +202,7 @@ struct MenuBarView: View {
                     .foregroundStyle(ringing ? Color.blue : Color.secondary)
                     .help(ringing ? "Stop ringing \(device.deviceName)" : "Ring \(device.deviceName)")
             }
-            if device.deviceType != .mac, featureSettings.isEnabled(.screenMirroring) {
+            if device.deviceType.isAndroid, featureSettings.isEnabled(.screenMirroring) {
                 mirrorButton(for: device)
                 if device.deviceType == .androidPhone || device.deviceType == .androidTablet {
                     Button {

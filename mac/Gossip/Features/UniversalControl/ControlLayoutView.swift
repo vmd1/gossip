@@ -21,7 +21,7 @@ struct ControlLayoutView: View {
     @State private var shelfFrame: CGRect = .zero
     @State private var canvasFrame: CGRect = .zero
 
-    private var androidDevices: [TrustedDevice] { trustedDevices.devices.filter { $0.deviceType != .mac } }
+    private var androidDevices: [TrustedDevice] { trustedDevices.devices.filter { $0.deviceType.isAndroid } }
     private var shelved: [TrustedDevice] { androidDevices.filter { !manager.layout.isPlaced($0.deviceId) } }
 
     var body: some View {
