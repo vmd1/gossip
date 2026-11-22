@@ -62,6 +62,12 @@ while ((line = Console.ReadLine()) != null)
         case "battery":
             node.SetState(uniffi.gossip_ffi.GossipFfiMethods.BatterySlot(), uniffi.gossip_ffi.GossipFfiMethods.BatteryPayload(new uniffi.gossip_ffi.BatteryState(byte.Parse(parts.ElementAtOrDefault(1) ?? "50"), true)));
             break;
+        case "send": // send KIND RECIPIENT|- JSON: any message, for testing
+        {
+            var rest = line.Split(' ', 4);
+            if (rest.Length >= 4) node.Send(rest[1], rest[2] == "-" ? null : rest[2], rest[3]);
+            break;
+        }
         case "sleep": await Task.Delay(TimeSpan.FromSeconds(int.Parse(parts.ElementAtOrDefault(1) ?? "1"))); break;
         case "quit": Environment.Exit(0); return; // exit now: disposing the mDNS service can keep a Windows process alive
     }

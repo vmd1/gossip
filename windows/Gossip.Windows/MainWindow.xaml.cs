@@ -10,11 +10,14 @@ public sealed record DeviceRow(string Id, string Name, string Detail, Brush Dot)
 public partial class MainWindow : Window
 {
     private readonly Node _node;
+    private readonly FindMyDevice _find;
 
-    internal MainWindow(Node node)
+    internal MainWindow(Node node, FindMyDevice find)
     {
         InitializeComponent();
         _node = node;
+        _find = find;
+        _find.PeersChanged += () => Dispatcher.BeginInvoke(Refresh);
         _node.PeersChanged += () => Dispatcher.BeginInvoke(Refresh);
         _node.StateChanged += (_, slot, _) => { if (slot == uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()) Dispatcher.BeginInvoke(Refresh); };
         Refresh();
@@ -34,7 +37,7 @@ public partial class MainWindow : Window
             var online = _node.IsConnected(p.DeviceId);
             var battery = Mirroring.BatteryText(_node.GetState(p.DeviceId, uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()));
             return new DeviceRow(p.DeviceId, p.Name,
-                $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}{(battery != null ? $" · battery {battery}" : "")}",
+                $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}{(_find.IsRinging(p.DeviceId) ? " · ringing" : "")}{(battery != null ? $" · battery {battery}" : "")}",
                 online ? Brushes.SeaGreen : Brushes.LightGray);
         }).ToList();
         Devices.ItemsSource = rows;
@@ -71,6 +74,12 @@ public partial class MainWindow : Window
     {
         new EnterCodeWindow(_node) { Owner = this }.ShowDialog();
         Refresh();
+    }
+
+    private void OnRing(object sender, RoutedEventArgs e)
+    {
+        if (Devices.SelectedItem is not DeviceRow row) { MessageBox.Show(this, "Select a device to ring first.", "Gossip"); return; }
+        _find.Toggle(row.Id);
     }
 
     private void OnRemove(object sender, RoutedEventArgs e)

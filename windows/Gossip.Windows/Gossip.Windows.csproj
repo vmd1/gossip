@@ -21,6 +21,7 @@
     <Using Remove="System.Drawing" />
     <ProjectReference Include="../Gossip.Shell/Gossip.Shell.csproj" />
     <PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <!-- The native core, built with cargo (the gossip-ffi package, release profile) for the same architecture as this app. -->
     <!-- NativeDir is where cargo put the library: target/release by default, or target/<triple>/release when cross-compiling. -->
     <Content Include="$(NativeDir)/gossip_ffi.dll" Condition="Exists('$(NativeDir)/gossip_ffi.dll')" Link="gossip_ffi.dll" CopyToOutputDirectory="PreserveNewest" />
