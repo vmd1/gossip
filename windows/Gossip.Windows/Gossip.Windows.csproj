@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Windows tray app (beta). WPF for the windows, a Windows Forms NotifyIcon for the tray. Windows only. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Gossip.Windows</AssemblyName>
+    <RootNamespace>Gossip.Windows</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <NoWarn>$(NoWarn);CS8632;CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8625;CS0649;CS0169</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- WPF and Windows Forms share type names; only the tray file uses Forms and imports it explicitly. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <ProjectReference Include="../Gossip.Shell/Gossip.Shell.csproj" />
+    <!-- The native core, built with cargo (the gossip-ffi package, release profile) for the same architecture as this app. -->
+    <Content Include="../../desktop/target/release/gossip_ffi.dll" Condition="Exists('../../desktop/target/release/gossip_ffi.dll')" Link="gossip_ffi.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
