@@ -13,14 +13,24 @@ public partial class MainWindow : Window
     private readonly FindMyDevice _find;
     private readonly MediaRemote _media;
     private readonly ProximityMonitor _proximity;
+    private readonly FileTransferService _files;
 
-    internal MainWindow(Node node, FindMyDevice find, MediaRemote media, ProximityMonitor proximity)
+    internal MainWindow(Node node, FindMyDevice find, MediaRemote media, ProximityMonitor proximity, FileTransferService files)
     {
         InitializeComponent();
         _node = node;
         _find = find;
         _media = media;
         _proximity = proximity;
+        _files = files;
+        _files.Changed += t => Dispatcher.BeginInvoke(() =>
+        {
+            TransferText.Text = t.State is "done" ? $"{(t.Outgoing ? "Sent" : "Received")} {t.Name}"
+                : t.State is "failed" or "rejected" or "cancelled" ? $"{t.Name}: {t.State}"
+                : $"{(t.Outgoing ? "Sending" : "Receiving")} {t.Name}: {(t.Size == 0 ? 100 : t.Bytes * 100 / t.Size)}%";
+        });
+        Devices.AllowDrop = true;
+        Devices.Drop += OnDropFiles;
         _proximity.Changed += () => Dispatcher.BeginInvoke(Refresh);
         LockCheck.IsChecked = _proximity.LockOnLeaveEnabled;
         _media.Changed += () => Dispatcher.BeginInvoke(RefreshMedia);
@@ -100,6 +110,31 @@ public partial class MainWindow : Window
     private void OnMediaNext(object sender, RoutedEventArgs e) => _media.Command(uniffi.gossip_ffi.MediaAction.Next);
     private void OnMediaPlay(object sender, RoutedEventArgs e) =>
         _media.Command(_media.Current?.IsPlaying == true ? uniffi.gossip_ffi.MediaAction.Pause : uniffi.gossip_ffi.MediaAction.Play);
+
+    private async void SendFiles(string peerId, IEnumerable<string> paths)
+    {
+        foreach (var path in paths)
+        {
+            try { await _files.SendFileAsync(peerId, path); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Send a file"); }
+        }
+    }
+
+    private void OnSendFile(object sender, RoutedEventArgs e)
+    {
+        if (Devices.SelectedItem is not DeviceRow row) { MessageBox.Show(this, "Select a device to send to first.", "Gossip"); return; }
+        var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Title = $"Send to {row.Name}" };
+        if (dialog.ShowDialog(this) == true) SendFiles(row.Id, dialog.FileNames);
+    }
+
+    // Dropping files on a device row sends them to that device.
+    private void OnDropFiles(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths) return;
+        var item = (e.OriginalSource as FrameworkElement)?.DataContext as DeviceRow ?? Devices.SelectedItem as DeviceRow;
+        if (item == null) { MessageBox.Show(this, "Drop the files on a device in the list.", "Gossip"); return; }
+        SendFiles(item.Id, paths.Where(System.IO.File.Exists));
+    }
 
     private void OnMessages(object sender, RoutedEventArgs e)
     {

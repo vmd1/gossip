@@ -27,6 +27,7 @@ internal sealed class Node : IDisposable
         public required TcpClient Client;
         public required Channel<byte[]> Outbound;
         public bool Closed;
+        public long Pending; // bytes queued for the socket and not yet written
     }
 
     private readonly object _gate = new();
@@ -50,6 +51,8 @@ internal sealed class Node : IDisposable
     public event Action<PairingRequest>? PairingRequested;
     public event Action<ulong>? PairingCancelled;
     public event System.Action? PeersChanged;
+    /// <summary>A trusted device finished connecting (its device id). Raised with the engine lock held: hand off work.</summary>
+    public event Action<string>? PeerConnectedId;
     /// <summary>A feature message addressed to this device (or broadcast). Raw is the raw follow-up frame, if any.</summary>
     public event Action<uniffi.gossip_ffi.Envelope, byte[]?>? Received;
     public event Action<string, string, string?>? StateChanged;
@@ -113,6 +116,9 @@ internal sealed class Node : IDisposable
         }
         return list;
     }
+
+    /// <summary>Bytes queued for sockets but not yet written: lets a bulk sender wait instead of filling memory.</summary>
+    public long PendingOutboundBytes { get { lock (_gate) return _links.Values.Sum(l => Interlocked.Read(ref l.Pending)); } }
 
     public bool IsConnected(string deviceId) { lock (_gate) return _core.IsConnected(deviceId); }
     public string[] ConnectedPeers() { lock (_gate) return _core.ConnectedPeers(); }
@@ -202,7 +208,10 @@ internal sealed class Node : IDisposable
             {
                 var stream = client.GetStream();
                 await foreach (var bytes in link.Outbound.Reader.ReadAllAsync().ConfigureAwait(false))
+                {
                     await stream.WriteAsync(bytes).ConfigureAwait(false);
+                    Interlocked.Add(ref link.Pending, -bytes.Length);
+                }
             }
             catch (Exception ex) { if (Trace) Log?.Invoke($"conn {link.Conn}: write ended: {ex.GetType().Name} {ex.Message}"); CloseAndReport(link); }
         });
@@ -337,7 +346,7 @@ internal sealed class Node : IDisposable
             switch (action)
             {
                 case EngineAction.Send s:
-                    if (_links.TryGetValue(s.Conn, out var sendLink)) sendLink.Outbound.Writer.TryWrite(s.Bytes);
+                    if (_links.TryGetValue(s.Conn, out var sendLink) && sendLink.Outbound.Writer.TryWrite(s.Bytes)) Interlocked.Add(ref sendLink.Pending, s.Bytes.Length);
                     break;
                 case EngineAction.Close c:
                     // The engine already forgot this connection: close the socket without reporting it back.
@@ -346,6 +355,7 @@ internal sealed class Node : IDisposable
                 case EngineAction.PeerConnected p:
                     Log?.Invoke($"connected: {p.Peer.DeviceName} ({p.Peer.DeviceType}){(p.NewlyPaired ? " [newly paired]" : "")}");
                     PeersChanged?.Invoke();
+                    PeerConnectedId?.Invoke(p.Peer.DeviceId);
                     break;
                 case EngineAction.PeerDisconnected d:
                     Log?.Invoke($"disconnected: {d.DeviceId}");
