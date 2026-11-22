@@ -70,3 +70,63 @@ jobs:
 
       - name: Build the tray app
         run: dotnet build windows/Gossip.Windows -nologo -v q
+
+  # Builds the installers exactly as a release does (release.yml, windows-release), so a broken installer is caught on the
+  # pull request instead of on release day. The artifacts are kept for a week for manual testing.
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            rid: win-x64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            rid: win-arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: windows-installer-${{ matrix.arch }}
+
+      - name: Build the native core for ${{ matrix.target }}
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build -p gossip-ffi --release --target ${{ matrix.target }}
+          cargo build -p gossip-ffi --release
+
+      - name: Install uniffi-bindgen-cs and generate the C# binding
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          cargo install --locked uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag v0.12.0+v0.32.0
+          New-Item -ItemType Directory -Force target/gen/csharp | Out-Null
+          uniffi-bindgen-cs --library target/release/gossip_ffi.dll --out-dir target/gen/csharp
+
+      - name: Publish the app (self-contained)
+        shell: pwsh
+        run: |
+          $native = "$PWD/desktop/target/${{ matrix.target }}/release"
+          dotnet publish windows/Gossip.Windows -c Release -r ${{ matrix.rid }} --self-contained true -p:NativeDir=$native -o windows/bin/publish
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /Qp /DAppVersion=0.0 /DArch=${{ matrix.arch }} /DSourceDir=..\bin\publish /DOutputDir=out windows/installer/Gossip.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer-${{ matrix.arch }}
+          path: windows/installer/out/Gossip-Windows-${{ matrix.arch }}-Setup.exe
+          if-no-files-found: error
+          retention-days: 7
