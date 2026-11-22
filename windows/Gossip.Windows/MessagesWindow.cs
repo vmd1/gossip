@@ -19,10 +19,10 @@ internal sealed class MessagesWindow : Window
     private readonly Node _node;
     private readonly string _phoneId;
     private readonly ListBox _threads = new() { Width = 220 };
-    private readonly ListBox _history = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    private readonly ListBox _history = new() { HorizontalContentAlignment = HorizontalAlignment.Stretch, ItemContainerStyle = Theme.PlainItemStyle };
     private readonly TextBox _address = new() { Margin = new Thickness(0, 0, 0, 6), ToolTip = "Phone number" };
     private readonly TextBox _body = new() { AcceptsReturn = true, Height = 56, TextWrapping = TextWrapping.Wrap };
-    private readonly TextBlock _status = new() { Foreground = System.Windows.Media.Brushes.Gray, Margin = new Thickness(0, 6, 0, 0) };
+    private readonly TextBlock _status = new() { Style = Theme.CaptionStyle, Margin = new Thickness(0, 6, 0, 0) };
     private readonly DispatcherTimer _resync = new() { Interval = TimeSpan.FromSeconds(60) };
     private string _threadsRequest = "";
     private string _historyRequest = "";
@@ -41,7 +41,7 @@ internal sealed class MessagesWindow : Window
         Height = 560;
         FontFamily = new System.Windows.Media.FontFamily("Segoe UI");
 
-        var send = new Button { Content = "Send", Padding = new Thickness(18, 6, 18, 6), Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Bottom };
+        var send = new Button { Style = Theme.AccentStyle, Content = "Send", Padding = new Thickness(18, 6, 18, 6), Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Bottom };
         send.Click += (_, _) => Send();
         var compose = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
         DockPanel.SetDock(send, Dock.Right);
@@ -49,7 +49,7 @@ internal sealed class MessagesWindow : Window
         compose.Children.Add(_body);
         var right = new DockPanel { Margin = new Thickness(12, 0, 0, 0) };
         var top = new StackPanel();
-        top.Children.Add(new TextBlock { Text = "To (phone number)", Foreground = System.Windows.Media.Brushes.Gray, FontSize = 12 });
+        top.Children.Add(new TextBlock { Text = "To (phone number)", Style = Theme.CaptionStyle, FontSize = 12 });
         top.Children.Add(_address);
         DockPanel.SetDock(top, Dock.Top);
         var bottom = new StackPanel();
@@ -139,15 +139,20 @@ internal sealed class MessagesWindow : Window
                 foreach (var m in messages.EnumerateArray().Reverse())
                 {
                     var outgoing = m.GetProperty("outgoing").GetBoolean();
-                    _history.Items.Add(new TextBlock
+                    var bubble = new Border
+                    {
+                        CornerRadius = new CornerRadius(12),
+                        Margin = new Thickness(outgoing ? 60 : 0, 3, outgoing ? 0 : 60, 3),
+                        HorizontalAlignment = outgoing ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+                        Padding = new Thickness(12, 7, 12, 7),
+                    };
+                    bubble.SetResourceReference(Border.BackgroundProperty, outgoing ? "BubbleOut" : "BubbleIn");
+                    bubble.Child = new TextBlock
                     {
                         Text = m.GetProperty("body").GetString(),
                         TextWrapping = TextWrapping.Wrap,
-                        Margin = new Thickness(outgoing ? 60 : 0, 3, outgoing ? 0 : 60, 3),
-                        HorizontalAlignment = outgoing ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-                        Background = outgoing ? System.Windows.Media.Brushes.LightSkyBlue : System.Windows.Media.Brushes.Gainsboro,
-                        Padding = new Thickness(10, 6, 10, 6),
-                    });
+                    };
+                    _history.Items.Add(bubble);
                 }
                 if (_history.Items.Count > 0) _history.ScrollIntoView(_history.Items[^1]);
                 break;

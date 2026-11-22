@@ -21,6 +21,7 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        Theme.Start();
         _single = new Mutex(true, "Gossip.Windows.SingleInstance", out var first);
         if (!first) { Shutdown(); return; }
 
