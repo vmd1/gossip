@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -34,6 +35,7 @@ internal sealed class ClipboardSync : IDisposable
         _source.AddHook(Hook);
         AddClipboardFormatListener(_source.Handle);
         _node.StateChanged += OnState;
+        _node.Received += OnReceived;
         // Publish whatever is on the clipboard now, so a peer that connects later still gets it (the slot persists).
         _ = _ui.BeginInvoke(PublishCurrent);
     }
@@ -48,14 +50,52 @@ internal sealed class ClipboardSync : IDisposable
     {
         try
         {
-            if (!Retry(() => Clipboard.ContainsText(), out var hasText) || !hasText) return;
-            if (!Retry(() => Clipboard.GetText(), out var text) || string.IsNullOrEmpty(text)) return;
             // Password managers and Windows' own clipboard history mark such content with this format: never sync it.
             Retry(() => Clipboard.GetDataObject()?.GetDataPresent("ExcludeClipboardContentFromMonitorProcessing") == true, out var sensitive);
-            var value = _guard.OutgoingText(_node.DeviceId, text, sensitive);
-            if (value != null) _node.SetState(_slot, value);
+            if (Retry(() => Clipboard.ContainsText(), out var hasText) && hasText)
+            {
+                if (!Retry(() => Clipboard.GetText(), out var text) || string.IsNullOrEmpty(text)) return;
+                var textValue = _guard.OutgoingText(_node.DeviceId, text, sensitive);
+                if (textValue != null) _node.SetState(_slot, textValue);
+                return;
+            }
+            if (Retry(() => Clipboard.ContainsImage(), out var hasImage) && hasImage)
+            {
+                if (!Retry(() => Clipboard.GetImage(), out var image) || image == null) return;
+                var png = EncodePng(image);
+                var message = _guard.OutgoingImage(_node.DeviceId, png, sensitive);
+                if (message != null) _node.SendWithRaw(message.Kind, message.Recipient, message.PayloadJson, png);
+                return;
+            }
         }
         catch (Exception) { /* the clipboard is shared with every app: a failed read is simply skipped */ }
+    }
+
+    private static byte[] EncodePng(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return stream.ToArray();
+    }
+
+    // An image from a peer: the core checks it is a sane PNG and not an echo of what we just sent.
+    private void OnReceived(Envelope env, byte[]? raw)
+    {
+        if (env.Kind != "clipboard.update" || raw == null) return;
+        try
+        {
+            if (!_guard.IncomingImage(env.PayloadJson, raw)) return;
+            _ui.BeginInvoke(() =>
+            {
+                var decoder = new System.Windows.Media.Imaging.PngBitmapDecoder(new MemoryStream(raw),
+                    System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat, System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+                var frame = decoder.Frames[0];
+                Retry(() => { Clipboard.SetImage(frame); return true; }, out _);
+            });
+        }
+        catch (Exception) { }
     }
 
     private void OnState(string deviceId, string slot, string? valueJson)
@@ -82,6 +122,7 @@ internal sealed class ClipboardSync : IDisposable
     public void Dispose()
     {
         _node.StateChanged -= OnState;
+        _node.Received -= OnReceived;
         RemoveClipboardFormatListener(_source.Handle);
         _source.Dispose();
     }

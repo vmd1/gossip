@@ -4,14 +4,18 @@ using System.Linq;
 // usage: Gossip.Headless [--name NAME] [--data DIR] [--plain]
 // stdin commands: code | pair CODE | peers | pairable | accept | reject | say TEXT | sleep SECONDS | clip TEXT | notify TITLE|BODY | notifyjson JSON | battery PERCENT | quit
 string name = Environment.MachineName, data = Path.Combine(IdentityStore.DefaultDirectory, "headless");
-bool plain = false;
+bool plain = false, acceptFiles = false;
+string? downloads = null;
 for (var i = 0; i < args.Length; i++)
 {
     if (args[i] == "--name") name = args[++i];
     else if (args[i] == "--data") data = args[++i];
+    else if (args[i] == "--accept-files") acceptFiles = true; // accept every incoming file
+    else if (args[i] == "--downloads") downloads = args[++i];
     else if (args[i] == "--plain") plain = true; // no DPAPI (tests on a non-Windows host)
 }
 
+downloads ??= Path.Combine(data, "downloads");
 var identity = IdentityStore.LoadOrCreate(data, protect: !plain);
 using var node = new Node(identity, name, data);
 PairingRequest? pending = null;
@@ -20,6 +24,13 @@ node.PairingRequested += r => { pending = r; Console.WriteLine($"[pairing] {r.De
 node.CodePairingFinished += r => Console.WriteLine($"[code pairing] {r}");
 node.Received += (e, raw) => Console.WriteLine($"[recv] {e.Kind} from {e.SenderId[..8]}: {e.PayloadJson}{(raw != null ? $" (+{raw.Length} raw bytes)" : "")}");
 node.StateChanged += (id, slot, value) => Console.WriteLine($"[state] {id[..8]} {slot} = {value}");
+using var files = new FileTransferService(node, downloads, data, offer =>
+{
+    Console.WriteLine($"[file] offer from {offer.PeerName}: {offer.Name} ({offer.Size} bytes) -> {(acceptFiles ? "accepted" : "declined (run with --accept-files)")}");
+    return Task.FromResult(acceptFiles);
+});
+files.Problem += m => Console.WriteLine($"[file] problem: {m}");
+files.Changed += t => Console.WriteLine($"[file] {(t.Outgoing ? "out" : "in")} {t.Name} {t.State} {t.Bytes}/{t.Size}");
 node.Start();
 Console.WriteLine($"ready: {name} {identity.DeviceId}");
 
@@ -52,6 +63,21 @@ while ((line = Console.ReadLine()) != null)
                 if (v != null) node.SetState(uniffi.gossip_ffi.GossipFfiMethods.ClipboardTextSlot(), v);
                 break;
             }
+        case "setstate": // setstate SLOT JSON (JSON "null" clears)
+            {
+                var rest = line.Split(' ', 3);
+                if (rest.Length >= 3) node.SetState(rest[1], rest[2] == "null" ? null : rest[2]);
+                break;
+            }
+        case "clipimg": // sends a small PNG as an image clipboard update
+            {
+                var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8Dwn4EIwDiqkL4KAcT9GO0U4BxoAAAAAElFTkSuQmCC");
+                var guard = new uniffi.gossip_ffi.ClipboardGuard();
+                var m = guard.OutgoingImage(node.DeviceId, png, false);
+                Console.WriteLine(m == null ? "[clipimg] refused" : "[clipimg] sent");
+                if (m != null) node.SendWithRaw(m.Kind, m.Recipient, m.PayloadJson, png);
+                break;
+            }
         case "notify":
             {
                 var bits = (parts.ElementAtOrDefault(1) ?? "Title|Body").Split('|', 2);
@@ -68,6 +94,15 @@ while ((line = Console.ReadLine()) != null)
             if (rest.Length >= 4) node.Send(rest[1], rest[2] == "-" ? null : rest[2], rest[3]);
             break;
         }
+        case "sendfile": // sendfile PEER_ID_PREFIX PATH
+            {
+                var rest = line.Split(' ', 3);
+                var peer = node.Peers().FirstOrDefault(p => p.DeviceId.StartsWith(rest[1]));
+                if (peer == null || rest.Length < 3) { Console.WriteLine("[file] unknown peer or missing path"); break; }
+                var id = await files.SendFileAsync(peer.DeviceId, rest[2]);
+                Console.WriteLine($"[file] offered {id}");
+                break;
+            }
         case "sleep": await Task.Delay(TimeSpan.FromSeconds(int.Parse(parts.ElementAtOrDefault(1) ?? "1"))); break;
         case "quit": Environment.Exit(0); return; // exit now: disposing the mDNS service can keep a Windows process alive
     }

@@ -13,6 +13,7 @@ struct MenuBarView: View {
     @ObservedObject var bleProximityMonitor: BLEProximityMonitor
     @ObservedObject var hotspotStateManager: HotspotStateManager
     @ObservedObject var ringManager: RingManager
+    @ObservedObject var fileTransfer: FileTransferCoordinator
     @ObservedObject var batterySyncManager: BatterySyncManager
     @ObservedObject var featureSettings: FeatureSettings
     let clipboardSync: ClipboardSyncManager
@@ -41,6 +42,13 @@ struct MenuBarView: View {
                     .foregroundStyle(.red)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let transfer = fileTransfer.status {
+                Text(transfer)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
 
             if featureSettings.isEnabled(.media), let nowPlaying = mediaControlManager.nowPlaying {
@@ -202,6 +210,10 @@ struct MenuBarView: View {
                     .foregroundStyle(ringing ? Color.blue : Color.secondary)
                     .help(ringing ? "Stop ringing \(device.deviceName)" : "Ring \(device.deviceName)")
             }
+            Button { fileTransfer.chooseAndSend(to: device) } label: { Image(systemName: "paperplane") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.secondary)
+                .help("Send a file to \(device.deviceName)")
             if device.deviceType.isAndroid, featureSettings.isEnabled(.screenMirroring) {
                 mirrorButton(for: device)
                 if device.deviceType == .androidPhone || device.deviceType == .androidTablet {

@@ -8,11 +8,28 @@
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
     <StackPanel Grid.Row="0" Margin="0,0,0,12">
       <TextBlock Text="Gossip" FontSize="24" FontWeight="SemiBold"/>
       <TextBlock x:Name="StatusText" Foreground="#666" Margin="0,2,0,0"/>
     </StackPanel>
+    <Border x:Name="MediaPanel" Grid.Row="2" Visibility="Collapsed" Margin="0,10,0,0" Padding="10" BorderBrush="#DDD" BorderThickness="1" CornerRadius="6">
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel>
+          <TextBlock x:Name="MediaTitle" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+          <TextBlock x:Name="MediaDetail" Foreground="#777" FontSize="12" TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <Button Content="Prev" Padding="10,4" Margin="0,0,4,0" Click="OnMediaPrevious"/>
+          <Button x:Name="MediaPlay" Content="Play" Padding="10,4" Margin="0,0,4,0" Click="OnMediaPlay"/>
+          <Button Content="Next" Padding="10,4" Click="OnMediaNext"/>
+        </StackPanel>
+      </Grid>
+    </Border>
     <ListView x:Name="Devices" Grid.Row="1" BorderThickness="1" BorderBrush="#DDD" SelectionMode="Single">
       <ListView.ItemTemplate>
         <DataTemplate>
@@ -32,11 +49,16 @@
     </ListView>
     <TextBlock x:Name="EmptyText" Grid.Row="1" Text="No devices yet. Pair your phone or Mac to get started."
                Foreground="#888" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center" Margin="30"/>
-    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,14,0,0">
-      <Button x:Name="ShowCodeButton" Content="Show pairing code" Padding="14,6" Margin="0,0,8,0" Click="OnShowCode"/>
+    <WrapPanel Grid.Row="3" Margin="0,14,0,0">
+      <Button x:Name="ShowCodeButton" Content="Show pairing code" Padding="14,6" Margin="0,0,8,6" Click="OnShowCode"/>
       <Button x:Name="EnterCodeButton" Content="Enter a code" Padding="14,6" Margin="0,0,8,0" Click="OnEnterCode"/>
+      <Button x:Name="SendFileButton" Content="Send file…" Padding="14,6" Margin="0,0,8,6" Click="OnSendFile"/>
+      <Button x:Name="MessagesButton" Content="Messages" Padding="14,6" Margin="0,0,8,6" Click="OnMessages"/>
       <Button x:Name="RingButton" Content="Ring / stop" Padding="14,6" Margin="0,0,8,0" Click="OnRing"/>
       <Button x:Name="RemoveButton" Content="Remove" Padding="14,6" Click="OnRemove"/>
-    </StackPanel>
+    </WrapPanel>
+    <TextBlock x:Name="TransferText" Grid.Row="5" Foreground="#777" FontSize="12" Margin="0,4,0,0"/>
+    <CheckBox x:Name="LockCheck" Grid.Row="4" Margin="0,6,0,0" Content="Lock this PC when my phone walks away (needs Bluetooth and the phone to allow it)"
+              Checked="OnLockToggled" Unchecked="OnLockToggled"/>
   </Grid>
 </Window>

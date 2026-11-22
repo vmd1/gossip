@@ -102,6 +102,13 @@ final class TransportManager: ObservableObject {
     /// consume their own raw frames. Main-thread only. Passing `nil` removes the handler.
     private var rawHandlers: [String: (Envelope, Data) -> Void] = [:]
 
+    private let pendingBytesLock = NSLock()
+    private var pendingBytes = 0
+    private func addPendingBytes(_ n: Int) { pendingBytesLock.lock(); pendingBytes += n; pendingBytesLock.unlock() }
+
+    /// Bytes handed to sockets and not yet written: lets a bulk sender (file transfer) wait instead of queueing without limit.
+    func pendingOutboundBytes() -> Int { pendingBytesLock.lock(); defer { pendingBytesLock.unlock() }; return pendingBytes }
+
     func setRawHandler(for type: String, _ handler: ((Envelope, Data) -> Void)?) {
         rawHandlers[type] = handler
     }
@@ -834,7 +841,9 @@ final class TransportManager: ObservableObject {
             switch action {
             case .send(let conn, let bytes):
                 guard let link = links[conn] else { continue }
-                link.connection.send(content: bytes, completion: .contentProcessed { error in
+                addPendingBytes(bytes.count)
+                link.connection.send(content: bytes, completion: .contentProcessed { [weak self] error in
+                    self?.addPendingBytes(-bytes.count)
                     if let error { gossipError("Gossip: send failed: \(error)") }
                 })
             case .relaySendText(let text): relayConnection?.sendText(text)

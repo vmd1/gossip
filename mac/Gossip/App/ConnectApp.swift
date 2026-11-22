@@ -25,6 +25,7 @@ struct ConnectApp: App {
     private let phoneInputManager: PhoneInputManager
     private let messagesManager: MessagesManager
     @StateObject private var ringManager: RingManager
+    @StateObject private var fileTransfer: FileTransferCoordinator
     @StateObject private var batterySyncManager: BatterySyncManager
     private let deviceMirroringWindowBox = DeviceMirroringWindowBox()
 
@@ -88,6 +89,7 @@ struct ConnectApp: App {
             bleProximityMonitor: bleMonitor
         )
         _ringManager = StateObject(wrappedValue: RingManager(transportManager: transport))
+        _fileTransfer = StateObject(wrappedValue: FileTransferCoordinator(transport: transport))
         let battery = BatterySyncManager(transportManager: transport)
         _batterySyncManager = StateObject(wrappedValue: battery)
         battery.start()
@@ -266,6 +268,7 @@ struct ConnectApp: App {
                 bleProximityMonitor: bleProximityMonitor,
                 hotspotStateManager: hotspotStateManager,
                 ringManager: ringManager,
+                fileTransfer: fileTransfer,
                 batterySyncManager: batterySyncManager,
                 featureSettings: FeatureSettings.shared,
                 clipboardSync: clipboardSyncManager,

@@ -13,6 +13,10 @@ public partial class App : Application
     private ToastManager? _toasts;
     private FindMyDevice? _find;
     private PowerSync? _power;
+    private DndSync? _dnd;
+    private ProximityMonitor? _proximity;
+    private FileTransferService? _files;
+    private MediaRemote? _mediaRemote;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -28,7 +32,24 @@ public partial class App : Application
 
         _find = new FindMyDevice(_node, Dispatcher);
         _power = new PowerSync(_node, Dispatcher);
-        _window = new MainWindow(_node, _find);
+        _dnd = new DndSync(_node, Dispatcher, dataDir);
+        _mediaRemote = new MediaRemote(_node);
+        _proximity = new ProximityMonitor(_node, Dispatcher, dataDir);
+        var downloads = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + @"\Downloads";
+        _files = new FileTransferService(_node, downloads, dataDir, offer => Dispatcher.InvokeAsync(() =>
+        {
+            var prompt = new OfferWindow(offer.PeerName, offer.Name, FormatSize(offer.Size));
+            prompt.Show();
+            prompt.Activate();
+            return prompt.Answer;
+        }).Task.Unwrap());
+        _files.Problem += m => { try { System.IO.File.AppendAllText(System.IO.Path.Combine(dataDir, "filetransfer.log"), $"{DateTime.Now:s} {m}\n"); } catch { } };
+        _files.Changed += t =>
+        {
+            if (t.State is "done" or "failed" or "rejected")
+                Dispatcher.BeginInvoke(() => _tray?.Notify(t.Outgoing ? "File sent" : "File received", t.State == "done" ? t.Name : $"{t.Name}: {t.State}"));
+        };
+        _window = new MainWindow(_node, _find, _mediaRemote, _proximity, _files);
         _tray = new TrayIcon(
             open: () => Dispatcher.Invoke(ShowWindow),
             showCode: () => Dispatcher.Invoke(() => { ShowWindow(); _window!.ShowCode(); }),
@@ -48,6 +69,14 @@ public partial class App : Application
         if (!e.Args.Contains("--minimized")) ShowWindow();
     }
 
+    internal static string FormatSize(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} bytes",
+        < 1024 * 1024 => $"{bytes / 1024.0:0.#} KB",
+        < 1024L * 1024 * 1024 => $"{bytes / 1048576.0:0.#} MB",
+        _ => $"{bytes / 1073741824.0:0.##} GB",
+    };
+
     private void ShowWindow()
     {
         _window!.Show();
@@ -66,6 +95,10 @@ public partial class App : Application
 
     private void Quit()
     {
+        _files?.Dispose();
+        _proximity?.Dispose();
+        _dnd?.Dispose();
+        _mediaRemote?.Dispose();
         _find?.Dispose();
         _power?.Dispose();
         _clipboard?.Dispose();

@@ -35,6 +35,7 @@ Direct on your local network, optionally relayed (end-to-end encrypted) when you
 | ▶️ | **Media remote** | See what's playing and control playback on any device. |
 | 📶 | **Instant Hotspot** | Turn on your phone's hotspot from the Mac and join it automatically. *Android 16+ needs Shizuku.* |
 | 🔒 | **Lock on leave** | Lock a Mac or tablet when your phone walks out of Bluetooth range. |
+| 📤 | **File transfer** | Send files up to 2 GiB between your devices (drag onto a device, or the share sheet on Android). The receiver accepts first, and a dropped connection resumes where it stopped. |
 | 📍 | **Find my device** | Make a paired device ring at full volume. |
 | 🔋 | **Battery sync** | See every device's battery, with low-battery alerts. |
 | 💬 | **Messages** | A native Mac app for your phone's SMS conversations, with contact names, replies and a cache so it opens instantly. SMS only for now. |
