@@ -25,3 +25,4 @@ What needs real devices, and what has already been checked without them. Tick th
 - [ ] Multi-display mirroring on a Mac with two or more monitors.
 - [ ] Android → Android mirroring between two real devices.
 - [ ] Relay keepalive and battery over a day on a phone off the home network.
+- [ ] **File transfer:** send a 100 MB file from the Mac to the phone and back, pull the Wi-Fi in the middle once and check it resumes, and decline one offer. Repeat with the Windows app.

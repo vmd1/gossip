@@ -213,6 +213,48 @@ final class EmulatorE2ETests: XCTestCase {
         lock.lock(); let fromAndroid = raws.first { $0.0.type == "e2e.rawfromandroid" }; lock.unlock()
         XCTAssertEqual(fromAndroid?.1, Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) }), "the raw frame arrives intact with its envelope")
 
+        // ---- 3b. File transfer on the real transports, both directions (docs/plans/file-transfer.md). ----
+        let filesDir = FileManager.default.temporaryDirectory.appendingPathComponent("e2e-files-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: filesDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: filesDir) }
+        let receivedFiles = NSMutableDictionary()
+        let fileManagerBox = NSMutableArray()
+        let files = FileTransferManager(
+            selfId: identity.deviceId, partDir: filesDir.appendingPathComponent("parts"),
+            sendEnvelope: { envelope, rawData in
+                if let rawData { try transport.send(envelope, withRawFollowup: rawData) } else { try transport.send(envelope: envelope) }
+            },
+            isConnected: { transport.connectedDeviceIds.contains($0) },
+            pendingOutboundBytes: { transport.pendingOutboundBytes() },
+            peerName: { _ in "E2E Android" },
+            saveToDownloads: { part, name in
+                let dest = filesDir.appendingPathComponent(name)
+                try? FileManager.default.removeItem(at: dest)
+                do { try FileManager.default.moveItem(at: part, to: dest) } catch { return nil }
+                return name
+            },
+            freeSpace: { Int64.max },
+            onOffer: { offer in (fileManagerBox.firstObject as? FileTransferManager)?.respond(offer.transferId, accept: true) },
+            onChanged: { info in if !info.outgoing && info.state == "done" { receivedFiles[info.name] = true } }
+        )
+        fileManagerBox.add(files)
+        transport.router.register(prefix: "file.") { envelope in if envelope.type != "file.chunk" { files.handle(envelope) } }
+        transport.setRawHandler(for: "file.chunk") { envelope, data in files.handleChunk(envelope, raw: data) }
+
+        let sendMe = filesDir.appendingPathComponent("to-android.bin")
+        let sendData = Data((0..<(3 * 1024 * 1024 + 777)).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 5) })
+        try sendData.write(to: sendMe)
+        _ = try files.sendFile(to: androidId, url: sendMe)
+        let done = try XCTUnwrap(waitForMessage("e2e.filedone", timeout: 60))
+        XCTAssertEqual(done.payload["name"]?.stringValue, "to-android.bin")
+        XCTAssertEqual(done.payload["size"]?.numberValue, Double(sendData.count))
+        XCTAssertEqual(done.payload["sha256"]?.stringValue, SHA256.hash(data: sendData).map { String(format: "%02x", $0) }.joined(), "Mac to Android: the file arrives intact")
+
+        try transport.send(envelope: Envelope(type: "e2e.sendfile", senderId: identity.deviceId, recipientId: androidId, payload: .object(["size": .number(2_500_000)])))
+        wait("the file from Android", timeout: 60) { receivedFiles["from-android.bin"] != nil }
+        let androidFile = try Data(contentsOf: filesDir.appendingPathComponent("from-android.bin"))
+        XCTAssertEqual(androidFile, Data((0..<2_500_000).map { UInt8(truncatingIfNeeded: $0 &* 17 &+ 3) }), "Android to Mac: the file arrives intact")
+
         // ---- 4. Per-feature gating on the Android side. ----
         func send(_ type: String) throws {
             try transport.send(envelope: Envelope(type: type, senderId: identity.deviceId, recipientId: androidId, payload: .object(["enabled": .bool(true)])))

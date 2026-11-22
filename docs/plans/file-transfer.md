@@ -1,6 +1,6 @@
 # Plan: file transfer
 
-Status: design (2026-11-12). An AirDrop-style "send this file to that device" between Mac and Android. An earlier version (`file.offer/accept/reject/complete`, 256 KiB chunks) shipped in Wave 2 and was removed in September because it auto-accepted every offer, had no resume and no limits. This plan keeps what was right (raw follow-up frames for the bytes, SHA-256 verification) and fixes those three.
+Status: built on Mac, Android and Windows (2026-11-22; see `schema/message-types.md`'s `file.*` rows). Design (2026-11-12): An AirDrop-style "send this file to that device" between Mac and Android. An earlier version (`file.offer/accept/reject/complete`, 256 KiB chunks) shipped in Wave 2 and was removed in September because it auto-accepted every offer, had no resume and no limits. This plan keeps what was right (raw follow-up frames for the bytes, SHA-256 verification) and fixes those three.
 
 ## Goals and non-goals
 

@@ -97,6 +97,35 @@ class TransportE2eTest {
             }
         }
 
+        // File transfer on the real transport: incoming files are accepted automatically and reported to the Mac as
+        // `e2e.filedone` with their hash; `e2e.sendfile` makes this device send a patterned file of the given size.
+        val filesRef = java.util.concurrent.atomic.AtomicReference<dev.vmd1.gossip.features.filetransfer.FileTransferManager?>(null)
+        val downloads = java.io.File(context.cacheDir, "e2e-downloads").apply { deleteRecursively(); mkdirs() }
+        val files = dev.vmd1.gossip.features.filetransfer.FileTransferManager(
+            messageRouter = router, scope = scope, selfId = identity.deviceId, partDir = java.io.File(context.cacheDir, "e2e-parts"),
+            sendEnvelope = { env, raw -> if (raw == null) transport.send(env) else transport.send(env, raw) },
+            isConnected = { it in transport.connectedDeviceIds.value },
+            pendingOutboundBytes = { transport.pendingOutboundBytes() },
+            peerName = { "E2E Mac" },
+            saveToDownloads = { part, name -> java.io.File(downloads, name).also { part.copyTo(it, overwrite = true) }.name },
+            freeSpace = { Long.MAX_VALUE },
+            onOffer = { offer -> scope.launch { delay(200); filesRef.get()?.respond(offer.transferId, true) } },
+            onChanged = { info ->
+                log("file ${if (info.outgoing) "out" else "in"} ${info.name} ${info.state}")
+                if (!info.outgoing && info.state == "done") {
+                    val bytes = java.io.File(downloads, info.name).readBytes()
+                    reply("e2e.filedone", info.peerId, buildJsonObject {
+                        put("name", JsonPrimitive(info.name)); put("size", JsonPrimitive(bytes.size))
+                        put("sha256", JsonPrimitive(MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }))
+                    })
+                }
+            }
+        )
+        filesRef.set(files)
+        files.start()
+        transport.setRawHandler("file.chunk", files::onRawChunk)
+        scope.launch { var seen = emptySet<String>(); transport.connectedDeviceIds.collect { now -> (now - seen).forEach { files.onPeerConnected(it) }; seen = now } }
+
         router.register("e2e.", EnvelopeHandler { e ->
             log("handling ${e.type} from ${e.senderId}")
             try {
@@ -123,6 +152,16 @@ class TransportE2eTest {
                         )
                     }.onFailure { fail("sendraw failed: $it") }
                 }
+                "e2e.sendfile" -> scope.launch {
+                    val size = (e.payload["size"] as JsonPrimitive).content.toInt()
+                    val f = java.io.File(context.cacheDir, "e2e-from-android.bin").apply { writeBytes(ByteArray(size) { (it * 17 + 3).toByte() }) }
+                    runCatching { files.sendFile(e.senderId, object : dev.vmd1.gossip.features.filetransfer.FileSource {
+                        override val name = "from-android.bin"
+                        override val size = f.length()
+                        override fun open() = f.inputStream()
+                        override fun read(offset: Long, length: Int) = java.io.RandomAccessFile(f, "r").use { r -> r.seek(offset); ByteArray(length).also { r.readFully(it) } }
+                    }) }.onFailure { fail("sendfile failed: $it") }
+                }
                 "e2e.disable" -> transport.setDisabledFeatures((e.payload["keys"] as JsonArray).map { it.jsonPrimitive.content })
                 "e2e.finish" -> finish.complete(Unit)
             }
@@ -135,6 +174,7 @@ class TransportE2eTest {
         router.register("dnd.", EnvelopeHandler { dnd.incrementAndGet() })
         router.register("clipboard.", EnvelopeHandler { clipboard.incrementAndGet() })
         transport.onRawFrameReceived = { envelope, raw ->
+          if (envelope.type != "file.chunk") {
             val digest = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(raw), Base64.NO_WRAP)
             log("raw frame ${raw.size} bytes from ${envelope.senderId}")
             reply("e2e.rawhash", envelope.senderId, buildJsonObject {
@@ -142,6 +182,7 @@ class TransportE2eTest {
                 put("size", JsonPrimitive(raw.size))
                 put("forId", JsonPrimitive(envelope.id))
             })
+          }
         }
 
         transport.listen()
