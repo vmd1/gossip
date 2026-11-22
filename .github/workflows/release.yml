@@ -267,8 +267,57 @@ jobs:
         run: |
           if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
 
+  windows-release:
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            rid: win-x64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            rid: win-arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build the native core for ${{ matrix.target }}
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          rustup target add ${{ matrix.target }}
+          cargo build -p gossip-ffi --release --target ${{ matrix.target }}
+          cargo build -p gossip-ffi --release
+      - name: Install uniffi-bindgen-cs and generate the C# binding
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          cargo install --locked uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag v0.12.0+v0.32.0
+          New-Item -ItemType Directory -Force target/gen/csharp | Out-Null
+          uniffi-bindgen-cs --library target/release/gossip_ffi.dll --out-dir target/gen/csharp
+      - name: Publish the app (self-contained)
+        shell: pwsh
+        run: |
+          $native = "$PWD/desktop/target/${{ matrix.target }}/release"
+          dotnet publish windows/Gossip.Windows -c Release -r ${{ matrix.rid }} --self-contained true -p:NativeDir=$native -o windows/bin/publish
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc /Qp /DAppVersion=${{ needs.version.outputs.number }} /DArch=${{ matrix.arch }} /DSourceDir=..\bin\publish /DOutputDir=out windows/installer/Gossip.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: windows/installer/out/Gossip-Windows-${{ matrix.arch }}-Setup.exe
+          if-no-files-found: error
+
   publish:
-    needs: [version, android-release, mac-release]
+    needs: [version, android-release, mac-release, windows-release]
     # A manual run on another branch (e.g. to test signing) builds everything but never creates a release.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -288,6 +337,7 @@ jobs:
           gh release create "$TAG" \
             artifacts/android-apk/*.apk \
             artifacts/mac-zip/*.zip \
+            artifacts/windows-*/*.exe \
             --repo "${{ github.repository }}" \
             --target "$GITHUB_SHA" \
             --title "$TITLE" \

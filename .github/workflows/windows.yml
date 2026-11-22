@@ -1,0 +1,72 @@
+name: Windows CI
+
+# The Windows app (`windows/`): the engine shell, the headless console and the WPF tray app, built against the native core
+# and its generated C# binding. Runs on pull requests (and manually), like the other CI workflows.
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - "windows/**"
+      - "desktop/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install the pinned Rust toolchain
+        working-directory: desktop
+        run: rustup show active-toolchain; if ($LASTEXITCODE -ne 0) { rustup toolchain install }
+        shell: pwsh
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop
+          shared-key: windows-app
+
+      - name: Build the native core (gossip_ffi.dll)
+        working-directory: desktop
+        run: cargo build -p gossip-ffi --release
+
+      - name: Install uniffi-bindgen-cs (must match the UniFFI version in desktop/ffi/Cargo.toml)
+        run: cargo install --locked uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag v0.12.0+v0.32.0
+
+      - name: Generate the C# binding
+        working-directory: desktop
+        run: |
+          New-Item -ItemType Directory -Force target/gen/csharp | Out-Null
+          uniffi-bindgen-cs --library target/release/gossip_ffi.dll --out-dir target/gen/csharp
+        shell: pwsh
+
+      - name: .NET version
+        run: dotnet --version
+
+      - name: Smoke test the binding against the native core
+        working-directory: desktop/ffi/csharp
+        run: |
+          dotnet build -nologo -v q
+          $out = (Get-ChildItem bin/Debug -Directory | Select-Object -First 1).FullName
+          Copy-Item ../../target/release/gossip_ffi.dll $out
+          dotnet "$out/Gossip.Core.dll"
+        shell: pwsh
+
+      - name: Build the engine shell and the console
+        run: dotnet build windows/Gossip.Headless -nologo -v q
+
+      - name: Test the engine shell
+        run: dotnet test windows/Gossip.Shell.Tests -nologo -v q
+
+      - name: Build the tray app
+        run: dotnet build windows/Gossip.Windows -nologo -v q

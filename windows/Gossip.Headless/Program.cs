@@ -2,7 +2,7 @@ using Gossip.Shell;
 using System.Linq;
 
 // usage: Gossip.Headless [--name NAME] [--data DIR] [--plain]
-// stdin commands: code | pair CODE | peers | pairable | accept | reject | say TEXT | sleep SECONDS | quit
+// stdin commands: code | pair CODE | peers | pairable | accept | reject | say TEXT | sleep SECONDS | clip TEXT | notify TITLE|BODY | notifyjson JSON | battery PERCENT | quit
 string name = Environment.MachineName, data = Path.Combine(IdentityStore.DefaultDirectory, "headless");
 bool plain = false;
 for (var i = 0; i < args.Length; i++)
@@ -44,6 +44,24 @@ while ((line = Console.ReadLine()) != null)
         case "accept": if (pending != null) node.ConfirmPairing(pending.Conn, true); break;
         case "reject": if (pending != null) node.ConfirmPairing(pending.Conn, false); break;
         case "say": node.Send("headless.say", null, System.Text.Json.JsonSerializer.Serialize(new { text = parts.ElementAtOrDefault(1) ?? "" })); break;
+        case "clip":
+            {
+                var guard = new uniffi.gossip_ffi.ClipboardGuard();
+                var v = guard.OutgoingText(node.DeviceId, parts.ElementAtOrDefault(1) ?? "", false);
+                Console.WriteLine(v == null ? "[clip] the guard refused it" : "[clip] published");
+                if (v != null) node.SetState(uniffi.gossip_ffi.GossipFfiMethods.ClipboardTextSlot(), v);
+                break;
+            }
+        case "notify":
+            {
+                var bits = (parts.ElementAtOrDefault(1) ?? "Title|Body").Split('|', 2);
+                node.Send("notification.posted", null, System.Text.Json.JsonSerializer.Serialize(new { id = Guid.NewGuid().ToString(), appPackage = "test", appName = "Messages", title = bits[0], body = bits.ElementAtOrDefault(1) ?? "", hasReplyAction = false, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }));
+                break;
+            }
+        case "notifyjson": node.Send("notification.posted", null, parts.ElementAtOrDefault(1) ?? "{}"); break;
+        case "battery":
+            node.SetState(uniffi.gossip_ffi.GossipFfiMethods.BatterySlot(), uniffi.gossip_ffi.GossipFfiMethods.BatteryPayload(new uniffi.gossip_ffi.BatteryState(byte.Parse(parts.ElementAtOrDefault(1) ?? "50"), true)));
+            break;
         case "sleep": await Task.Delay(TimeSpan.FromSeconds(int.Parse(parts.ElementAtOrDefault(1) ?? "1"))); break;
         case "quit": Environment.Exit(0); return; // exit now: disposing the mDNS service can keep a Windows process alive
     }
