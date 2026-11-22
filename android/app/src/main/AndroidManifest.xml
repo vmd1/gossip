@@ -85,6 +85,24 @@
         android:supportsRtl="true">
 
         <activity
+            android:name=".features.filetransfer.ShareToDeviceActivity"
+            android:exported="true"
+            android:label="Gossip"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Material.Light.Dialog.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"

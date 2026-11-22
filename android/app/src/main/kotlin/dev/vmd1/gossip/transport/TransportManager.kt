@@ -547,6 +547,8 @@ class TransportManager(
         private val queuedBytes = AtomicLong(0)
         val peerIpAddress: String? get() = socket.inetAddress?.hostAddress?.substringBefore('%')
 
+        val pendingBytes: Long get() = queuedBytes.get()
+
         /** Called under [engineLock]; never blocks. A peer that stops reading is dropped rather than buffered forever. */
         fun enqueue(bytes: ByteArray) {
             if (closed) return
@@ -595,6 +597,10 @@ class TransportManager(
     }
 
     private val links = ConcurrentHashMap<ULong, Link>()
+
+    /** Bytes queued for sockets and not yet written: a bulk sender (file transfer) waits on this instead of overflowing the
+     *  per-link limit, which drops the connection. */
+    fun pendingOutboundBytes(): Long = links.values.sumOf { it.pendingBytes }
 
     /** Peers whose live link is a virtual relay connection (no socket of ours). Changed only under [engineLock]. */
     private val relayedPeers: MutableSet<String> = ConcurrentHashMap.newKeySet()
