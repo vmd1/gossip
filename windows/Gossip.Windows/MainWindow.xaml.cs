@@ -5,7 +5,7 @@ using Gossip.Shell;
 
 namespace Gossip.Windows;
 
-public sealed record DeviceRow(string Id, string Name, string Detail, Brush Dot);
+public sealed record DeviceRow(string Id, string Name, string Detail, bool Online, string Glyph);
 
 public partial class MainWindow : Window
 {
@@ -56,12 +56,27 @@ public partial class MainWindow : Window
             var battery = Mirroring.BatteryText(_node.GetState(p.DeviceId, uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()));
             return new DeviceRow(p.DeviceId, p.Name,
                 $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}{(_find.IsRinging(p.DeviceId) ? " · ringing" : "")}{(_proximity.IsNearby(p.DeviceId) ? " · nearby" : "")}{(battery != null ? $" · battery {battery}" : "")}",
-                online ? Brushes.SeaGreen : Brushes.LightGray);
+                online, Glyph(p.Type));
         }).ToList();
+        var selected = (Devices.SelectedItem as DeviceRow)?.Id;
         Devices.ItemsSource = rows;
+        if (selected != null) Devices.SelectedItem = rows.FirstOrDefault(r => r.Id == selected);
         EmptyText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        var n = rows.Count(r => r.Dot == Brushes.SeaGreen);
+        var n = rows.Count(r => r.Online);
         StatusText.Text = rows.Count == 0 ? $"{Environment.MachineName} · ready to pair" : $"{Environment.MachineName} · {n} of {rows.Count} connected";
+    }
+
+    private static string Glyph(string type) => type switch
+    {
+        "android-phone" => "\uE8EA",
+        "android-tablet" => "\uE70A",
+        _ => "\uE7F4",
+    };
+
+    private void OnSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        var any = Devices.SelectedItem != null;
+        SendFileButton.IsEnabled = MessagesButton.IsEnabled = RingButton.IsEnabled = RemoveButton.IsEnabled = any;
     }
 
     private static string Describe(string type) => type switch

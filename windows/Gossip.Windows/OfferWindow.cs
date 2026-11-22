@@ -22,7 +22,7 @@ internal sealed class OfferWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = new System.Windows.Media.FontFamily("Segoe UI");
 
-        var yes = new Button { Content = "Accept", Name = "AcceptButton", IsDefault = false, Padding = new Thickness(20, 6, 20, 6), Margin = new Thickness(0, 0, 8, 0) };
+        var yes = new Button { Style = Theme.AccentStyle, Content = "Accept", Name = "AcceptButton", IsDefault = false, Padding = new Thickness(20, 6, 20, 6), Margin = new Thickness(0, 0, 8, 0) };
         var no = new Button { Content = "Decline", Name = "DeclineButton", IsDefault = true, IsCancel = true, Padding = new Thickness(20, 6, 20, 6) };
         yes.Click += (_, _) => { _answer.TrySetResult(true); Close(); };
         no.Click += (_, _) => { _answer.TrySetResult(false); Close(); };
@@ -33,7 +33,7 @@ internal sealed class OfferWindow : Window
             {
                 new TextBlock { Text = $"{peerName} wants to send you a file", FontSize = 16, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap },
                 new TextBlock { Text = name, Margin = new Thickness(0, 10, 0, 0), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = $"{size} · saved to your Downloads folder", Foreground = System.Windows.Media.Brushes.Gray, Margin = new Thickness(0, 2, 0, 0) },
+                new TextBlock { Text = $"{size} · saved to your Downloads folder", Style = Theme.CaptionStyle, Margin = new Thickness(0, 2, 0, 0) },
                 new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 18, 0, 0), Children = { yes, no } },
             },
         };
