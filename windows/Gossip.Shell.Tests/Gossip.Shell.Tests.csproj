@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Unit tests for the engine shell. They load the real native core, so build it first (cargo build -p gossip-ffi,
+       debug or release) and generate the binding (desktop/scripts/build-csharp-bindings.sh). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CS8632;CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8625;CS0649;CS0169;CA1416</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Gossip.Shell/Gossip.Shell.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- Whichever native core was built, next to the test assembly: the globs match only files that exist, and a release
+         build (listed last) wins over a debug one. -->
+    <None Include="../../desktop/target/debug/*gossip_ffi.dll;../../desktop/target/debug/*gossip_ffi.dylib;../../desktop/target/debug/*gossip_ffi.so" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../desktop/target/release/*gossip_ffi.dll;../../desktop/target/release/*gossip_ffi.dylib;../../desktop/target/release/*gossip_ffi.so" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

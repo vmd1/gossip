@@ -16,6 +16,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         _node = node;
         _node.PeersChanged += () => Dispatcher.BeginInvoke(Refresh);
+        _node.StateChanged += (_, slot, _) => { if (slot == uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()) Dispatcher.BeginInvoke(Refresh); };
         Refresh();
     }
 
@@ -31,7 +32,9 @@ public partial class MainWindow : Window
         var rows = _node.Peers().Select(p =>
         {
             var online = _node.IsConnected(p.DeviceId);
-            return new DeviceRow(p.DeviceId, p.Name, $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}",
+            var battery = Mirroring.BatteryText(_node.GetState(p.DeviceId, uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()));
+            return new DeviceRow(p.DeviceId, p.Name,
+                $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}{(battery != null ? $" · battery {battery}" : "")}",
                 online ? Brushes.SeaGreen : Brushes.LightGray);
         }).ToList();
         Devices.ItemsSource = rows;

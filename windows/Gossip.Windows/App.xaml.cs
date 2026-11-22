@@ -9,6 +9,7 @@ public partial class App : Application
     private Node? _node;
     private TrayIcon? _tray;
     private MainWindow? _window;
+    private ClipboardSync? _clipboard;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -27,6 +28,12 @@ public partial class App : Application
             open: () => Dispatcher.Invoke(ShowWindow),
             showCode: () => Dispatcher.Invoke(() => { ShowWindow(); _window!.ShowCode(); }),
             quit: () => Dispatcher.Invoke(Quit));
+        _clipboard = new ClipboardSync(_node, Dispatcher);
+        _node.Received += (env, _) =>
+        {
+            var text = Mirroring.NotificationText(env.Kind, env.PayloadJson);
+            if (text != null) Dispatcher.BeginInvoke(() => _tray?.Notify(text.Value.Title, text.Value.Body));
+        };
         if (!e.Args.Contains("--minimized")) ShowWindow();
     }
 
@@ -48,6 +55,7 @@ public partial class App : Application
 
     private void Quit()
     {
+        _clipboard?.Dispose();
         _tray?.Dispose();
         _node?.Dispose();
         Shutdown();

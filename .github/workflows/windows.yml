@@ -65,5 +65,8 @@ jobs:
       - name: Build the engine shell and the console
         run: dotnet build windows/Gossip.Headless -nologo -v q
 
+      - name: Test the engine shell
+        run: dotnet test windows/Gossip.Shell.Tests -nologo -v q
+
       - name: Build the tray app
         run: dotnet build windows/Gossip.Windows -nologo -v q
