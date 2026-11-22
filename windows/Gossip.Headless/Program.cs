@@ -2,7 +2,7 @@ using Gossip.Shell;
 using System.Linq;
 
 // usage: Gossip.Headless [--name NAME] [--data DIR] [--plain]
-// stdin commands: code | pair CODE | peers | pairable | accept | reject | say TEXT | sleep SECONDS | clip TEXT | notify TITLE|BODY | battery PERCENT | quit
+// stdin commands: code | pair CODE | peers | pairable | accept | reject | say TEXT | sleep SECONDS | clip TEXT | notify TITLE|BODY | notifyjson JSON | battery PERCENT | quit
 string name = Environment.MachineName, data = Path.Combine(IdentityStore.DefaultDirectory, "headless");
 bool plain = false;
 for (var i = 0; i < args.Length; i++)
@@ -58,6 +58,7 @@ while ((line = Console.ReadLine()) != null)
                 node.Send("notification.posted", null, System.Text.Json.JsonSerializer.Serialize(new { id = Guid.NewGuid().ToString(), appPackage = "test", appName = "Messages", title = bits[0], body = bits.ElementAtOrDefault(1) ?? "", hasReplyAction = false, timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() }));
                 break;
             }
+        case "notifyjson": node.Send("notification.posted", null, parts.ElementAtOrDefault(1) ?? "{}"); break;
         case "battery":
             node.SetState(uniffi.gossip_ffi.GossipFfiMethods.BatterySlot(), uniffi.gossip_ffi.GossipFfiMethods.BatteryPayload(new uniffi.gossip_ffi.BatteryState(byte.Parse(parts.ElementAtOrDefault(1) ?? "50"), true)));
             break;

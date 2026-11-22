@@ -10,6 +10,7 @@ public partial class App : Application
     private TrayIcon? _tray;
     private MainWindow? _window;
     private ClipboardSync? _clipboard;
+    private ToastManager? _toasts;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -29,10 +30,16 @@ public partial class App : Application
             showCode: () => Dispatcher.Invoke(() => { ShowWindow(); _window!.ShowCode(); }),
             quit: () => Dispatcher.Invoke(Quit));
         _clipboard = new ClipboardSync(_node, Dispatcher);
+        _toasts = new ToastManager(_node);
         _node.Received += (env, _) =>
         {
-            var text = Mirroring.NotificationText(env.Kind, env.PayloadJson);
-            if (text != null) Dispatcher.BeginInvoke(() => _tray?.Notify(text.Value.Title, text.Value.Body));
+            if (env.Kind == "notification.removed")
+            {
+                try { using var d = System.Text.Json.JsonDocument.Parse(env.PayloadJson); if (d.RootElement.TryGetProperty("id", out var id)) _toasts.Remove(id.GetString() ?? ""); } catch { }
+                return;
+            }
+            var n = MirroredNotification.Parse(env.Kind, env.SenderId, env.PayloadJson);
+            if (n != null) _toasts.Show(n);
         };
         if (!e.Args.Contains("--minimized")) ShowWindow();
     }
@@ -56,6 +63,7 @@ public partial class App : Application
     private void Quit()
     {
         _clipboard?.Dispose();
+        _toasts?.Dispose();
         _tray?.Dispose();
         _node?.Dispose();
         Shutdown();
