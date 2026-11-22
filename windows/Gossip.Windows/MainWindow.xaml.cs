@@ -101,6 +101,14 @@ public partial class MainWindow : Window
     private void OnMediaPlay(object sender, RoutedEventArgs e) =>
         _media.Command(_media.Current?.IsPlaying == true ? uniffi.gossip_ffi.MediaAction.Pause : uniffi.gossip_ffi.MediaAction.Play);
 
+    private void OnMessages(object sender, RoutedEventArgs e)
+    {
+        var phone = (Devices.SelectedItem is DeviceRow row ? _node.Peers().FirstOrDefault(p => p.DeviceId == row.Id) : null)
+            ?? _node.Peers().FirstOrDefault(p => p.Type == "android-phone" && _node.IsConnected(p.DeviceId));
+        if (phone == null || phone.Type != "android-phone") { MessageBox.Show(this, "Connect your phone, or select it in the list, to open its messages.", "Gossip"); return; }
+        new MessagesWindow(_node, phone.DeviceId, phone.Name) { Owner = this }.Show();
+    }
+
     private void OnRing(object sender, RoutedEventArgs e)
     {
         if (Devices.SelectedItem is not DeviceRow row) { MessageBox.Show(this, "Select a device to ring first.", "Gossip"); return; }
