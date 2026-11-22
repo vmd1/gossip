@@ -11,6 +11,8 @@ public partial class App : Application
     private MainWindow? _window;
     private ClipboardSync? _clipboard;
     private ToastManager? _toasts;
+    private FindMyDevice? _find;
+    private PowerSync? _power;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -24,7 +26,9 @@ public partial class App : Application
         _node.PairingCancelled += _ => { };
         _node.Start();
 
-        _window = new MainWindow(_node);
+        _find = new FindMyDevice(_node, Dispatcher);
+        _power = new PowerSync(_node, Dispatcher);
+        _window = new MainWindow(_node, _find);
         _tray = new TrayIcon(
             open: () => Dispatcher.Invoke(ShowWindow),
             showCode: () => Dispatcher.Invoke(() => { ShowWindow(); _window!.ShowCode(); }),
@@ -62,6 +66,8 @@ public partial class App : Application
 
     private void Quit()
     {
+        _find?.Dispose();
+        _power?.Dispose();
         _clipboard?.Dispose();
         _toasts?.Dispose();
         _tray?.Dispose();
