@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A console front end for the shell, for testing pairing and messages on a real network without the UI. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Gossip.Headless</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CS8632;CS0108;CS0168;CS0219;CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8625;CS8765;CS0649;CS0169;CS8981;CS0162</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Gossip.Shell/Gossip.Shell.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Gossip.Shell" />
+  </ItemGroup>
+</Project>
