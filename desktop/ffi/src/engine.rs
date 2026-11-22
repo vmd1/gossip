@@ -380,6 +380,24 @@ impl GossipCore {
         Ok(actions(core.send(e)?))
     }
 
+    /// Like [`Self::send_message`] with a raw follow-up frame (the large-binary convention, e.g. a clipboard image).
+    pub fn send_message_with_raw(
+        &self,
+        kind: String,
+        recipient: Option<String>,
+        payload_json: String,
+        raw: Vec<u8>,
+    ) -> Result<Vec<Action>, GossipError> {
+        let payload = parse_object(&payload_json)?;
+        let mut core = self.lock();
+        let mut e = core.new_envelope(&kind).with_payload(payload);
+        match recipient {
+            Some(r) => e = e.to(&r),
+            None => e.broadcast = true,
+        }
+        Ok(actions(core.send_with_raw(e, &raw)?))
+    }
+
     // ---- Time and settings ------------------------------------------------------------------------------------
 
     /// Drive from a timer (once a second is plenty): heartbeats, stale and stuck-connection cleanup, pairing expiry

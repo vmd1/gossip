@@ -11,12 +11,20 @@ public partial class MainWindow : Window
 {
     private readonly Node _node;
     private readonly FindMyDevice _find;
+    private readonly MediaRemote _media;
+    private readonly ProximityMonitor _proximity;
 
-    internal MainWindow(Node node, FindMyDevice find)
+    internal MainWindow(Node node, FindMyDevice find, MediaRemote media, ProximityMonitor proximity)
     {
         InitializeComponent();
         _node = node;
         _find = find;
+        _media = media;
+        _proximity = proximity;
+        _proximity.Changed += () => Dispatcher.BeginInvoke(Refresh);
+        LockCheck.IsChecked = _proximity.LockOnLeaveEnabled;
+        _media.Changed += () => Dispatcher.BeginInvoke(RefreshMedia);
+        RefreshMedia();
         _find.PeersChanged += () => Dispatcher.BeginInvoke(Refresh);
         _node.PeersChanged += () => Dispatcher.BeginInvoke(Refresh);
         _node.StateChanged += (_, slot, _) => { if (slot == uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()) Dispatcher.BeginInvoke(Refresh); };
@@ -37,7 +45,7 @@ public partial class MainWindow : Window
             var online = _node.IsConnected(p.DeviceId);
             var battery = Mirroring.BatteryText(_node.GetState(p.DeviceId, uniffi.gossip_ffi.GossipFfiMethods.BatterySlot()));
             return new DeviceRow(p.DeviceId, p.Name,
-                $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}{(_find.IsRinging(p.DeviceId) ? " · ringing" : "")}{(battery != null ? $" · battery {battery}" : "")}",
+                $"{Describe(p.Type)} · {(online ? "connected" : "not connected")}{(_find.IsRinging(p.DeviceId) ? " · ringing" : "")}{(_proximity.IsNearby(p.DeviceId) ? " · nearby" : "")}{(battery != null ? $" · battery {battery}" : "")}",
                 online ? Brushes.SeaGreen : Brushes.LightGray);
         }).ToList();
         Devices.ItemsSource = rows;
@@ -75,6 +83,23 @@ public partial class MainWindow : Window
         new EnterCodeWindow(_node) { Owner = this }.ShowDialog();
         Refresh();
     }
+
+    private void OnLockToggled(object sender, RoutedEventArgs e) => _proximity.SetLockOnLeave(LockCheck.IsChecked == true);
+
+    private void RefreshMedia()
+    {
+        var now = _media.Current;
+        MediaPanel.Visibility = now == null ? Visibility.Collapsed : Visibility.Visible;
+        if (now == null) return;
+        MediaTitle.Text = string.IsNullOrEmpty(now.Title) ? "Playing" : now.Title;
+        MediaDetail.Text = $"{now.Artist}{(string.IsNullOrEmpty(_media.DeviceName) ? "" : $" · on {_media.DeviceName}")}".TrimStart(' ', '·');
+        MediaPlay.Content = now.IsPlaying ? "Pause" : "Play";
+    }
+
+    private void OnMediaPrevious(object sender, RoutedEventArgs e) => _media.Command(uniffi.gossip_ffi.MediaAction.Previous);
+    private void OnMediaNext(object sender, RoutedEventArgs e) => _media.Command(uniffi.gossip_ffi.MediaAction.Next);
+    private void OnMediaPlay(object sender, RoutedEventArgs e) =>
+        _media.Command(_media.Current?.IsPlaying == true ? uniffi.gossip_ffi.MediaAction.Pause : uniffi.gossip_ffi.MediaAction.Play);
 
     private void OnRing(object sender, RoutedEventArgs e)
     {

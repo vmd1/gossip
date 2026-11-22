@@ -13,6 +13,9 @@ public partial class App : Application
     private ToastManager? _toasts;
     private FindMyDevice? _find;
     private PowerSync? _power;
+    private DndSync? _dnd;
+    private ProximityMonitor? _proximity;
+    private MediaRemote? _mediaRemote;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -28,7 +31,10 @@ public partial class App : Application
 
         _find = new FindMyDevice(_node, Dispatcher);
         _power = new PowerSync(_node, Dispatcher);
-        _window = new MainWindow(_node, _find);
+        _dnd = new DndSync(_node, Dispatcher, dataDir);
+        _mediaRemote = new MediaRemote(_node);
+        _proximity = new ProximityMonitor(_node, Dispatcher, dataDir);
+        _window = new MainWindow(_node, _find, _mediaRemote, _proximity);
         _tray = new TrayIcon(
             open: () => Dispatcher.Invoke(ShowWindow),
             showCode: () => Dispatcher.Invoke(() => { ShowWindow(); _window!.ShowCode(); }),
@@ -66,6 +72,9 @@ public partial class App : Application
 
     private void Quit()
     {
+        _proximity?.Dispose();
+        _dnd?.Dispose();
+        _mediaRemote?.Dispose();
         _find?.Dispose();
         _power?.Dispose();
         _clipboard?.Dispose();

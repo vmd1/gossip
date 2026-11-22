@@ -52,6 +52,21 @@ while ((line = Console.ReadLine()) != null)
                 if (v != null) node.SetState(uniffi.gossip_ffi.GossipFfiMethods.ClipboardTextSlot(), v);
                 break;
             }
+        case "setstate": // setstate SLOT JSON (JSON "null" clears)
+            {
+                var rest = line.Split(' ', 3);
+                if (rest.Length >= 3) node.SetState(rest[1], rest[2] == "null" ? null : rest[2]);
+                break;
+            }
+        case "clipimg": // sends a small PNG as an image clipboard update
+            {
+                var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8Dwn4EIwDiqkL4KAcT9GO0U4BxoAAAAAElFTkSuQmCC");
+                var guard = new uniffi.gossip_ffi.ClipboardGuard();
+                var m = guard.OutgoingImage(node.DeviceId, png, false);
+                Console.WriteLine(m == null ? "[clipimg] refused" : "[clipimg] sent");
+                if (m != null) node.SendWithRaw(m.Kind, m.Recipient, m.PayloadJson, png);
+                break;
+            }
         case "notify":
             {
                 var bits = (parts.ElementAtOrDefault(1) ?? "Title|Body").Split('|', 2);

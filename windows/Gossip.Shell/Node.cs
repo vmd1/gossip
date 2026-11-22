@@ -162,6 +162,12 @@ internal sealed class Node : IDisposable
         lock (_gate) Process(_core.SendMessage(kind, recipient, payloadJson));
     }
 
+    /// <summary>Like <see cref="Send"/> with a raw follow-up frame (a clipboard image's PNG bytes).</summary>
+    public void SendWithRaw(string kind, string? recipient, string payloadJson, byte[] raw)
+    {
+        lock (_gate) Process(_core.SendMessageWithRaw(kind, recipient, payloadJson, raw));
+    }
+
     public void SetState(string slot, string? valueJson) { lock (_gate) Process(_core.SetState(slot, valueJson)); }
     public string? GetState(string deviceId, string slot) { lock (_gate) return _core.GetState(deviceId, slot); }
 
