@@ -11,7 +11,8 @@
 - **Which devices does it support?**
   - Mac: macOS 14 or newer (the prebuilt app is universal, for Apple Silicon and Intel; Intel has not been tested yet)
   - Android: Android 10 or newer, phones and tablets
-  - there is no Windows, Linux or iOS version yet
+  - Windows 10 or 11 (x64 and ARM64): a beta, installed from the releases page (unsigned, so SmartScreen will warn), with most but not all features
+  - there is no Linux or iOS version yet
 - **Is it on the App Store or Google Play?**
   - no — install it from the [GitHub releases](https://github.com/vmd1/gossip/releases/latest), or build it yourself
 - **Do I need an account?**
